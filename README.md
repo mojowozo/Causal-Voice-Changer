@@ -36,7 +36,7 @@ voice in a realtime app's models folder. `--base` takes `default`, a folder name
 under `custom-base/`, or a path.
 
 ## Using a voice live
-Use the `run_realtime.sh` (Linux) or `run_realtime.bat` (Windows) to launch the GUI. You need to ensure you've
+Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. On Linux that is the full app in `realtime/`; on Windows it is a smaller window with the same controls for voice, devices, pitch, gains, gate and block size. You need to ensure you've
 run the training GUI first so the prerequisites can be installed. 
 
 ## Layout

@@ -97,8 +97,22 @@ class Live:
                 self.late += 1
             outdata[:, 0] = self.convert(indata[:, 0].copy())
 
-        s = sd.Stream(samplerate=SR, blocksize=self.block, device=(in_device, out_device), channels=1,
-                      dtype="float32", latency=latency, callback=callback)
+        extra = None
+        if sys.platform == "win32":
+            # WASAPI shared mode only opens at the device's own rate unless asked to convert; the model needs 48 kHz.
+            try:
+                extra = sd.WasapiSettings(auto_convert=True)
+            except TypeError:  # older sounddevice
+                extra = None
+        try:
+            s = sd.Stream(samplerate=SR, blocksize=self.block, device=(in_device, out_device), channels=1,
+                          dtype="float32", latency=latency, callback=callback, extra_settings=extra)
+        except sd.PortAudioError:
+            if extra is None:
+                raise
+            # not WASAPI devices (MME, DirectSound): those convert by themselves
+            s = sd.Stream(samplerate=SR, blocksize=self.block, device=(in_device, out_device), channels=1,
+                          dtype="float32", latency=latency, callback=callback)
         s.start()
         return s
 

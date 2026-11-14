@@ -3,11 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 if [[ ! -x .venv/bin/python ]]; then
-    echo "The project's Python environment is missing. Run ./run.sh once first: it installs everything." >&2
+    echo "The project's Python environment is missing. Run ./run-training.sh once first: it installs everything." >&2
     exit 1
 fi
 binary=ui/target/release/causalvc-realtime
-if [[ ! -x $binary ]]; then
+if [[ ! -x realtime/$binary ]]; then
     echo "Building the front end (first run only)…" >&2
     cargo build --release --manifest-path realtime/ui/Cargo.toml
 fi
