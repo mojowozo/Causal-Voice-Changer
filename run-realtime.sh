@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launch the CausalVC realtime voice changer (the COSMIC front end; it starts the Python engine itself).
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+if [[ ! -x .venv/bin/python ]]; then
+    echo "The project's Python environment is missing. Run ./run.sh once first: it installs everything." >&2
+    exit 1
+fi
+binary=ui/target/release/causalvc-realtime
+if [[ ! -x $binary ]]; then
+    echo "Building the front end (first run only)…" >&2
+    cargo build --release --manifest-path realtime/ui/Cargo.toml
+fi
+# Ask PipeWire for a 960-sample period (20 ms at 48 kHz) while this runs: blocks are whole
+# multiples of 20 ms, so the output buffer stays level (fewer gaps, slightly less delay).
+# The graph runs at the smallest period any client requests, and returns to normal on exit.
+# Set PIPEWIRE_QUANTUM yourself to override.
+export PIPEWIRE_QUANTUM="${PIPEWIRE_QUANTUM:-960/48000}"
+CAUSALVC_REALTIME_DIR="$PWD/realtime" exec "realtime/$binary" "$@"

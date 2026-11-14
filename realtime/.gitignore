@@ -1,0 +1,28 @@
+# Packaged runtime and generated user state
+runtime/
+.venv/
+logs/
+recordings/
+configs/config.json
+configs/engine.json
+configs/voice_pitch.json
+models/*/
+!models/README.md
+
+# Inference assets and bundled binaries are distributed separately.
+assets/
+tools/ffmpeg/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.pyo
+.cache/
+
+# Local development files
+.vscode/
+.idea/
+*.log
+
+# Rust front end build output
+ui/target/
