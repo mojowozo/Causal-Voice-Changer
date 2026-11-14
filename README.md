@@ -14,7 +14,7 @@ The base model/pretrain was built using Ears, VCTK, and LibriTTS-R. Because of t
 
 ## Quick start
 
-Run `run_trainer.sh` (Linux) or `run_trainer.bat` (Windows). On first run, it installs the Python
+Run `run-training.sh` (Linux) or `run-training.bat` (Windows). On first run, it installs the Python
 packages with [uv](https://astral.sh/uv), downloads the pretrained files (the base
 model and RMVPE, about 900 MB) into `weights/`, and opens the training window. This will also handle
 installing the perquisites for the realtime portion, so please run this first! 
