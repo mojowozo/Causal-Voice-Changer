@@ -1,21 +1,19 @@
 """A CausalVC voice for the realtime engine.
 
 It converts each block as it arrives and its output is already continuous
-across blocks.  A voice is a folder in ``models/`` holding
-``<anything>.causalvc.json``, as written when a voice is built:
+across blocks.  A voice is a folder in ``models/`` holding its description and
+its decoder, as written when a voice is built:
 
-    {"decoder": "runs/models/voice-NAME/decoder-10000s.pt",
-     "pitch":   "weights/causalvc-base/pitch.pt",
-     "speaker": "NAME"}
+    MyVoice-10000s/
+      MyVoice-10000s.causalvc.json     {"decoder": "decoder.pt", "speaker": "MyVoice"}
+      decoder.pt
 
-Relative paths are resolved against ``project`` when the file names one, and
-against the repository this app lives in otherwise.  ``encoder`` is optional
-(the decoder checkpoint names the one it was trained with).  ``"runtime":
-"classic"`` selects the original runtime, which recomputes its whole window
-every block.
+The folder is self-contained (see ``causalvc.voice``); the content encoder and
+pitch tracker every voice shares come with the project's base.  ``"runtime":
+"classic"`` in the description selects the original runtime, which recomputes
+its whole window every block.
 """
 
-import json
 import os
 import sys
 
@@ -39,25 +37,20 @@ class CausalVC:
     tgt_sr = SAMPLE_RATE
 
     def __init__(self, key, model_path, device):
-        with open(model_path, encoding="utf-8") as handle:
-            spec = json.load(handle)
-        project = spec.get("project") or REPOSITORY
-        if project not in sys.path:  # the causalvc package, when it is not installed in this environment
-            sys.path.insert(0, project)
+        if REPOSITORY not in sys.path:  # the causalvc package, when it is not installed in this environment
+            sys.path.insert(0, REPOSITORY)
         from causalvc.stream import DELAY
+        from causalvc.voice import load
 
-        if spec.get("runtime") == "classic":  # the original runtime, which recomputes its whole window every block
+        # Paths in the description are looked for beside it first, so a voice folder works wherever it is copied.
+        spec = load(model_path)
+        if spec["runtime"] == "classic":  # the original runtime, which recomputes its whole window every block
             from causalvc.stream import StreamingVC as make
         else:  # the cached runtime: same model, computes only what is new each block
             from causalvc.fast import streaming as make
 
-        def resolve(path):
-            return path if path is None or os.path.isabs(path) else os.path.join(project, path)
-
         self.speaker = spec["speaker"]
-        self.vc = make(
-            resolve(spec["decoder"]), resolve(spec["pitch"]), str(device), resolve(spec.get("encoder"))
-        )
+        self.vc = make(spec["decoder"], spec["pitch"], str(device), spec["encoder"])
         if self.speaker not in self.vc.speakers:
             raise ValueError(f"{self.speaker} is not a voice of {spec['decoder']}")
         self.delay_seconds = getattr(self.vc, "delay", DELAY) / 100.0

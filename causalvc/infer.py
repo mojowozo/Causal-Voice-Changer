@@ -49,7 +49,9 @@ class CausalVC:
 
             self.enc = _Teacher()
         else:
-            self.enc = load_encoder(encoder or ckpt["encoder"], device)
+            from causalvc.voice import encoder_path
+
+            self.enc = load_encoder(encoder_path(encoder or ckpt.get("encoder")), device)
         self.dec = Decoder(len(self.speakers), **ckpt["cfg"])
         self.dec.load_state_dict(ckpt["generator"])
         self.dec.to(device).eval()

@@ -67,9 +67,12 @@ def decoder_size(description: Path) -> int:
     try:
         spec = json.loads(description.read_text(encoding="utf-8"))
         decoder = Path(spec["decoder"])
-        if not decoder.is_absolute():
-            decoder = Path(spec.get("project") or PROJECT_ROOT) / decoder
-        return decoder.stat().st_size
+        if decoder.is_absolute():
+            return decoder.stat().st_size
+        for base in (description.parent, Path(spec.get("project") or PROJECT_ROOT)):  # beside the description first
+            if (base / decoder).is_file():
+                return (base / decoder).stat().st_size
+        return 0
     except (OSError, ValueError, KeyError, TypeError):
         return 0
 

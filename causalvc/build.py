@@ -3,8 +3,8 @@
     PYTHONPATH=$PWD .venv/bin/python -m causalvc.build --name Kira --audio /path/to/audio
 
 Fine-tunes a base decoder on that audio alone and writes
-a voice at every checkpoint: runs/models/voice-NAME/decoder-STEPs.pt with
-NAME-STEPs.causalvc.json, the file the realtime app loads (also placed in
+a voice at every checkpoint, as a self-contained folder that can be copied to
+another machine: runs/models/voice-NAME/voices/NAME-STEPs/ (also placed in
 --app-models/NAME-STEPs/ when given), so NAME-1000s, NAME-2000s and so on can be
 compared. The audio needs no preparation: any sample rate, any length, pauses left in.
 
@@ -68,7 +68,6 @@ def main() -> None:
     ap.add_argument("--name", required=True)
     ap.add_argument("--audio", required=True, help="folder or file of the target voice")
     ap.add_argument("--base", default="default", help="'default', a folder name under custom-base/, or a path to a base run")
-    ap.add_argument("--pitch", help="realtime pitch tracker for the voice (default: the base's own, else runs/models/pitch-la2/pitch.pt)")
     ap.add_argument("--steps", type=int, default=10000)
     ap.add_argument("--save-every", type=int, default=0, help="steps between checkpoints (default: a quarter of --steps)")
     ap.add_argument("--device", default="cuda:0")
@@ -97,21 +96,28 @@ def main() -> None:
         return str(own.relative_to(ROOT)) if own.is_relative_to(ROOT) else str(own)
 
     encoder = beside("encoder.pt", base["encoder"])
-    pitch = a.pitch or beside("pitch.pt", "runs/models/pitch-la2/pitch.pt")
 
     def register(step: int, decoder: Path) -> None:
-        """Describe one checkpoint as a voice of its own, NAME-STEPs."""
+        """Turn one checkpoint into a voice of its own, NAME-STEPs: a folder that needs nothing else from this machine."""
+        import os
+        import shutil
+
+        from causalvc.voice import export
+
         label = f"{a.name}-{step}s"
-        voice = {"decoder": f"runs/models/{run}/{decoder.name}", "pitch": pitch, "speaker": a.name}
-        targets = [run_dir / f"{label}.causalvc.json"]
+        made = export(decoder, a.name, run_dir / "voices" / label, label)
+        decoder.unlink(missing_ok=True)  # the folder's own copy (this voice only) replaces the checkpoint's
         if a.app_models:
-            targets.append(Path(a.app_models) / label / f"{label}.causalvc.json")
-        for t in targets:
-            # Paths are relative to this repository; a copy placed outside it has to say where that is.
-            inside = t.resolve().is_relative_to(ROOT)
-            t.parent.mkdir(parents=True, exist_ok=True)
-            t.write_text(json.dumps(voice if inside else {"project": str(ROOT), **voice}, indent=1))
-        print(f"voice {label} ready" + (f" in {a.app_models}" if a.app_models else ""), flush=True)
+            folder = Path(a.app_models) / label
+            folder.mkdir(parents=True, exist_ok=True)
+            for source in (made, made.parent / "decoder.pt"):
+                target = folder / source.name
+                target.unlink(missing_ok=True)
+                try:
+                    os.link(source, target)  # same disk: no second copy of the weights
+                except OSError:
+                    shutil.copy2(source, target)
+        print(f"voice {label} ready in {a.app_models or made.parent}", flush=True)
 
     done = None if a.restart else checkpoint_step(run_dir)
     if done is not None and done >= a.steps:

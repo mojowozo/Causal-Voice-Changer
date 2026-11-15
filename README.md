@@ -29,10 +29,13 @@ uv run python -m causalvc.build --name NAME --audio /path/to/folder-or-file
 
 This fine-tunes the base decoder on that audio (10,000 steps, about 35 minutes on
 an RTX 4080). The audio needs no slicing or silence handling and can be at any
-sample rate. Every checkpoint is kept as its own voice, `NAME-STEPs`
-(`runs/models/voice-NAME/NAME-STEPs.causalvc.json`); `--save-every` sets the interval. 
-`--app-models DIR` also registers each
-voice in a realtime app's models folder. `--base` takes `default`, a folder name
+sample rate. Every checkpoint is kept as its own voice, `NAME-STEPs`, in
+`runs/models/voice-NAME/voices/NAME-STEPs/`; `--save-every` sets the interval.
+`--app-models DIR` also puts each voice in a realtime app's models folder.
+
+A voice is a self-contained folder (a small description file and `decoder.pt`).
+To share one, copy or zip that folder; on the other machine it goes in
+`realtime/models/`. Nothing in it refers to the machine that built it. `--base` takes `default`, a folder name
 under `custom-base/`, or a path.
 
 ## Using a voice live

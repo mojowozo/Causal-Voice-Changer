@@ -22,9 +22,9 @@ SUFFIXES = (".causalvc.json", ".nextvc.json")
 def voices() -> dict[str, str]:
     """Voice name -> description file, from the realtime app's folder and from finished builds."""
     found: dict[str, str] = {}
-    for folder in (ROOT / "realtime" / "models", ROOT / "runs" / "models"):
+    for folder, pattern in ((ROOT / "realtime" / "models", "*/*.json"), (ROOT / "runs" / "models", "*/voices/*/*.json")):
         if folder.is_dir():
-            for path in sorted(folder.glob("*/*.json")):
+            for path in sorted(folder.glob(pattern)):
                 if path.name.endswith(SUFFIXES):
                     name = path.name
                     for suffix in SUFFIXES:

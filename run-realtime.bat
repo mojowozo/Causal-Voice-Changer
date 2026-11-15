@@ -2,6 +2,8 @@
 rem Opens the live voice changer window: microphone in, converted voice out.
 setlocal
 cd /d "%~dp0"
+rem A Windows environment of its own: the default .venv may belong to Linux when this folder is shared between systems.
+set "UV_PROJECT_ENVIRONMENT=.venv-win"
 
 where uv >nul 2>nul
 if errorlevel 1 (
@@ -19,6 +21,6 @@ exit /b 0
 
 :failed
 echo.
-echo Something went wrong. The message above says what.
+echo Something went wrong.
 pause
 exit /b 1

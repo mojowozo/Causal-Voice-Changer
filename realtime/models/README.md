@@ -1,18 +1,23 @@
 # Voices
 
 One folder per voice. The folder name is the voice's name in the app, and the
-folder holds the voice's `.causalvc.json` file, which is written when the voice
-is built:
+folder is self-contained: its description and its decoder, with nothing that
+names a place on the machine that made it.
 
 ```text
 models/
   MyVoice-10000s/
     MyVoice-10000s.causalvc.json
+    decoder.pt
 ```
 
-Building a voice with the training window (or `causalvc.build --app-models`)
-puts every checkpoint here. A `.causalvc.json` file can also be dragged onto
-the app's window. After adding a folder by hand, use **Reload** in the app.
+To share a voice, copy or zip its folder. To add one, put the folder here and
+use **Reload** in the app. Building a voice with the training window puts every
+checkpoint here automatically.
 
 The app saves each voice's pitch and gain settings beside it as
-`realtime_settings.json`.
+`realtime_settings.json`; that file can be shared along with the voice or left out.
+
+A voice made by an older version (a lone `.causalvc.json` or `.nextvc.json` that
+points at weights elsewhere) can be converted with
+`python -m causalvc.voice pack PATH`.

@@ -16,6 +16,7 @@ import torchaudio
 
 from causalvc.decoder.model import FRAME, SR, Decoder, loudness
 from causalvc.infer import load_encoder
+from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
 
 DELAY = 5  # 100 Hz frames between the newest input and the newest output
@@ -29,7 +30,7 @@ class StreamingVC:
         self.level_target = level  # None (default) leaves the input as is; a dB RMS value turns on a slow automatic gain toward it
         ckpt = torch.load(decoder, map_location="cpu")
         self.device, self.speakers = device, ckpt["speakers"]
-        self.enc = load_encoder(encoder or ckpt["encoder"], device)
+        self.enc = load_encoder(encoder_path(encoder or ckpt.get("encoder")), device)
         self.pitch = load_pitch(pitch, device)
         self.dec = Decoder(len(self.speakers), **ckpt["cfg"])
         self.dec.load_state_dict(ckpt["generator"])

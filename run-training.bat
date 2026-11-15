@@ -2,6 +2,8 @@
 rem Sets up everything on first run (Python packages, pretrained files), then opens the training window.
 setlocal
 cd /d "%~dp0"
+rem A Windows environment of its own: the default .venv may belong to Linux when this folder is shared between systems.
+set "UV_PROJECT_ENVIRONMENT=.venv-win"
 
 where uv >nul 2>nul
 if errorlevel 1 (

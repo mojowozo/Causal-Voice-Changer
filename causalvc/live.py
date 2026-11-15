@@ -14,7 +14,6 @@ callback was late. Works wherever PortAudio does (Linux, Windows, macOS).
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sys
 import threading
@@ -32,11 +31,10 @@ def load_voice(path: str, device: str):
     """A .causalvc.json voice description -> (streaming runtime, speaker name)."""
     from causalvc.fast import streaming
 
-    spec = json.loads(Path(path).read_text())
-    project = Path(spec.get("project") or ROOT)
-    resolve = lambda p: str(p if Path(p).is_absolute() else project / p)  # noqa: E731
-    vc = streaming(resolve(spec["decoder"]), resolve(spec["pitch"]), device, resolve(spec["encoder"]) if spec.get("encoder") else None)
-    return vc, spec["speaker"]
+    from causalvc.voice import load
+
+    spec = load(path)
+    return streaming(spec["decoder"], spec["pitch"], device, spec["encoder"]), spec["speaker"]
 
 
 class Live:

@@ -358,7 +358,7 @@ def main(on_save=None) -> None:
             ck = {
                 "generator": gen.state_dict(), "discriminator": disc.state_dict(),
                 "opt_g": opt_g.state_dict(), "opt_d": opt_d.state_dict(), "step": step,
-                "cfg": cfg, "speakers": list(spk), "encoder": str(Path(args.encoder).resolve()),
+                "cfg": cfg, "speakers": list(spk), "encoder": args.encoder,  # a hint only: causalvc.voice.encoder_path falls back to the shared encoder
             }
             torch.save(ck, last)
             slim = {a: b for a, b in ck.items() if a not in ("discriminator", "opt_g", "opt_d")}
