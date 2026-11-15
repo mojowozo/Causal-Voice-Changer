@@ -1,8 +1,15 @@
-"""PortAudio device catalog for JACK (PipeWire) and PipeWire's ALSA PCMs."""
+"""PortAudio device catalog: JACK (PipeWire) and PipeWire's ALSA PCMs on Linux,
+WASAPI and ASIO on Windows (see ``tools.audio_routing``)."""
 
 from dataclasses import dataclass, field
 
-from tools.audio_routing import ALSA_API, ALSA_SHARED_PCMS, HOSTAPI_LABELS, JACK_API
+from tools.audio_routing import (
+    CHANNEL_PAIR_APIS,
+    HOSTAPI_LABELS,
+    WASAPI_API,
+    api_priority,
+    is_offered,
+)
 
 
 @dataclass
@@ -30,22 +37,17 @@ def endpoint_label(api_name, device_name):
     return f"[{HOSTAPI_LABELS.get(api_name, api_name)}] {device_name}"
 
 
-def label_sort_key(label):
-    if label.startswith("[JACK]"):
-        priority = 0
-    elif label.startswith("[ALSA]"):
-        priority = 1
-    else:
-        priority = 2
-    return priority, label.lower()
+def label_sort_key(endpoint):
+    return api_priority(endpoint.api), endpoint.label.lower()
 
 
 def build_endpoints(devices, hostapis, show_all=False):
-    """Return (inputs, outputs) as label -> Endpoint, sorted JACK first.
+    """Return (inputs, outputs) as label -> Endpoint, best API first.
 
     Raw ALSA hw:* devices are normally held open by PipeWire, so only its
-    shared PCMs are offered unless ``show_all`` is set.  JACK devices with
-    more than two channels are split into one endpoint per channel pair.
+    shared PCMs are offered unless ``show_all`` is set; on Windows only WASAPI
+    and ASIO are.  JACK and ASIO devices with more than two channels are split
+    into one endpoint per channel pair.
     """
     api_names = {}
     for hostapi in hostapis:
@@ -55,10 +57,7 @@ def build_endpoints(devices, hostapis, show_all=False):
     outputs = {}
     for index, device in enumerate(devices):
         api_name = api_names.get(index, "")
-        if not show_all and not (
-            api_name == JACK_API
-            or (api_name == ALSA_API and device["name"] in ALSA_SHARED_PCMS)
-        ):
+        if not show_all and not is_offered(api_name, device["name"]):
             continue
         for max_key, endpoints in (
             ("max_input_channels", inputs),
@@ -68,7 +67,7 @@ def build_endpoints(devices, hostapis, show_all=False):
             if channel_count <= 0:
                 continue
             label = endpoint_label(api_name, device["name"])
-            if api_name != JACK_API:
+            if api_name not in CHANNEL_PAIR_APIS:
                 endpoints[label] = Endpoint(label, index, api_name, device["name"])
                 continue
             pairs = channel_pairs(channel_count)
@@ -82,9 +81,24 @@ def build_endpoints(devices, hostapis, show_all=False):
                     parse_channel_pair(pair),
                 )
     return (
-        dict(sorted(inputs.items(), key=lambda item: label_sort_key(item[0]))),
-        dict(sorted(outputs.items(), key=lambda item: label_sort_key(item[0]))),
+        dict(sorted(inputs.items(), key=lambda item: label_sort_key(item[1]))),
+        dict(sorted(outputs.items(), key=lambda item: label_sort_key(item[1]))),
     )
+
+
+def default_devices(sd, hostapis):
+    """(input, output) PortAudio indices of the system default devices.
+
+    On Windows PortAudio's own default is the MME device, which is not
+    offered, so the WASAPI host API's defaults are used when it has them.
+    """
+    for hostapi in hostapis:
+        if hostapi["name"] == WASAPI_API:
+            pair = (hostapi.get("default_input_device", -1), hostapi.get("default_output_device", -1))
+            if pair[0] >= 0 or pair[1] >= 0:
+                fallback = tuple(sd.default.device)
+                return tuple(index if index >= 0 else fallback[i] for i, index in enumerate(pair))
+    return tuple(sd.default.device)
 
 
 class DeviceCatalog:
@@ -92,18 +106,19 @@ class DeviceCatalog:
         self.sd = sd
         self.inputs = {}
         self.outputs = {}
+        self.defaults = (None, None)
 
     def refresh(self, show_all=False):
         # Re-initialize PortAudio so devices added since startup appear.
         self.sd._terminate()
         self.sd._initialize()
-        self.inputs, self.outputs = build_endpoints(
-            self.sd.query_devices(), self.sd.query_hostapis(), show_all
-        )
+        hostapis = self.sd.query_hostapis()
+        self.inputs, self.outputs = build_endpoints(self.sd.query_devices(), hostapis, show_all)
+        self.defaults = default_devices(self.sd, hostapis)
 
     def default_label(self, direction):
         endpoints = self.inputs if direction == "input" else self.outputs
-        default_index = self.sd.default.device[0 if direction == "input" else 1]
+        default_index = self.defaults[0 if direction == "input" else 1]
         return next(
             (label for label, ep in endpoints.items() if ep.index == default_index),
             next(iter(endpoints), ""),

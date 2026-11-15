@@ -14,7 +14,7 @@ import math
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness
+from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
@@ -53,6 +53,7 @@ class StreamingVC:
         self.content = torch.zeros(HIST, 768, device=d)
         self.f0 = torch.zeros(HIST, device=d)
         self.loud = torch.full((HIST,), -100.0, device=d)
+        self.tone = torch.zeros(HIST, 2, device=d)
         self.exc = torch.zeros(self.dec.source.channels, HIST * FRAME, device=d)
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
@@ -116,12 +117,17 @@ class StreamingVC:
         self.content = torch.cat([self.content[m:], content])
         self.f0 = torch.cat([self.f0[m:], f0])
         self.loud = torch.cat([self.loud[m:], loud])
+        if self.dec.tone is not None:
+            self.tone = torch.cat([self.tone[m:], tone(self.buf[None])[0, frames]])
         self.exc = torch.cat([self.exc[:, m * FRAME :], exc], dim=1)
 
         dec = self.dec
         g = dec.speaker(self.spk)
         x = dec.content(self.content[None]) + dec.pitch(dec.pitch_bucket(self.f0[None]))
-        x = (x + dec.loud((self.loud[None, :, None] + 40.0) / 20.0)).transpose(1, 2)
+        x = x + dec.loud((self.loud[None, :, None] + 40.0) / 20.0)
+        if dec.tone is not None:
+            x = x + dec.tone(self.tone[None] / 10.0)
+        x = x.transpose(1, 2)
         for b in dec.blocks:
             x = b(x, g)
         if "h" in dec.smooth_in:  # as Decoder.features does

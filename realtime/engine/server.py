@@ -1,6 +1,8 @@
-"""Unix-socket server that hosts the real-time engine for a front end.
+"""Local-socket server that hosts the real-time engine for a front end.
 
-Run with ``python -m engine.server``.  The socket is bound before the heavy
+Run with ``python -m engine.server``.  It listens on a Unix socket, or on
+Windows on a loopback TCP port guarded by a token (see ``engine.protocol``).
+The socket is bound before the heavy
 Torch/engine imports so a front end can connect immediately and show startup
 progress; commands sent before the ``ready`` event fail with ``not_ready``.
 """
@@ -10,14 +12,17 @@ import asyncio
 import collections
 import concurrent.futures
 import datetime
+import hmac
+import json
 import os
+import secrets
 import signal
-import socket
 import sys
 import threading
 import traceback
 
-from engine.protocol import PROTOCOL_VERSION, decode, default_socket_path, encode
+from engine import protocol
+from engine.protocol import PROTOCOL_VERSION, decode, default_address, encode
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -30,6 +35,8 @@ MAX_SOCKET_PATH_BYTES = 107
 #: device can hang inside PortAudio/JACK; the settings are saved before that,
 #: so past this the process exits anyway instead of lingering.
 SHUTDOWN_TIMEOUT_SECONDS = 5.0
+#: How long a TCP client has to send its token before it is dropped.
+AUTH_TIMEOUT_SECONDS = 5.0
 
 
 class CommandError(Exception):
@@ -63,20 +70,33 @@ class LogWriter:
         return False
 
 
-def socket_in_use(path):
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+def address_in_use(address):
+    """Whether an engine already answers at ``address``."""
     try:
-        probe.connect(path)
-        return True
+        probe = protocol.connect(address, timeout=1)
     except OSError:
         return False
-    finally:
-        probe.close()
+    probe.close()
+    return True
+
+
+def write_private_file(path, text):
+    """Write ``text`` atomically, readable only by this user on POSIX (Windows: the
+    per-user %LOCALAPPDATA% folder already is)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.{os.getpid()}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
 
 
 class EngineServer:
-    def __init__(self, socket_path, engine_factory=None, exit_when_idle=None):
-        self.socket_path = socket_path
+    def __init__(self, address, engine_factory=None, exit_when_idle=None):
+        #: A Unix socket path, or ``tcp:<endpoint file>``.
+        self.address = address
+        #: The token TCP clients must send first; ``None`` on a Unix socket.
+        self.token = None
         self.engine_factory = engine_factory or self.default_engine_factory
         self.exit_when_idle = exit_when_idle
         self.engine = None
@@ -218,6 +238,11 @@ class EngineServer:
                 require(args, "name", str), require(args, "new_name", str)
             ),
             "import_model": lambda args: {"models": engine.import_model(require(args, "paths", list))},
+            "export_model": lambda args: {
+                "path": engine.export_model(require(args, "name", str), require(args, "path", str))
+            },
+            # The client shows hushwire.DOWNLOAD_NOTICE first; sending this means the user accepted it.
+            "download_hushwire": lambda args: engine.download_hushwire(),
             "reload_devices": lambda args: engine.reload_devices(),
             "start": lambda args: engine.start(args.get("function", "vc")),
             "stop": lambda args: engine.stop(),
@@ -283,7 +308,19 @@ class EngineServer:
             }
         self.send(writer, encode(response))
 
+    async def authenticate(self, reader):
+        """A TCP client's first line must carry the token from the endpoint file."""
+        try:
+            line = await asyncio.wait_for(reader.readline(), AUTH_TIMEOUT_SECONDS)
+            token = decode(line).get("auth")
+        except (asyncio.TimeoutError, ConnectionError, asyncio.LimitOverrunError, ValueError):
+            return False
+        return isinstance(token, str) and hmac.compare_digest(token, self.token)
+
     async def handle_client(self, reader, writer):
+        if self.token is not None and not await self.authenticate(reader):
+            writer.close()
+            return
         self.clients.add(writer)
         state = None
         if self.engine is not None:
@@ -318,24 +355,69 @@ class EngineServer:
             writer.close()
 
     # -- lifetime ---------------------------------------------------------
+    async def listen_unix(self):
+        path = self.address
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if len(os.fsencode(path)) > MAX_SOCKET_PATH_BYTES:
+            raise SystemExit(f"Socket path is too long for AF_UNIX: {path}")
+        if os.path.exists(path):
+            if address_in_use(path):
+                raise SystemExit(f"Another engine is already listening on {path}")
+            os.unlink(path)
+        server = await asyncio.start_unix_server(self.handle_client, path=path, limit=1024 * 1024)
+        os.chmod(path, 0o600)
+        print(f"Engine listening on {path}")
+        return server
+
+    async def listen_tcp(self):
+        """Loopback only, on a free port; the port and token go to the endpoint file."""
+        path = protocol.endpoint_path(self.address)
+        if address_in_use(self.address):
+            raise SystemExit(f"Another engine is already listening (see {path})")
+        self.token = secrets.token_hex(32)
+        server = await asyncio.start_server(
+            self.handle_client, host="127.0.0.1", port=0, limit=1024 * 1024
+        )
+        port = server.sockets[0].getsockname()[1]
+        write_private_file(
+            path, json.dumps({"port": port, "token": self.token, "pid": os.getpid()})
+        )
+        print(f"Engine listening on 127.0.0.1:{port} ({path})")
+        return server
+
+    def remove_address(self):
+        """Remove the socket, or the endpoint file if it is still this engine's."""
+        if not protocol.is_tcp(self.address):
+            path = self.address
+        else:
+            path = protocol.endpoint_path(self.address)
+            endpoint = protocol.read_endpoint(path)
+            if endpoint is None or endpoint[1] != self.token:
+                return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def install_signal_handlers(self):
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                self.loop.add_signal_handler(signum, self.stopping.set)
+            except NotImplementedError:  # Windows' event loop has no signal handlers
+                signal.signal(
+                    signum, lambda *_: self.loop.call_soon_threadsafe(self.stopping.set)
+                )
+
     async def serve(self):
         self.loop = asyncio.get_running_loop()
         self.stopping = asyncio.Event()
-        os.makedirs(os.path.dirname(self.socket_path), exist_ok=True)
-        if len(os.fsencode(self.socket_path)) > MAX_SOCKET_PATH_BYTES:
-            raise SystemExit(f"Socket path is too long for AF_UNIX: {self.socket_path}")
-        if os.path.exists(self.socket_path):
-            if socket_in_use(self.socket_path):
-                raise SystemExit(f"Another engine is already listening on {self.socket_path}")
-            os.unlink(self.socket_path)
-        server = await asyncio.start_unix_server(
-            self.handle_client, path=self.socket_path, limit=1024 * 1024
-        )
-        os.chmod(self.socket_path, 0o600)
-        if threading.current_thread() is threading.main_thread():
-            for signum in (signal.SIGINT, signal.SIGTERM):
-                self.loop.add_signal_handler(signum, self.stopping.set)
-        print(f"Engine listening on {self.socket_path}")
+        if protocol.is_tcp(self.address):
+            server = await self.listen_tcp()
+        else:
+            server = await self.listen_unix()
+        self.install_signal_handlers()
         self.loop.run_in_executor(self.executor, self.init_engine)
         ticker = asyncio.create_task(self.tick_loop())
         try:
@@ -358,16 +440,17 @@ class EngineServer:
                     print(traceback.format_exc())
             for writer in list(self.clients):
                 writer.close()
-            try:
-                os.unlink(self.socket_path)
-            except OSError:
-                pass
+            self.remove_address()
             self.executor.shutdown(wait=False, cancel_futures=True)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="CausalVC realtime engine server")
-    parser.add_argument("--socket", default=default_socket_path(), help="Unix socket path")
+    parser.add_argument(
+        "--socket",
+        default=default_address(),
+        help="Unix socket path, or tcp:<endpoint file> (the default on Windows)",
+    )
     parser.add_argument(
         "--exit-when-idle",
         type=float,
@@ -388,6 +471,11 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        # PortAudio's ASIO build (shipped with sounddevice) lists ASIO drivers too;
+        # CAUSALVC_ASIO=0 keeps the plain build for a driver that misbehaves.
+        if os.environ.get("CAUSALVC_ASIO", "1") != "0":
+            os.environ.setdefault("SD_ENABLE_ASIO", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ["OMP_NUM_THREADS"] = "4"
     if PROJECT_ROOT not in sys.path:

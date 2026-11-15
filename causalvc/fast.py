@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness
+from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
@@ -138,10 +138,12 @@ class FastStreamingVC:
 
     # ---- decoder ---------------------------------------------------------
 
-    def _features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def _features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, g: torch.Tensor, tn: torch.Tensor | None = None) -> torch.Tensor:
         """content [m, 768], f0 [m], loud [m] for the new frames -> hidden [1, D, m]."""
         d = self.dec
         x = d.content(content[None]) + d.pitch(d.pitch_bucket(f0[None])) + d.loud((loud[None, :, None] + 40.0) / 20.0)
+        if tn is not None:
+            x = x + d.tone(tn[None] / 10.0)
         x = x.transpose(1, 2)
         for i, b in enumerate(d.blocks):
             y = self._cconv(b.dw, x, ("d.b", i)).transpose(1, 2) + b.cond(g)[:, None]
@@ -198,7 +200,10 @@ class FastStreamingVC:
         loud = loudness(buf[None, buf.shape[0] - (DELAY + m) * FRAME : buf.shape[0] - DELAY * FRAME])[0]
 
         g = self.dec.speaker(self.spk)
-        h = self._features(content, f0, loud, g)
+        tn = None
+        if self.dec.tone is not None:  # each frame's tone is measured over it and the frame before
+            tn = tone(buf[None, buf.shape[0] - (DELAY + m + 1) * FRAME : buf.shape[0] - DELAY * FRAME])[0, 1:]
+        h = self._features(content, f0, loud, g, tn)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind
             exc = self.dec.source(torch.cat([self.pending_f0, f0[:-1]])[None], self.phase, nxt=f0[-1:])
             self.pending_f0 = f0[-1:]

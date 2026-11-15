@@ -4,7 +4,9 @@ import numpy as np
 
 from tools.audio_routing import (
     ALSA_API,
+    ASIO_API,
     JACK_API,
+    WASAPI_API,
     is_native_api,
     scatter_mono,
     select_channels,
@@ -12,8 +14,10 @@ from tools.audio_routing import (
 
 
 class AudioRoutingTest(unittest.TestCase):
-    def test_only_jack_uses_native_period(self):
+    def test_jack_and_asio_use_native_period(self):
         self.assertTrue(is_native_api(JACK_API))
+        self.assertTrue(is_native_api(ASIO_API))
+        self.assertFalse(is_native_api(WASAPI_API))
         self.assertFalse(is_native_api(ALSA_API))
         self.assertFalse(is_native_api("File"))
 

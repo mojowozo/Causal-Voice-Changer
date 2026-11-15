@@ -3,8 +3,8 @@
     PYTHONPATH=$PWD .venv/bin/python -m causalvc.build --name Kira --audio /path/to/audio
 
 Fine-tunes a base decoder on that audio alone and writes
-a voice at every checkpoint, as a self-contained folder that can be copied to
-another machine: runs/models/voice-NAME/voices/NAME-STEPs/ (also placed in
+a voice at every checkpoint, as one self-contained file that can be copied to
+another machine: runs/models/voice-NAME/voices/NAME-STEPs.cvc (also installed in
 --app-models/NAME-STEPs/ when given), so NAME-1000s, NAME-2000s and so on can be
 compared. The audio needs no preparation: any sample rate, any length, pauses left in.
 
@@ -98,26 +98,15 @@ def main() -> None:
     encoder = beside("encoder.pt", base["encoder"])
 
     def register(step: int, decoder: Path) -> None:
-        """Turn one checkpoint into a voice of its own, NAME-STEPs: a folder that needs nothing else from this machine."""
-        import os
-        import shutil
-
-        from causalvc.voice import export
+        """Turn one checkpoint into a voice of its own, NAME-STEPs.cvc: one file that needs nothing else from this machine."""
+        from causalvc.voice import export_cvc, install
 
         label = f"{a.name}-{step}s"
-        made = export(decoder, a.name, run_dir / "voices" / label, label)
-        decoder.unlink(missing_ok=True)  # the folder's own copy (this voice only) replaces the checkpoint's
+        made = export_cvc(decoder, a.name, run_dir / "voices" / f"{label}.cvc", label)
+        decoder.unlink(missing_ok=True)  # the voice's own copy (this voice only) replaces the checkpoint's
         if a.app_models:
-            folder = Path(a.app_models) / label
-            folder.mkdir(parents=True, exist_ok=True)
-            for source in (made, made.parent / "decoder.pt"):
-                target = folder / source.name
-                target.unlink(missing_ok=True)
-                try:
-                    os.link(source, target)  # same disk: no second copy of the weights
-                except OSError:
-                    shutil.copy2(source, target)
-        print(f"voice {label} ready in {a.app_models or made.parent}", flush=True)
+            install(made, Path(a.app_models) / label)
+        print(f"voice {label} ready: {made}" + (f" (installed in {a.app_models})" if a.app_models else ""), flush=True)
 
     done = None if a.restart else checkpoint_step(run_dir)
     if done is not None and done >= a.steps:
@@ -135,6 +124,7 @@ def main() -> None:
     argv += ["--resume"] if done else ["--init", str(base_dir / "last.pt")]
     argv += ["--glide-next"] if base.get("glide_next") else ["--glide"] if base.get("glide") else []
     argv += ["--smooth-in", base["smooth_in"]] if base.get("smooth_in") else []
+    argv += ["--tone", str(base["tone"])] if base.get("tone") else []
     from causalvc.decoder import train
 
     sys.argv = [sys.argv[0], *argv]

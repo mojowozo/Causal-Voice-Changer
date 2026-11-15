@@ -119,8 +119,42 @@ class TrashError(Exception):
     pass
 
 
+def move_to_recycle_bin(path):
+    """Windows: move ``path`` to the Recycle Bin through the shell (recoverable, no prompt)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("wFunc", wintypes.UINT),
+            ("pFrom", wintypes.LPCWSTR),
+            ("pTo", wintypes.LPCWSTR),
+            ("fFlags", ctypes.c_uint16),
+            ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", ctypes.c_void_p),
+            ("lpszProgressTitle", wintypes.LPCWSTR),
+        ]
+
+    FO_DELETE = 3
+    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x4, 0x10, 0x40, 0x400
+    operation = SHFILEOPSTRUCTW(
+        wFunc=FO_DELETE,
+        # A list of paths, each NUL-terminated, ending with an extra NUL.
+        pFrom=os.path.abspath(os.fspath(path)) + "\0",
+        fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI,
+    )
+    result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation))
+    if result != 0 or operation.fAnyOperationsAborted:
+        raise TrashError(f"the Recycle Bin refused the folder (error {result:#x})")
+
+
 def move_to_trash(path):
-    """Move a model folder to the desktop Trash (recoverable), via ``gio``."""
+    """Move a model folder to the desktop Trash (recoverable): ``gio`` on Linux,
+    the Recycle Bin on Windows."""
+    if os.name == "nt":
+        move_to_recycle_bin(path)
+        return
     gio = shutil.which("gio")
     if gio is None:
         raise TrashError("gio was not found, so the folder cannot be moved to the Trash")

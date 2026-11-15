@@ -12,8 +12,14 @@ if errorlevel 1 (
     set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 )
 
-echo Checking Python packages...
-uv sync
+rem The Windows GPU build of PyTorch: "cuda" for NVIDIA, "rocm" for AMD (see scripts\gpu-extra.ps1).
+if not defined CAUSALVC_GPU (
+    for /f "usebackq delims=" %%g in (`powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\gpu-extra.ps1"`) do set "CAUSALVC_GPU=%%g"
+)
+if not defined CAUSALVC_GPU set "CAUSALVC_GPU=cuda"
+
+echo Checking Python packages (PyTorch for %CAUSALVC_GPU%)...
+uv sync --extra %CAUSALVC_GPU%
 if errorlevel 1 goto failed
 echo Checking pretrained files...
 uv run --no-sync python -m causalvc.weights

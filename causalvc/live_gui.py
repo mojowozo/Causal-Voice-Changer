@@ -16,13 +16,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS = ROOT / "runs" / "live_gui.json"
-SUFFIXES = (".causalvc.json", ".nextvc.json")
+SUFFIXES = (".causalvc.json", ".nextvc.json", ".cvc")
 
 
 def voices() -> dict[str, str]:
-    """Voice name -> description file, from the realtime app's folder and from finished builds."""
+    """Voice name -> voice file (.cvc or description), from the realtime app's folder and from finished builds."""
     found: dict[str, str] = {}
-    for folder, pattern in ((ROOT / "realtime" / "models", "*/*.json"), (ROOT / "runs" / "models", "*/voices/*/*.json")):
+    places = (
+        (ROOT / "realtime" / "models", "*/*.json"),
+        (ROOT / "runs" / "models", "*/voices/*.cvc"),  # builds: one file per checkpoint
+        (ROOT / "runs" / "models", "*/voices/*/*.json"),  # older builds: one folder per checkpoint
+    )
+    for folder, pattern in places:
         if folder.is_dir():
             for path in sorted(folder.glob(pattern)):
                 if path.name.endswith(SUFFIXES):
@@ -89,7 +94,7 @@ def main() -> None:
         ttk.Label(frame, text=text).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
 
     def pick_voice() -> None:
-        path = filedialog.askopenfilename(filetypes=[("CausalVC voice", "*.json")])
+        path = filedialog.askopenfilename(filetypes=[("CausalVC voice", "*.cvc *.causalvc.json")])
         if path:
             known[Path(path).name] = path
             voice_box.configure(values=list(known))

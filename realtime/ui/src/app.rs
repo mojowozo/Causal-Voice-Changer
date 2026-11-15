@@ -171,6 +171,7 @@ impl Toggle {
 pub const RECORDING_MODES: [&str; 3] = ["separate", "mix", "stereo"];
 pub const LOUDNESS_TARGETS: [&str; 2] = ["voice_chat", "streaming"];
 pub const INPUT_SOURCES: [&str; 2] = ["microphone", "file"];
+pub const DENOISE_METHODS: [&str; 2] = ["hushwire", "rnnoise"];
 
 /// Connection to the engine process, as shown to the user.
 #[derive(Clone, Debug)]
@@ -214,6 +215,11 @@ pub enum Message {
     SelectMonitor(usize),
     SelectRecordingMode(usize),
     SelectLoudnessTarget(usize),
+    SelectDenoiseMethod(usize),
+    /// Show Amazon's download notice for Hushwire's model, then accept or cancel it.
+    AskHushwireDownload,
+    AcceptHushwireDownload,
+    CancelHushwireDownload,
     Run(Function),
     Reset(&'static str),
     ReloadModels,
@@ -246,6 +252,10 @@ pub enum Message {
     ConfirmDeleteModel,
     CancelDeleteModel,
     AskRenameModel(String),
+    /// Ask where to save a model as one .cvc file, to share it.
+    ExportModel(String),
+    /// The chosen file for an export (None if cancelled).
+    ExportTo(String, Option<String>),
     RenameInput(String),
     ConfirmRenameModel,
     CancelRenameModel,
@@ -286,6 +296,9 @@ pub struct App {
     pub source_labels: Vec<String>,
     pub recording_mode_labels: Vec<String>,
     pub loudness_target_labels: Vec<String>,
+    pub denoise_method_labels: Vec<String>,
+    /// Hushwire's download notice is open.
+    pub confirm_hushwire: bool,
     /// Library page: search text, sort (index into LIBRARY_SORTS) and the
     /// model awaiting delete confirmation.
     pub library_query: String,
@@ -362,6 +375,11 @@ impl cosmic::Application for App {
             output_labels: Vec::new(),
             monitor_labels: Vec::new(),
             source_labels: vec![fl!("source-microphone"), fl!("source-file")],
+            denoise_method_labels: vec![
+                fl!("denoise-method-hushwire"),
+                fl!("denoise-method-rnnoise"),
+            ],
+            confirm_hushwire: false,
             loudness_target_labels: vec![
                 fl!("loudness-target-voice-chat"),
                 fl!("loudness-target-streaming"),
@@ -523,6 +541,16 @@ impl cosmic::Application for App {
                 self.meters.loudness = None;
                 self.send_setting("loudness_target", json!(LOUDNESS_TARGETS[index]));
             }
+            Message::SelectDenoiseMethod(index) => {
+                self.send_setting("input_denoise_method", json!(DENOISE_METHODS[index]));
+            }
+            Message::AskHushwireDownload => self.confirm_hushwire = true,
+            Message::CancelHushwireDownload => self.confirm_hushwire = false,
+            Message::AcceptHushwireDownload => {
+                self.confirm_hushwire = false;
+                // Sending this records the user's acceptance of the notice.
+                self.send("download_hushwire", json!({}));
+            }
             Message::SelectRecordingMode(index) => {
                 self.send_setting("recording_mode", json!(RECORDING_MODES[index]));
             }
@@ -648,6 +676,24 @@ impl cosmic::Application for App {
                     return self.toast(error.to_string());
                 }
             }
+            Message::ExportModel(name) => {
+                return cosmic::task::future(async move {
+                    let dialog = file_chooser::save::Dialog::new()
+                        .title(fl!("export-model-title"))
+                        .file_name(format!("{name}.cvc"));
+                    let path = dialog
+                        .save_file()
+                        .await
+                        .ok()
+                        .and_then(|response| response.url().and_then(|url| url.to_file_path().ok()))
+                        .map(|path| path.to_string_lossy().into_owned());
+                    Message::ExportTo(name, path)
+                });
+            }
+            Message::ExportTo(_, None) => {}
+            Message::ExportTo(name, Some(path)) => {
+                self.send("export_model", json!({"name": name, "path": path}));
+            }
             Message::AskDeleteModel(name) => self.confirm_delete = Some(name),
             Message::CancelDeleteModel => self.confirm_delete = None,
             Message::AskRenameModel(name) => {
@@ -716,6 +762,22 @@ impl cosmic::Application for App {
     }
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
+        if self.confirm_hushwire {
+            return Some(
+                widget::dialog()
+                    .title(fl!("hushwire-notice-title"))
+                    .body(fl!("hushwire-notice-body"))
+                    .primary_action(
+                        widget::button::suggested(fl!("hushwire-notice-accept"))
+                            .on_press(Message::AcceptHushwireDownload),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel"))
+                            .on_press(Message::CancelHushwireDownload),
+                    )
+                    .into(),
+            );
+        }
         if let Some((name, new_name)) = &self.renaming {
             let trimmed = new_name.trim();
             let can_rename = !trimmed.is_empty() && trimmed != name;
@@ -881,6 +943,8 @@ impl App {
                         | "pitch_analyzed"
                         | "model_deleted"
                         | "model_renamed"
+                        | "model_exported"
+                        | "hushwire_downloaded"
                         | "index_added"
                 ) {
                     return self.toast(self.status.clone());
@@ -950,10 +1014,11 @@ impl App {
     }
 }
 
-/// A voice description, as written when a voice is built (`.nextvc.json` is the earlier spelling).
+/// A voice: a .cvc file, as written when a voice is built, or an installed voice's description
+/// (`.nextvc.json` is the earlier spelling).
 fn is_model_file(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.ends_with(".causalvc.json") || lower.ends_with(".nextvc.json")
+    lower.ends_with(".cvc") || lower.ends_with(".causalvc.json") || lower.ends_with(".nextvc.json")
 }
 
 fn pick(target: PickTarget, title: String) -> Task<Message> {
@@ -1010,6 +1075,8 @@ pub fn status_text(code: &str, data: &Value) -> String {
                 fl!("status-index-added", name = text("name"), index = text("index"))
             }
         }
+        "model_exported" => fl!("status-model-exported", name = text("name"), path = text("path")),
+        "hushwire_downloaded" => fl!("status-hushwire-downloaded"),
         "model_renamed" => fl!(
             "status-model-renamed",
             name = text("name"),
@@ -1068,6 +1135,11 @@ pub fn error_text(error: &ErrorInfo) -> String {
         "index_copy_failed" => fl!("error-index-copy-failed", detail = error.message.clone()),
         "bad_model_name" => fl!("error-bad-model-name"),
         "rename_failed" => fl!("error-rename-failed", detail = error.message.clone()),
+        "export_failed" => fl!("error-export-failed", detail = error.message.clone()),
+        "hushwire_download_failed" => {
+            fl!("error-hushwire-download-failed", detail = error.message.clone())
+        }
+        "hushwire_unavailable" => fl!("error-hushwire-unavailable"),
         "pitch_analysis_busy" => fl!("error-pitch-analysis-busy"),
         "pitch_analysis_failed" => {
             fl!("error-pitch-analysis-failed", detail = error.message.clone())
@@ -1084,6 +1156,7 @@ mod tests {
     fn model_files_are_told_apart_from_voice_clips() {
         assert!(is_model_file("/a/Voice-10000s.CausalVC.json"));
         assert!(is_model_file("/a/Voice.nextvc.json"));
+        assert!(is_model_file("/a/Voice-10000s.CVC"));
         assert!(!is_model_file("/a/Voice.pth"));
         assert!(!is_model_file("/a/dataset.wav"));
     }

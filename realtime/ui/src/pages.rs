@@ -5,7 +5,7 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, settings};
 
 use crate::app::{
-    App, Connection, LOUDNESS_TARGETS, Function, INPUT_SOURCES, Message, Num, Page,
+    App, Connection, DENOISE_METHODS, LOUDNESS_TARGETS, Function, INPUT_SOURCES, Message, Num, Page,
     RECORDING_MODES, Toggle, VALUE_INPUT_ID,
 };
 use crate::engine::State;
@@ -512,18 +512,49 @@ fn performance_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> 
             .title(fl!("section-noise"))
             .add(
                 settings::item::builder(fl!("input-denoise"))
-                    .description(if state.rnnoise {
-                        fl!("input-denoise-rnnoise")
-                    } else {
-                        fl!("input-denoise-spectral")
-                    })
+                    .description(fl!("input-denoise-detail"))
                     .toggler(settings_.input_denoise, |value| {
                         Message::Toggle(Toggle::InputDenoise, value)
                     }),
             )
+            .add(denoise_method_item(app, state))
             .into(),
         reset_row(fl!("reset-performance"), "performance"),
     ])
+}
+
+/// Which denoiser, and what it needs: Hushwire's model is downloaded once, after the notice.
+fn denoise_method_item<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
+    let space = cosmic::theme::spacing();
+    let method = state.settings.input_denoise_method.as_str();
+    let index = DENOISE_METHODS.iter().position(|m| *m == method);
+    let (description, download) = match (method, state.hushwire.as_str()) {
+        ("rnnoise", _) if state.rnnoise => (fl!("denoise-rnnoise-ready"), false),
+        ("rnnoise", _) => (fl!("input-denoise-spectral"), false),
+        (_, "ready") => (fl!("denoise-hushwire-ready"), false),
+        (_, "downloading") => (fl!("denoise-hushwire-downloading"), false),
+        (_, "failed") => (fl!("denoise-hushwire-failed"), true),
+        (_, "unavailable") => (fl!("denoise-hushwire-unavailable"), false),
+        _ => (fl!("denoise-hushwire-needs-download"), true),
+    };
+    let mut control = widget::row::with_capacity(2)
+        .spacing(space.space_xs)
+        .align_y(Alignment::Center);
+    if download {
+        control = control.push(
+            widget::button::suggested(fl!("denoise-hushwire-download"))
+                .on_press(Message::AskHushwireDownload),
+        );
+    }
+    control = control.push(widget::dropdown(
+        &app.denoise_method_labels,
+        index,
+        Message::SelectDenoiseMethod,
+    ));
+    settings::item::builder(fl!("denoise-method"))
+        .description(description)
+        .control(control)
+        .into()
 }
 
 // ---------------------------------------------------------------------------

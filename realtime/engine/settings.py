@@ -17,6 +17,8 @@ INPUT_SOURCES = ("microphone", "file")
 RECORDING_MODES = ("separate", "mix", "stereo")
 #: Output-level indicator targets (tools/loudness.py TARGETS_LUFS).
 LOUDNESS_TARGETS = ("voice_chat", "streaming")
+#: Input noise reduction: Hushwire (Amazon Voice Focus, ~53 ms) or RNNoise (20 ms).
+INPUT_DENOISE_METHODS = ("hushwire", "rnnoise")
 
 MODEL_SETTINGS_FILENAME = "realtime_settings.json"
 # Protocol name -> key stored in each model's realtime_settings.json.
@@ -57,6 +59,7 @@ class EngineSettings:
     #: Seconds of audio converted at a time; a multiple of 20 ms. Delay is the model's 60 ms plus one block.
     block_time: float = 0.04
     input_denoise: bool = False
+    input_denoise_method: str = "hushwire"
     #: What the output-level indicator aims for: voice chat (-21 LUFS) or
     #: streaming (-16 LUFS).
     loudness_target: str = "voice_chat"
@@ -100,6 +103,7 @@ SETTING_TYPES = {field.name: field.type for field in fields(EngineSettings)}
 PERFORMANCE_DEFAULT_KEYS = (
     "block_time",
     "input_denoise",
+    "input_denoise_method",
 )
 
 
@@ -143,6 +147,7 @@ def coerce_setting(key, value):
         "input_source": INPUT_SOURCES,
         "recording_mode": RECORDING_MODES,
         "loudness_target": LOUDNESS_TARGETS,
+        "input_denoise_method": INPUT_DENOISE_METHODS,
     }.get(key)
     if allowed and value not in allowed:
         raise SettingError(key, f"{key} must be one of {', '.join(allowed)}")

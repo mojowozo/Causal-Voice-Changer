@@ -27,7 +27,7 @@ import sounddevice as sd
 import torch
 
 from engine.devices import DeviceCatalog
-from engine.gpu import Device, cuda_indices, default_index
+from engine.gpu import Device, backend_label, cuda_indices, default_index, gpu_name
 from engine.settings import (
     DEFAULT_RECORDING_FOLDER,
     MODEL_SETTING_KEYS,
@@ -45,10 +45,16 @@ from engine.settings import (
 from engine.version import APP_TITLE, BUILD_LABEL
 from infer import causalvc_backend
 from tools.audio_fifo import AudioFrameFifo, enqueue_latest
-from tools.audio_routing import is_native_api, scatter_mono, select_channels
+from tools.audio_routing import (
+    check_options,
+    is_native_api,
+    scatter_mono,
+    select_channels,
+    stream_options,
+)
 from tools.file_audio_source import FileAudioSource
-from tools.model_import import ModelImportError, import_models
-from tools import rnnoise
+from tools.model_import import ModelImportError, import_models, install_loose, voice_files
+from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
 from tools.loudness import TARGETS_LUFS, LoudnessMeter
 from tools.model_registry import (
@@ -163,6 +169,14 @@ class RealtimeEngine:
         self.logged_underruns = 0
         self.underrun_logged_at = 0.0
         self.output_flowing = False
+        #: The input denoiser in use (RNNoise or Hushwire), or None; read by the audio callback.
+        self.active_denoiser = None
+        self.active_denoise_delay = 0.0
+        #: Denoisers built for the current stream, by method (switching back keeps their state).
+        self.denoisers = {}
+        self.denoise_lock = threading.RLock()
+        #: Hushwire's model download: None, "downloading" or "failed".
+        self.hushwire_download = None
         self.recorder = WavRecorder()
         self.file_audio_source = None
         self.file_input_path = ""
@@ -170,7 +184,7 @@ class RealtimeEngine:
         self.pending_model_settings_name = None
         self.model_settings_save_due = 0.0
         self.ffmpeg_path = shutil.which("ffmpeg") or os.path.join(
-            PROJECT_ROOT, "tools", "ffmpeg", "ffmpeg"
+            PROJECT_ROOT, "tools", "ffmpeg", "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
         )
         os.makedirs(MODELS_ROOT, exist_ok=True)
         self.devices = DeviceCatalog(sd)
@@ -212,6 +226,7 @@ class RealtimeEngine:
             },
             "ffmpeg": os.path.isfile(self.ffmpeg_path),
             "rnnoise": rnnoise.available(),
+            "hushwire": self.hushwire_status(),
         }
 
     def emit_state(self):
@@ -224,6 +239,11 @@ class RealtimeEngine:
     # Models, GPUs, devices
     # ------------------------------------------------------------------
     def refresh_models(self):
+        installed, problems = install_loose(MODELS_ROOT)
+        if installed:
+            printt("Installed voice file(s) from the models folder: %s", ", ".join(installed))
+        for problem in problems:
+            printt("Skipped a voice file in the models folder: %s", problem)
         self.models = discover_models(MODELS_ROOT)
         self.models_by_name = {model.name: model for model in self.models}
 
@@ -237,7 +257,7 @@ class RealtimeEngine:
             self.gpu_options.append(
                 {
                     "id": str(index),
-                    "label": f"GPU {index} — {torch.cuda.get_device_name(index)}",
+                    "label": f"GPU {index} — {gpu_name(index)}",
                 }
             )
 
@@ -274,7 +294,7 @@ class RealtimeEngine:
         self.emit_state()
 
     def import_model(self, paths):
-        """Copy dropped voice files (.causalvc.json) into models/ and select the first."""
+        """Install dropped voice files (.cvc, or older .causalvc.json) into models/ and select the first."""
         if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
             raise EngineError("bad_request", "paths must be a list of strings")
         self.status("importing_model")
@@ -288,6 +308,24 @@ class RealtimeEngine:
         self.status("model_imported", names=names)
         self.emit_state()
         return names
+
+    def export_model(self, name, path):
+        """Pack a model folder into one .cvc file at ``path``, with its saved settings, to share."""
+        model = self.models_by_name.get(name)
+        if model is None:
+            raise EngineError("no_model", f"No model named {name}.")
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise EngineError("bad_request", "path must be an absolute file path")
+        if not path.lower().endswith(voice_files.CVC_SUFFIX):
+            path += voice_files.CVC_SUFFIX
+        self.flush_model_settings_save(force=True)  # the settings file is packed too
+        try:
+            written = voice_files.folder_to_cvc(model.directory, path, settings=True)
+        except (OSError, ValueError, KeyError) as error:
+            raise EngineError("export_failed", f"Could not write {path}: {error}") from error
+        printt("Exported %s to %s", name, written)
+        self.status("model_exported", name=name, path=str(written))
+        return str(written)
 
     def delete_model(self, name):
         """Move a model's folder to the Trash; another model is selected if needed."""
@@ -406,8 +444,8 @@ class RealtimeEngine:
         if "input_gain_db" in changed and getattr(self, "loudness", None) is not None:
             # The model follows the input level: earlier readings no longer apply.
             self.loudness.reset()
-        if "input_denoise" in changed and self.running:
-            self.delay_time += (1 if self.settings.input_denoise else -1) * self.input_denoise_delay()
+        if {"input_denoise", "input_denoise_method"} & set(changed):
+            self.refresh_denoiser()
 
     def reset_settings(self, group):
         defaults = EngineSettings()
@@ -450,9 +488,9 @@ class RealtimeEngine:
         printt("=== Startup diagnostics ===")
         printt("FFmpeg: %s (found=%s)", self.ffmpeg_path, os.path.isfile(self.ffmpeg_path))
         printt("Models discovered: %s", len(self.models))
-        printt("CUDA available: %s", torch.cuda.is_available())
+        printt("GPU backend: %s (available=%s)", backend_label(), torch.cuda.is_available())
         if torch.cuda.is_available():
-            printt("CUDA devices: %s", torch.cuda.device_count())
+            printt("GPUs: %s", ", ".join(gpu_name(index) for index in cuda_indices()))
             printt("Selected GPU: %s", self.settings.gpu)
         try:
             os.makedirs(self.settings.recording_folder, exist_ok=True)
@@ -589,8 +627,7 @@ class RealtimeEngine:
                 + self.settings.block_time
                 + (self.voice.delay_seconds if self.function == "vc" else 0.0)
             )
-        if self.settings.input_denoise:
-            self.delay_time += self.input_denoise_delay()
+        self.refresh_denoiser()  # prepare_inference cleared the last stream's denoiser
         save_settings(self.settings)
         self.status(
             "passthrough_started" if self.function == "im" else "conversion_started"
@@ -700,9 +737,10 @@ class RealtimeEngine:
         self.input_wav = torch.zeros(2 * self.block_frame, device=self.config.device, dtype=torch.float32)
         self.input_wav_denoise = self.input_wav.clone()
         self.rms_buffer = np.zeros(4 * self.zc, dtype="float32")
-        # Input noise reduction is RNNoise, when the library is installed.
-        self.rnnoise = rnnoise.RNNoise() if rnnoise.available() else None
-        printt("Input noise reduction: %s", "RNNoise" if self.rnnoise else "unavailable (RNNoise is not installed)")
+        # Input denoisers are built on demand for this stream (refresh_denoiser).
+        self.active_denoiser = None
+        self.active_denoise_delay = 0.0
+        self.denoisers = {}
         # Per-stream counters (see __init__).
         self.trimmed_frames = 0
         self.output_underruns = 0
@@ -733,6 +771,7 @@ class RealtimeEngine:
             channels=self.input_channels,
             device=sd.default.device[0],
             dtype="float32",
+            **stream_options(sd, self.input_api),
         )
         self.input_stream.start()
         self.stream = self.output_stream
@@ -765,6 +804,7 @@ class RealtimeEngine:
             channels=self.output_channels,
             device=sd.default.device[1],
             dtype="float32",
+            **stream_options(sd, self.output_api),
         )
         self.output_stream.start()
 
@@ -793,6 +833,7 @@ class RealtimeEngine:
             channels=self.input_channels,
             device=sd.default.device[0],
             dtype="float32",
+            **stream_options(sd, self.input_api),
         )
         self.native_worker.start()
         self.input_stream.start()
@@ -862,11 +903,13 @@ class RealtimeEngine:
             self.monitor_channels = self.stream_channels(
                 self.monitor_device_index, "output", self.monitor_selectors
             )
+            monitor_options = stream_options(sd, self.monitor_api)
             sd.check_output_settings(
                 device=self.monitor_device_index,
                 channels=self.monitor_channels,
                 dtype="float32",
                 samplerate=self.samplerate,
+                **check_options(monitor_options),
             )
             self.monitor_queue = AudioFrameFifo(1, max_frames=self.block_frame * 4)
             self.monitor_stream = sd.OutputStream(
@@ -876,6 +919,7 @@ class RealtimeEngine:
                 samplerate=self.samplerate,
                 channels=self.monitor_channels,
                 dtype="float32",
+                **monitor_options,
             )
             self.monitor_stream.start()
         except Exception as error:
@@ -944,19 +988,97 @@ class RealtimeEngine:
         if meter_now - self.last_input_meter_update >= METER_INTERVAL_SECONDS:
             self.latest_input_meter = peak_meter(indata)
             self.last_input_meter_update = meter_now
-        self.ingest_block(indata)
-        denoised = settings.input_denoise and self.rnnoise is not None
+        denoised = self.ingest_block(indata)
         block = (self.input_wav_denoise if denoised else self.input_wav)[-self.block_frame :]
         # Every block is converted, silence included: the model's own state has to keep running.
         output = self.voice.process(block) if self.function == "vc" else block.clone()
         return self.finish_block(output, start_time)
 
-    def input_denoise_delay(self):
-        """Latency the input denoiser adds, in seconds."""
-        return RNNOISE_DELAY_SECONDS if getattr(self, "rnnoise", None) is not None else 0.0
+    # ------------------------------------------------------------------
+    # Input noise reduction
+
+    def hushwire_status(self):
+        """For the UI: "ready", "needs_download", "downloading", "failed" or "unavailable"."""
+        if not hushwire.available():
+            return "unavailable"
+        if hushwire.model_ready():
+            return "ready"
+        return self.hushwire_download or "needs_download"
+
+    def build_denoiser(self, method):
+        """A fresh denoiser and its delay in seconds, or None when it can't run here."""
+        if method == "rnnoise":
+            if not rnnoise.available():
+                return None
+            return rnnoise.RNNoise(), RNNOISE_DELAY_SECONDS
+        if method == "hushwire" and hushwire.available() and hushwire.model_ready():
+            try:
+                denoiser = hushwire.Hushwire()
+            except Exception as error:  # a damaged model file, or the runtime refusing it
+                printt("Hushwire could not start: %s", error)
+                return None
+            return denoiser, denoiser.delay_seconds(self.block_frame)
+        return None
+
+    def refresh_denoiser(self):
+        """Use the input denoiser the settings ask for, keeping the reported delay in step."""
+        with self.denoise_lock:
+            if not self.running or getattr(self, "block_frame", None) is None:
+                return
+            method = self.settings.input_denoise_method
+            chosen = None
+            if self.settings.input_denoise:
+                if method not in self.denoisers:
+                    self.denoisers[method] = self.build_denoiser(method)
+                chosen = self.denoisers[method]
+            denoiser, delay = chosen or (None, 0.0)
+            if denoiser is self.active_denoiser:
+                return
+            self.delay_time += delay - self.active_denoise_delay
+            self.active_denoiser, self.active_denoise_delay = denoiser, delay
+            names = {"rnnoise": "RNNoise", "hushwire": "Hushwire (Amazon Voice Focus)"}
+            if denoiser is not None:
+                printt("Input noise reduction: %s, %d ms", names[method], round(delay * 1000))
+            elif self.settings.input_denoise:
+                printt("Input noise reduction: %s is not available, so the input is not denoised", names[method])
+            else:
+                printt("Input noise reduction: off")
+
+    def download_hushwire(self):
+        """Accept Hushwire's download notice and fetch its model in the background."""
+        if not hushwire.available():
+            raise EngineError("hushwire_unavailable", "wasmtime is not installed; reinstall the project.")
+        if hushwire.model_ready() or self.hushwire_download == "downloading":
+            return
+        hushwire.accept_download()
+        self.hushwire_download = "downloading"
+        self.emit_state()
+
+        def fetch():
+            try:
+                path = hushwire.ensure_model()
+            except Exception as error:
+                self.hushwire_download = "failed"
+                printt("Hushwire model download failed: %s", error)
+                self.emit("error", {"code": "hushwire_download_failed", "message": str(error)})
+            else:
+                self.hushwire_download = None
+                printt("Hushwire model downloaded: %s", path)
+                self.status("hushwire_downloaded")
+                with self.denoise_lock:
+                    # A denoiser that was missing for want of the model is built now.
+                    if self.denoisers.get("hushwire", False) is None:
+                        del self.denoisers["hushwire"]
+                    self.refresh_denoiser()
+            self.emit_state()
+
+        threading.Thread(target=fetch, name="hushwire-download", daemon=True).start()
 
     def ingest_block(self, indata):
-        """Write one input block into the buffers: noise gate, then denoise."""
+        """Write one input block into the buffers: noise gate, then denoise.
+
+        Returns whether the denoised buffer holds this block.
+        """
         settings = self.settings
         if settings.noise_gate_db > -60:
             indata = np.append(self.rms_buffer, indata)
@@ -974,11 +1096,14 @@ class RealtimeEngine:
             indata = indata[self.zc // 2 :]
         self.input_wav[: -self.block_frame] = self.input_wav[self.block_frame :].clone()
         self.input_wav[-indata.shape[0] :] = torch.from_numpy(indata).to(self.config.device)
-        if settings.input_denoise and self.rnnoise is not None:
-            # RNNoise keeps a recurrent state, so it sees each block once, in order.
-            self.input_wav_denoise[: -self.block_frame] = self.input_wav_denoise[self.block_frame :].clone()
-            denoised = self.rnnoise.process(indata)
-            self.input_wav_denoise[-self.block_frame :] = torch.from_numpy(denoised).to(self.config.device)
+        denoiser = self.active_denoiser
+        if denoiser is None:
+            return False
+        # Both denoisers keep a recurrent state, so they see each block once, in order.
+        self.input_wav_denoise[: -self.block_frame] = self.input_wav_denoise[self.block_frame :].clone()
+        denoised = denoiser.process(indata)
+        self.input_wav_denoise[-self.block_frame :] = torch.from_numpy(denoised).to(self.config.device)
+        return True
 
     def finish_block(self, output, start_time):
         """Apply output gain and file volume, update meters, queue the block."""
@@ -1070,21 +1195,27 @@ class RealtimeEngine:
         output_info = sd.query_devices(device=sd.default.device[1])
 
         candidates = []
+        # The model's rate first: any other rate fails in prepare_inference
+        # anyway, and WASAPI converts to it when the mixer runs at another.
         for rate in (
+            *preferred_rates,
             *(() if self.file_source_active else (input_info["default_samplerate"],)),
             output_info["default_samplerate"],
             48000,
             44100,
-            *preferred_rates,
             40000,
         ):
             rate = int(round(rate))
             if rate > 0 and rate not in candidates:
                 candidates.append(rate)
 
-        checks = [(sd.check_output_settings, sd.default.device[1], self.output_channels)]
+        checks = [
+            (sd.check_output_settings, sd.default.device[1], self.output_channels, self.output_api)
+        ]
         if not self.file_source_active:
-            checks.append((sd.check_input_settings, sd.default.device[0], self.input_channels))
+            checks.append(
+                (sd.check_input_settings, sd.default.device[0], self.input_channels, self.input_api)
+            )
         if self.monitor_device_index is not None:
             checks.append(
                 (
@@ -1093,14 +1224,21 @@ class RealtimeEngine:
                     self.stream_channels(
                         self.monitor_device_index, "output", self.monitor_selectors
                     ),
+                    self.monitor_api,
                 )
             )
 
         errors = []
         for rate in candidates:
             try:
-                for checker, device, channels in checks:
-                    checker(device=device, channels=channels, dtype="float32", samplerate=rate)
+                for checker, device, channels, api in checks:
+                    checker(
+                        device=device,
+                        channels=channels,
+                        dtype="float32",
+                        samplerate=rate,
+                        **check_options(stream_options(sd, api)),
+                    )
             except sd.PortAudioError as error:
                 errors.append(f"{rate} Hz: {error}")
                 continue

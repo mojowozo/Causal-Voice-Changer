@@ -6,6 +6,7 @@ without a context window or splice.  Skipped when the voice's project
 or a CUDA device is not available.
 """
 
+import threading
 import json
 import os
 import unittest
@@ -49,6 +50,8 @@ def causalvc_engine(model, block_time, device):
     engine.last_output_meter_update = 0.0
     engine.emit = lambda event, data: None
     engine.load_model(model)
+    engine.denoise_lock = threading.RLock()
+    engine.hushwire_download = None
     engine.prepare_inference(RATE)
     return engine
 

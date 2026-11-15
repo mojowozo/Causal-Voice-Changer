@@ -1,15 +1,25 @@
 # CausalVC Realtime
 
-The live voice changer for CausalVC voices: microphone in, converted voice out,
-with a COSMIC desktop front end. Linux only for now.
+The live voice changer for CausalVC voices: microphone in, converted voice out.
+Its front end is native on each system: COSMIC (Rust) on Linux, WinUI 3 with
+Mica on Windows. Both drive the same Python engine.
 
-```bash
-./run.sh
-```
+- **Linux:** `../run-realtime.sh`. The front end is built with `cargo` on first
+  launch. `scripts/install-desktop-entry.sh` adds it to the application launcher.
+- **Windows:** `..\run-realtime.bat`. It installs the Python packages (PyTorch
+  for NVIDIA or AMD, picked by `../scripts/gpu-extra.ps1`; set `CAUSALVC_GPU=cuda`
+  or `rocm` to choose), then builds the front end with the .NET 10 SDK on first
+  launch (`winget install Microsoft.DotNet.SDK.10`). Set `CAUSALVC_REBUILD=1` to
+  build it again after updating. Without the SDK, a smaller window opens instead.
 
-It uses the Python environment of the repository above it, so run the
-repository's `run.sh` once first. The front end is built with `cargo` on first
-launch. `scripts/install-desktop-entry.sh` adds it to the application launcher.
+Both use the Python environment of the repository above this folder (`.venv`
+on Linux, `.venv-win` on Windows).
+
+### AMD graphics on Windows
+
+AMD's ROCm build of PyTorch (ROCm 7.2.1, torch 2.9.1) runs on Radeon RX 7000
+and 9000, Radeon PRO W7000, and Ryzen AI Max and AI 300 graphics, with AMD
+Software 26.2.2 or newer. Older Radeons fall back to the processor.
 
 ## Using it
 
@@ -18,8 +28,13 @@ launch. `scripts/install-desktop-entry.sh` adds it to the application launcher.
 - **Pitch**: semitones to shift your voice by, to sit in the target's range.
 - **Chunk**: how much audio is converted at a time, in steps of 20 ms. Delay is
   the model's fixed 60 ms plus one chunk, plus the sound card's buffers.
-- **Input and output gain, noise gate, input noise reduction** (RNNoise, when
-  installed), **monitoring, recording, and file input** work as in any such app.
+- **Input noise reduction**: [Hushwire](https://github.com/mojowozo/Hushwire)
+  (Amazon Voice Focus; the default, strongest, adds about 55 ms) or RNNoise
+  (lighter, adds 20 ms). Hushwire's model is Amazon's and isn't included: the
+  app asks before downloading it once from Amazon, and shares it with the
+  Hushwire plugin if that's installed.
+- **Input and output gain, noise gate, monitoring, recording, and file input**
+  work as in any such app.
 
 There is no index, pitch method, protect, or context setting: none apply to
 this model.
@@ -28,10 +43,11 @@ this model.
 
 | Folder | What it is |
 |---|---|
-| `engine/` | The audio engine: devices, routing, settings, recording; one process, driven over a Unix socket ([protocol](docs/engine-protocol.md)) |
+| `engine/` | The audio engine: devices, routing, settings, recording; one process, driven over a local socket ([protocol](docs/engine-protocol.md)) |
 | `infer/causalvc_backend.py` | Loads a voice and converts blocks, through the `causalvc` package |
-| `tools/` | Audio helpers: FIFO, routing, limiter, loudness meter, recorder, file source, RNNoise |
-| `ui/` | The COSMIC front end (Rust) |
+| `tools/` | Audio helpers: FIFO, routing, limiter, loudness meter, recorder, file source, RNNoise, Hushwire |
+| `ui/` | The COSMIC front end (Rust), for Linux |
+| `winui/` | The WinUI 3 front end (C#), for Windows: the same pages, on Mica |
 | `tests/` | `../.venv/bin/python -m unittest discover -s tests` |
 
 See [NOTICE.md](NOTICE.md) for where this code comes from.

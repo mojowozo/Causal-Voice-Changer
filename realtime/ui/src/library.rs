@@ -216,12 +216,18 @@ fn model_row<'a>(
     } else {
         fl!("library-rename")
     };
-    let controls = widget::row::with_capacity(5)
+    let controls = widget::row::with_capacity(6)
         .push(use_button)
         .push(widget::tooltip(
             widget::button::icon(widget::icon::from_name("document-edit-symbolic"))
                 .on_press_maybe((!in_use).then(|| Message::AskRenameModel(model.name.clone()))),
             widget::text::caption(rename_tip),
+            widget::tooltip::Position::Top,
+        ))
+        .push(widget::tooltip(
+            widget::button::icon(widget::icon::from_name("document-save-as-symbolic"))
+                .on_press(Message::ExportModel(model.name.clone())),
+            widget::text::caption(fl!("library-export")),
             widget::tooltip::Position::Top,
         ))
         .push(widget::tooltip(

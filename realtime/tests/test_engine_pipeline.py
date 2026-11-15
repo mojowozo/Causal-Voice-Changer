@@ -4,6 +4,7 @@ Passthrough skips the model, so the output must be the input, block for
 block, with no added delay.  This checks the buffer handling end to end.
 """
 
+import threading
 import unittest
 from types import SimpleNamespace
 
@@ -33,6 +34,8 @@ def passthrough_engine(block_time):
     engine.last_input_meter_update = 0.0
     engine.last_output_meter_update = 0.0
     engine.emit = lambda event, data: None
+    engine.denoise_lock = threading.RLock()
+    engine.hushwire_download = None
     engine.prepare_inference(RATE)
     return engine
 

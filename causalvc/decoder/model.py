@@ -159,6 +159,7 @@ class Decoder(nn.Module):
         mel_cond: bool = False,
         exc: str = "full",
         smooth_in: str = "",
+        tone: int = 0,
     ):
         super().__init__()
         assert math.prod(rates) == FRAME
@@ -166,6 +167,11 @@ class Decoder(nn.Module):
         self.content = nn.Linear(content_dim, dim)
         self.pitch = nn.Embedding(256, dim)
         self.loud = nn.Linear(1, dim)
+        # Optional coarse description of the input's tone per frame (see `tone` below): what content
+        # features say least about in non-speech sounds such as laughter. Starts as a no-op.
+        self.tone = nn.Linear(tone, dim) if tone else None
+        if tone:
+            nn.init.zeros_(self.tone.weight), nn.init.zeros_(self.tone.bias)
         # Diagnostic only: condition on the target's own mel spectrogram (copy-synthesis ceiling).
         self.mel = nn.Linear(128, dim) if mel_cond else None
         if mel_cond:
@@ -206,7 +212,8 @@ class Decoder(nn.Module):
         b = ((mel - lo) / (hi - lo) * 254 + 1).round().clamp(1, 255).long()
         return torch.where(f0 > 0, b, torch.zeros_like(b))
 
-    def features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, spk: torch.Tensor, mel: torch.Tensor | None = None):
+    def features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, spk: torch.Tensor, mel: torch.Tensor | None = None,
+                 tone: torch.Tensor | None = None):
         """content [B, T/2, C] at 50 Hz; f0 (Hz, 0 unvoiced) and loud (dB) [B, T]
         at 100 Hz; spk [B]. Returns hidden [B, D, T] and speaker vector."""
         g = self.speaker(spk)
@@ -227,6 +234,8 @@ class Decoder(nn.Module):
         x = x + pe + self.loud((loud[:, :t, None] + 40.0) / 20.0)
         if self.mel is not None:
             x = x + self.mel(mel[:, :t])
+        if self.tone is not None and tone is not None:
+            x = x + self.tone(tone[:, :t] / 10.0)
         x = x.transpose(1, 2)
         for block in self.blocks:
             x = block(x, g)
@@ -269,6 +278,20 @@ def loudness(wav: torch.Tensor) -> torch.Tensor:
     n = wav.shape[1] // FRAME
     frames = wav[:, : n * FRAME].reshape(wav.shape[0], n, FRAME)
     return 20 * torch.log10(frames.pow(2).mean(-1).sqrt() + 1e-5)
+
+
+TONE_BANDS = ((2000, 8000, 250, 2000), (700, 2000, 250, 700))  # brightness, vowel openness
+
+
+def tone(wav: torch.Tensor) -> torch.Tensor:
+    """[B, N] at 48 kHz -> [B, N // FRAME, 2] in dB: brightness (2-8 kHz against 0.25-2 kHz) and
+    openness (0.7-2 kHz against 0.25-0.7 kHz) of each 10 ms frame, from that frame and the one before."""
+    n = wav.shape[1] // FRAME
+    x = F.pad(wav[:, : n * FRAME], (FRAME, 0)).unfold(1, 2 * FRAME, FRAME)  # [B, n, 960]
+    S = torch.fft.rfft(x * torch.hann_window(2 * FRAME, device=wav.device)).abs().pow(2)
+    f = torch.arange(S.shape[-1], device=wav.device) * SR / (2 * FRAME)
+    e = lambda lo, hi: S[..., (f >= lo) & (f < hi)].sum(-1) + 1e-4  # noqa: E731  (the floor keeps silence near 0 dB)
+    return torch.stack([10 * torch.log10(e(a, b) / e(c, d)) for a, b, c, d in TONE_BANDS], dim=-1)
 
 
 class CausalMel(nn.Module):

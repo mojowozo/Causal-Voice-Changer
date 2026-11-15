@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness
+from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
 from causalvc.encoder.model import StreamingEncoder
 from causalvc.pitch import Rmvpe
 
@@ -73,7 +73,7 @@ class CausalVC:
             content = (1 - self.index) * content + self.index * near[None]
         spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
         f0 = f0 * 2.0 ** (semitones / 12.0)
-        h, g = self.dec.features(content, f0, loud, spk)
+        h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None)
         if self.hsmooth:
             k = self.hsmooth
             h = torch.nn.functional.avg_pool1d(torch.nn.functional.pad(h, (k, k), mode="replicate"), 2 * k + 1, 1)

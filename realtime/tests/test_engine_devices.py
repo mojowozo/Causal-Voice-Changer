@@ -96,5 +96,58 @@ class DeviceCatalogTest(unittest.TestCase):
         self.assertEqual(outputs["[JACK] GB207 Pro — 3 / 4"]["api"], "JACK")
 
 
+WINDOWS_HOSTAPIS = [
+    {"name": "MME", "devices": [0, 1], "default_input_device": 0, "default_output_device": 1},
+    {"name": "Windows WASAPI", "devices": [2, 3], "default_input_device": 2, "default_output_device": 3},
+    {"name": "ASIO", "devices": [4], "default_input_device": 4, "default_output_device": 4},
+]
+WINDOWS_DEVICES = [
+    {"name": "Microphone (Wave XLR)", "max_input_channels": 2, "max_output_channels": 0},
+    {"name": "Speakers (Realtek)", "max_input_channels": 0, "max_output_channels": 2},
+    {"name": "Microphone (Wave XLR)", "max_input_channels": 1, "max_output_channels": 0},
+    {"name": "Speakers (Realtek)", "max_input_channels": 0, "max_output_channels": 2},
+    {"name": "Focusrite USB ASIO", "max_input_channels": 2, "max_output_channels": 4},
+]
+
+
+class WindowsSoundDevice(FakeSoundDevice):
+    def __init__(self):
+        self.default = SimpleNamespace(device=(0, 1))  # PortAudio's default is MME
+
+    def query_devices(self):
+        return WINDOWS_DEVICES
+
+    def query_hostapis(self):
+        return WINDOWS_HOSTAPIS
+
+
+class WindowsDevicesTest(unittest.TestCase):
+    def test_offers_asio_then_wasapi_and_hides_mme(self):
+        inputs, outputs = build_endpoints(WINDOWS_DEVICES, WINDOWS_HOSTAPIS)
+
+        self.assertEqual(
+            list(inputs), ["[ASIO] Focusrite USB ASIO", "[WASAPI] Microphone (Wave XLR)"]
+        )
+        self.assertEqual(
+            list(outputs),
+            [
+                "[ASIO] Focusrite USB ASIO — 1 / 2",
+                "[ASIO] Focusrite USB ASIO — 3 / 4",
+                "[WASAPI] Speakers (Realtek)",
+            ],
+        )
+        self.assertEqual(outputs["[ASIO] Focusrite USB ASIO — 3 / 4"].selectors, [2, 3])
+        self.assertEqual(outputs["[WASAPI] Speakers (Realtek)"].selectors, [])
+        shown_all, _ = build_endpoints(WINDOWS_DEVICES, WINDOWS_HOSTAPIS, show_all=True)
+        self.assertIn("[MME] Microphone (Wave XLR)", shown_all)
+
+    def test_defaults_come_from_wasapi_not_mme(self):
+        catalog = DeviceCatalog(WindowsSoundDevice())
+        catalog.refresh()
+
+        self.assertEqual(catalog.resolve("", "input"), "[WASAPI] Microphone (Wave XLR)")
+        self.assertEqual(catalog.resolve("[WASAPI] Unplugged", "output"), "[WASAPI] Speakers (Realtek)")
+
+
 if __name__ == "__main__":
     unittest.main()

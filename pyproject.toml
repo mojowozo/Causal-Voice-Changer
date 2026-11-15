@@ -5,16 +5,33 @@ description = "Causal streaming voice changer (causalvc) and its evaluation harn
 requires-python = ">=3.12,<3.13"
 # What building and running a voice needs. The harness and its metric models are the "bench" extra.
 dependencies = [
-    "torch",
-    "torchaudio",
+    # On Windows, torch comes from the "cuda" (NVIDIA) or "rocm" (AMD) extra instead; see below.
+    "torch; sys_platform != 'win32'",
+    "torchaudio; sys_platform != 'win32'",
     "numpy",
     "soundfile",
     "librosa",
     "sounddevice",
     "pyrnnoise",
+    # Runs Hushwire's noise-suppression model (Amazon Voice Focus, a WebAssembly module).
+    "wasmtime",
 ]
 
 [project.optional-dependencies]
+# Windows GPU builds of PyTorch; run-realtime.bat and run-training.bat pick one by GPU vendor.
+cuda = [
+    "torch; sys_platform == 'win32'",
+    "torchaudio; sys_platform == 'win32'",
+]
+# AMD's own Windows build (ROCm 7.2.1): Radeon RX 7000/9000 and Ryzen AI Max/300, driver 26.2.2 or newer.
+rocm = [
+    "torch==2.9.1+rocm7.2.1; sys_platform == 'win32'",
+    "torchaudio==2.9.1+rocm7.2.1; sys_platform == 'win32'",
+    # The ROCm runtime torch loads; listed here so it is taken from AMD's index too.
+    "rocm[libraries]==7.2.1; sys_platform == 'win32'",
+    "rocm-sdk-core==7.2.1; sys_platform == 'win32'",
+    "rocm-sdk-libraries-custom==7.2.1; sys_platform == 'win32'",
+]
 bench = [
     "transformers",
     "scipy",
@@ -37,13 +54,32 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["vcbench", "causalvc"]
 
-# On Windows the PyPI build of torch has no GPU support, so take the CUDA build from PyTorch's own index there.
+[tool.uv]
+conflicts = [[{ extra = "cuda" }, { extra = "rocm" }]]
+
+# On Windows the PyPI build of torch has no GPU support: the CUDA build comes from PyTorch's own
+# index, the ROCm build (and the ROCm runtime packages it pulls in) from AMD's.
 [tool.uv.sources]
-torch = [{ index = "pytorch-cuda", marker = "sys_platform == 'win32'" }]
+torch = [
+    { index = "pytorch-cuda", marker = "sys_platform == 'win32'", extra = "cuda" },
+    { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+]
+torchaudio = [
+    { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+]
+rocm = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
+rocm-sdk-core = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
+rocm-sdk-libraries-custom = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
 
 [[tool.uv.index]]
 name = "pytorch-cuda"
 url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "rocm-windows"
+url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+format = "flat"
 explicit = true
 
 # pyrnnoise is used only for the RNNoise library it ships (realtime/tools/rnnoise.py loads it

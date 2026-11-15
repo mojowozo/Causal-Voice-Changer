@@ -1,6 +1,6 @@
 """Live conversion: microphone in, converted voice out.
 
-    python -m causalvc.live --voice runs/models/voice-NAME/NAME-10000s.causalvc.json
+    python -m causalvc.live --voice runs/models/voice-NAME/voices/NAME-10000s.cvc
     python -m causalvc.live --voice ... --list-devices
     python -m causalvc.live --voice ... --in-file speech.wav --out-file converted.wav   (timing test, no audio devices)
 
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_voice(path: str, device: str):
-    """A .causalvc.json voice description -> (streaming runtime, speaker name)."""
+    """A voice (.cvc file or .causalvc.json description) -> (streaming runtime, speaker name)."""
     from causalvc.fast import streaming
 
     from causalvc.voice import load
@@ -139,7 +139,7 @@ def describe(live: Live, stream=None, last: int = 0) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--voice", help="a .causalvc.json voice file")
+    ap.add_argument("--voice", help="a .cvc voice file (or an installed voice's .causalvc.json)")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--block", type=int, default=20, help="block length in ms (a multiple of 20)")
     ap.add_argument("--pitch", type=float, default=0.0, help="pitch shift in semitones")

@@ -11,17 +11,15 @@ Examples:
 
 import argparse
 import json
-import socket
 import sys
 
-from engine.protocol import decode, default_socket_path, encode
+from engine import protocol
+from engine.protocol import decode, default_address, encode
 
 
 class EngineClient:
-    def __init__(self, path, timeout=None):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(timeout)
-        self.sock.connect(path)
+    def __init__(self, address, timeout=None):
+        self.sock = protocol.connect(address, timeout)
         self.reader = self.sock.makefile("rb")
         self.next_id = 1
         self.hello = self.read_message()
@@ -79,7 +77,7 @@ def print_event(message, verbose_meters=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="CausalVC realtime engine client")
-    parser.add_argument("--socket", default=default_socket_path())
+    parser.add_argument("--socket", default=default_address())
     parser.add_argument("--meters", action="store_true", help="print meter events too")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("state")

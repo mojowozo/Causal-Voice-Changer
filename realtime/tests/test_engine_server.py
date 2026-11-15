@@ -51,32 +51,38 @@ class HangingShutdownEngine(FakeEngine):
 
 
 class EngineServerTest(unittest.TestCase):
+    """Over a Unix socket (Linux); the subclass below repeats every test over TCP (Windows)."""
+
+    ADDRESS_PREFIX = ""
+    ADDRESS_NAME = "e.sock"
+
     def start_server(self, engine_factory, exit_when_idle=None):
         self.directory = tempfile.mkdtemp(prefix="causalvc-")
-        self.socket_path = os.path.join(self.directory, "e.sock")
+        self.path = os.path.join(self.directory, self.ADDRESS_NAME)
+        self.address = self.ADDRESS_PREFIX + self.path
         self.server = EngineServer(
-            self.socket_path, engine_factory=engine_factory, exit_when_idle=exit_when_idle
+            self.address, engine_factory=engine_factory, exit_when_idle=exit_when_idle
         )
         self.thread = threading.Thread(target=asyncio.run, args=(self.server.serve(),))
         self.thread.start()
         for _ in range(200):
-            if os.path.exists(self.socket_path):
+            if os.path.exists(self.path):
                 return
             time.sleep(0.01)
         self.fail("server did not bind its socket")
 
     def stop_server(self):
         if self.thread.is_alive():
-            client = EngineClient(self.socket_path, timeout=5)
+            client = EngineClient(self.address, timeout=5)
             client.call("shutdown")
             client.close()
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
-        self.assertFalse(os.path.exists(self.socket_path))
+        self.assertFalse(os.path.exists(self.path))
         os.rmdir(self.directory)
 
     def connect_ready(self):
-        client = EngineClient(self.socket_path, timeout=5)
+        client = EngineClient(self.address, timeout=5)
         self.addCleanup(client.close)
         if not client.hello["data"]["ready"]:
             while client.read_message().get("event") != "ready":
@@ -86,7 +92,7 @@ class EngineServerTest(unittest.TestCase):
     def test_socket_accepts_commands_before_engine_is_ready(self):
         release = threading.Event()
         self.start_server(lambda emit: FakeEngine(emit, release))
-        client = EngineClient(self.socket_path, timeout=5)
+        client = EngineClient(self.address, timeout=5)
 
         self.assertFalse(client.hello["data"]["ready"])
         self.assertTrue(client.call("ping")["result"]["protocol"] >= 1)
@@ -141,7 +147,7 @@ class EngineServerTest(unittest.TestCase):
             raise RuntimeError("CUDA exploded")
 
         self.start_server(broken)
-        client = EngineClient(self.socket_path, timeout=5)
+        client = EngineClient(self.address, timeout=5)
         message = client.hello
         while message.get("event") not in ("fatal",) and not message["data"].get("init_error"):
             message = client.read_message()
@@ -158,7 +164,7 @@ class EngineServerTest(unittest.TestCase):
 
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
-        self.assertFalse(os.path.exists(self.socket_path))
+        self.assertFalse(os.path.exists(self.path))
         os.rmdir(self.directory)
 
     def test_exits_even_if_the_engine_shutdown_hangs(self):
@@ -175,8 +181,41 @@ class EngineServerTest(unittest.TestCase):
         self.assertFalse(self.thread.is_alive())
         self.assertLess(time.monotonic() - started, 3)
         self.assertTrue(self.server.engine.shut_down)
-        self.assertFalse(os.path.exists(self.socket_path))
+        self.assertFalse(os.path.exists(self.path))
         os.rmdir(self.directory)
+
+
+class TcpEngineServerTest(EngineServerTest):
+    """The Windows transport: loopback TCP, with the port and token in an endpoint file."""
+
+    ADDRESS_PREFIX = "tcp:"
+    ADDRESS_NAME = "endpoint.json"
+
+    def test_endpoint_file_is_private_and_clients_need_the_token(self):
+        import json
+        import socket
+        import stat
+
+        self.start_server(FakeEngine)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        with open(self.path, encoding="utf-8") as handle:
+            port = json.load(handle)["port"]
+        for first_line in (b'{"auth": "wrong"}\n', b'{"id": 1, "cmd": "get_state"}\n'):
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as intruder:
+                intruder.sendall(first_line)
+                self.assertEqual(intruder.recv(4096), b"")  # closed without a hello
+        client = self.connect_ready()
+        self.assertTrue(client.call("get_state")["ok"])
+        self.stop_server()
+
+    def test_a_second_engine_refuses_to_start(self):
+        self.start_server(FakeEngine)
+        second = EngineServer(self.address, engine_factory=FakeEngine)
+        with self.assertRaises(SystemExit):
+            asyncio.run(second.serve())
+        self.assertTrue(os.path.exists(self.path))  # the first engine's file is left alone
+        self.stop_server()
 
 
 if __name__ == "__main__":

@@ -1,8 +1,9 @@
 # Engine protocol (version 1)
 
-The real-time engine runs as its own process and is controlled over a Unix
-stream socket. The COSMIC front end, the `engine.cli` client, and the tests
-all use this protocol.
+The real-time engine runs as its own process and is controlled over a local
+stream socket: a Unix socket on Linux, loopback TCP on Windows. The COSMIC
+front end (`ui/`), the WinUI front end (`winui/`), the `engine.cli` client,
+and the tests all use this protocol.
 
 ```sh
 .venv/bin/python -m engine.server [--socket PATH] [--exit-when-idle SECONDS]
@@ -10,8 +11,14 @@ all use this protocol.
 .venv/bin/python -m engine.cli state          # current state as JSON
 ```
 
-- **Socket:** `$XDG_RUNTIME_DIR/causalvc-realtime.sock` by default (mode `0600`).
+- **Socket (Linux):** `$XDG_RUNTIME_DIR/causalvc-realtime.sock` by default (mode `0600`).
   The server refuses to start if another engine already listens there.
+- **TCP (Windows):** asyncio has no Unix sockets there, so the engine listens on
+  `127.0.0.1` on a free port and writes `{"port", "token", "pid"}` to
+  `%LOCALAPPDATA%\CausalVC\realtime-engine.json` (per user). A client's first
+  line must be `{"auth": "<token>"}`; a client that sends anything else, or
+  nothing within 5 s, is disconnected without a `hello`. Pass
+  `--socket tcp:<endpoint file>` to use this transport elsewhere (the tests do).
 - **Framing:** one UTF-8 JSON object per line (`\n`), in both directions.
 - **Startup:** the socket is bound *before* PyTorch and the engine load
   (about 3 s). Clients can connect immediately; engine commands fail with
@@ -49,8 +56,10 @@ translate by `code`.
 | `update_settings` | `{"settings": {key: value, ...}}` | `null` |
 | `reset_settings` | `{"group": "general" \| "performance"}` | `null` |
 | `reload_models` | | `null` |
-| `import_model` | `{"paths": ["/abs/Voice-10000s.causalvc.json", …]}` | `{"models": ["Voice-10000s"]}`; copies each voice description into `models/<name>/` and selects the first |
-| `delete_model` | `{"name": "Voice"}` | `null`; moves `models/<name>/` to the desktop Trash (`gio trash`, recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
+| `import_model` | `{"paths": ["/abs/Voice-10000s.cvc", …]}` | `{"models": ["Voice-10000s"]}`; installs each voice into `models/<name>/` (a `.cvc` is unpacked; an older `.causalvc.json` description is copied) and selects the first. `.cvc` files placed directly in `models/` are installed (and removed) on startup and `reload_models` |
+| `download_hushwire` | — | `null`; records that the user accepted Amazon's download notice (the client shows it first; `hushwire-notice-body`) and fetches Hushwire's model in the background into Hushwire's own folder (`~/.local/share/Hushwire/models`, `%APPDATA%\Hushwire\models`), shared with the Hushwire plugin. Ends with status `hushwire_downloaded` or error `hushwire_download_failed` |
+| `export_model` | `{"name": "Voice", "path": "/abs/Voice.cvc"}` | `{"path": …}`; packs `models/<name>/` and its saved settings into one `.cvc` file (`.cvc` is appended if missing) |
+| `delete_model` | `{"name": "Voice"}` | `null`; moves `models/<name>/` to the desktop Trash (`gio trash` on Linux, the Recycle Bin on Windows; recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
 | `rename_model` | `{"name": "Voice", "new_name": "Voice v2"}` | `null`; renames `models/<name>/` (settings go with it; the selection follows). Names must be unique (ignoring case), not start with `.`, and avoid `/ \ : * ? " < > \|`. Refused with `model_in_use` while converting with it |
 | `reload_devices` | | `null` |
 | `start` | `{"function": "vc" \| "passthrough"}` (default `vc`) | `null` |
@@ -79,7 +88,8 @@ translate by `code`.
 | `input_device` / `output_device` | string | restart; a device `label` from state |
 | `monitor_device` | string \| null | restart; `null` disables the monitor |
 | `block_time` | number (s) | restart; min 0.02 |
-| `input_denoise` | bool | live: RNNoise on the input, when installed (state `rnnoise`); adds 20 ms |
+| `input_denoise` | bool | live: noise reduction on the input, with `input_denoise_method` |
+| `input_denoise_method` | `"hushwire"` (default) or `"rnnoise"` | live: Hushwire (Amazon Voice Focus, adds ~53–55 ms; needs its model, state `hushwire`) or RNNoise (adds 20 ms, state `rnnoise`). A denoiser that can't run leaves the input alone |
 | `loudness_target` | `"voice_chat"` \| `"streaming"` | live (default `"voice_chat"`): the output-level target, -21 or -16 LUFS (see [Output level](#output-level)) |
 | `recording_folder` | string | live |
 | `recording_mode` | `"separate"` \| `"mix"` \| `"stereo"` | live (next recording) |
@@ -108,19 +118,23 @@ Front ends can re-render entirely from the latest state.
     "inputs":  [{"label": "[JACK] Elgato Wave XLR Mono", "api": "JACK",
                  "name": "Elgato Wave XLR Mono", "channels": [1, 1]}],
     "outputs": [{"label": "[ALSA] default", "api": "ALSA", "name": "default", "channels": []}]
+    // Windows: "[WASAPI] Microphone (Wave XLR)", "[ASIO] Focusrite USB ASIO — 1 / 2", …
   },
-  "gpus": [{"id": "auto", "label": null}, {"id": "0", "label": "GPU 0 — NVIDIA GeForce RTX 4080"}],
+  "gpus": [{"id": "auto", "label": null}, {"id": "0", "label": "GPU 0 — NVIDIA GeForce RTX 4080"}],  // or an AMD GPU, through ROCm
   "samplerate": null,                  // Hz while running
   "delay_ms": null,                    // estimated end-to-end delay while running
   "recording": false,
   "file": {"path": null, "duration": null, "playing": false},
   "ffmpeg": true,
-  "rnnoise": true                     // input noise reduction (RNNoise) is installed
+  "rnnoise": true,                    // input noise reduction (RNNoise) is installed
+  "hushwire": "ready"                // Hushwire's model: ready, needs_download, downloading, failed, unavailable (no wasmtime)
 }
 ```
 
-`channels` lists the selected
-1-based JACK ports; it is empty for ALSA devices.
+`channels` lists the selected 1-based JACK or ASIO channels; it is empty for
+ALSA and WASAPI devices. On Windows, WASAPI and ASIO devices are listed (ASIO
+through sounddevice's ASIO build; set `CAUSALVC_ASIO=0` to leave it out), and
+WASAPI converts to the model's 48 kHz when the Windows mixer runs at another rate.
 
 ## Events
 
@@ -135,7 +149,7 @@ Front ends can re-render entirely from the latest state.
 | `error` | `{"code", "message"}`: a problem not tied to a request (e.g. `monitor_failed`, `file_error`) |
 | `log` | `{"text": "…"}`: engine stdout/stderr as it is written |
 
-Status codes: `importing_model`, `model_imported` (`names`), `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `preparing_inference`,
+Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `preparing_inference`,
 `starting_audio`, `conversion_started`, `passthrough_started`,
 `conversion_stopped`, `passthrough_stopped`, `settings_changed`,
 `stream_stopped` (the audio device went away), `file_selected` (`name`),
@@ -150,4 +164,4 @@ Status codes: `importing_model`, `model_imported` (`names`), `model_deleted` (`n
 `no_common_samplerate`, `audio_start_failed`, `record_requires_running`,
 `recording_failed`, `samplerate_unsupported`, `model_load_failed`, `import_no_model_file`, `import_failed`, `file_error`, `monitor_failed`, `log_save_failed`,
 `model_in_use`, `delete_failed`, `bad_model_name` (details: `reason`),
-`model_name_taken`, `rename_failed`.
+`model_name_taken`, `rename_failed`, `export_failed`, `hushwire_unavailable`, `hushwire_download_failed`.

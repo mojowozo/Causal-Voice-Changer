@@ -22,6 +22,7 @@ import torchaudio
 
 from causalvc.decoder.disc import Discriminators, EnergyLoss, MelLoss, SpecLoss, d_loss, g_loss
 from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder
+from causalvc.decoder.model import tone as tone_of
 from causalvc.infer import CausalVC, extract, load_encoder
 from causalvc.pitch import Rmvpe
 from causalvc.progress import Progress
@@ -193,6 +194,8 @@ def main(on_save=None) -> None:
     ap.add_argument("--perturb", type=float, default=0.0, help="share of steps whose content comes from a spectrally warped copy of the crop")
     ap.add_argument("--energy-loss", type=float, default=0.0, help="weight of a loss on each band's segment-averaged power (long-term tone)")
     ap.add_argument("--decorr", type=float, default=0.0, help="weight of a loss that makes unvoiced output depend on the random noise input (breaths, whispers, sibilants)")
+    ap.add_argument("--tone", type=float, default=0.0, help="experimental: also tell the decoder each frame's brightness and vowel openness; "
+                    "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
     args = ap.parse_args()
 
@@ -223,7 +226,7 @@ def main(on_save=None) -> None:
 
     enc, rmvpe = load_encoder(args.encoder, dev), Rmvpe(dev)
     k = enc.lookahead if hasattr(enc, "lookahead") else 2
-    cfg = {"channels": args.channels, "dim": args.dim, "bands": args.bands, "glide": "next" if args.glide_next else args.glide, "lookahead": args.lookahead, "mel_cond": args.mel_cond, "exc": args.exc, "smooth_in": args.smooth_in}
+    cfg = {"channels": args.channels, "dim": args.dim, "bands": args.bands, "glide": "next" if args.glide_next else args.glide, "lookahead": args.lookahead, "mel_cond": args.mel_cond, "exc": args.exc, "smooth_in": args.smooth_in, **({"tone": 2} if args.tone else {})}
     gen, disc, mel_loss = Decoder(len(spk), **cfg).to(dev), Discriminators(args.disc).to(dev), MelLoss().to(dev)
     print(f"generator {sum(p.numel() for p in gen.parameters()) / 1e6:.1f}M params", flush=True)
     opt_g = torch.optim.AdamW(gen.parameters(), args.lr, betas=(0.8, 0.99))
@@ -302,7 +305,8 @@ def main(on_save=None) -> None:
             content = warped_content(enc, wav, content.shape[1])
         if bank is not None:
             content = looked_up(content, bank, s)
-        h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None)
+        tn = tone_of(wav) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
+        h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn)
         exc = gen.source(f0[:, : h.shape[-1]])
         fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME])
         real = wav[:, None, lo * FRAME : hi * FRAME]

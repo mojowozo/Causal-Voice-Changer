@@ -39,6 +39,9 @@ pub struct State {
     /// Whether input noise reduction (RNNoise) is installed.
     #[serde(default)]
     pub rnnoise: bool,
+    /// Hushwire's model: "ready", "needs_download", "downloading", "failed" or "unavailable".
+    #[serde(default)]
+    pub hushwire: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -51,6 +54,9 @@ pub struct Settings {
     pub monitor_device: Option<String>,
     pub block_time: f32,
     pub input_denoise: bool,
+    /// `"hushwire"` (Amazon Voice Focus) or `"rnnoise"`.
+    #[serde(default = "default_denoise_method")]
+    pub input_denoise_method: String,
     /// Output-level target: `"voice_chat"` (-21 LUFS) or `"streaming"` (-16).
     #[serde(default = "default_loudness_target")]
     pub loudness_target: String,
@@ -62,6 +68,10 @@ pub struct Settings {
     pub monitor_gain_db: f32,
     pub noise_gate_db: f32,
     pub pitch: f32,
+}
+
+fn default_denoise_method() -> String {
+    "hushwire".to_string()
 }
 
 fn default_loudness_target() -> String {
