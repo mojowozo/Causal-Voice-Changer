@@ -21,7 +21,7 @@ Stop: it saves a checkpoint, and you can continue it later.
 Linux (the compiled libraries are shared with the voice changer, in `realtime/ui/target`):
 
 ```bash
-cargo build --release --manifest-path training/ui/Cargo.toml
+(cd training/ui && cargo build --release)
 CAUSALVC_DIR="$PWD" realtime/ui/target/release/causalvc-training
 ```
 

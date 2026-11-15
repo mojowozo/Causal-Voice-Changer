@@ -19,7 +19,9 @@ uv run --no-sync python -m causalvc.weights
 binary=realtime/ui/target/release/causalvc-training
 if command -v cargo >/dev/null 2>&1; then
     [[ -x $binary ]] || echo "Building the training window (first run only)…" >&2
-    if ! cargo build --release --quiet --manifest-path training/ui/Cargo.toml; then
+    # Run from training/ui: cargo reads .cargo/config.toml (the shared target folder) from the
+    # directory it runs in, not from the manifest's.
+    if ! (cd training/ui && cargo build --release --quiet); then
         echo "The training window could not be built; opening the small window instead." >&2
     fi
 fi

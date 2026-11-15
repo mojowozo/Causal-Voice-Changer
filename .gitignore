@@ -8,3 +8,8 @@ realtime/models/
 third_party/
 *.egg-info/
 weights/
+training/ui/target/
+
+# Local, per-machine files
+.codegraph/
+.~lock.*#
