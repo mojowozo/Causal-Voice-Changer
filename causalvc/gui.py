@@ -5,7 +5,8 @@
 It runs `python -m causalvc.build` as a separate process and shows its progress.
 Stop asks the trainer to save a checkpoint and leave (a second click ends it at
 once); starting again with the same name resumes from the last checkpoint.
-Uses only the standard library, and nothing here is specific to Linux or Windows.
+Queued builds start in order after the current one finishes. Uses only the
+standard library, and nothing here is specific to Linux or Windows.
 """
 
 from __future__ import annotations
@@ -94,6 +95,7 @@ def main() -> None:
 
     saved = json.loads(SETTINGS.read_text()) if SETTINGS.is_file() else {}
     job = Job()
+    pending: list[dict] = []
     root = tk.Tk()
     root.title("Causal VC Model Trainer")
     root.minsize(640, 520)
@@ -179,9 +181,31 @@ def main() -> None:
     buttons = ttk.Frame(frame)
     buttons.grid(row=row, column=0, columnspan=3, sticky="w")
     start_btn = ttk.Button(buttons, text="Start training")
+    queue_btn = ttk.Button(buttons, text="Queue build")
     stop_btn = ttk.Button(buttons, text="Stop", state="disabled")
     start_btn.pack(side="left")
+    queue_btn.pack(side="left", padx=(8, 0))
     stop_btn.pack(side="left", padx=(8, 0))
+    row += 1
+
+    queue_frame = ttk.LabelFrame(frame, text="Build queue (runs in order)", padding=6)
+    queue_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+    queue_frame.columnconfigure(0, weight=1)
+    queue_list = tk.Listbox(queue_frame, height=3, exportselection=False)
+    queue_list.grid(row=0, column=0, sticky="ew")
+
+    def refresh_queue() -> None:
+        queue_list.delete(0, "end")
+        for index, config in enumerate(pending, 1):
+            queue_list.insert("end", f"{index}. {config['name']} — {config['steps']} steps")
+
+    def remove_queued() -> None:
+        selection = queue_list.curselection()
+        if selection:
+            pending.pop(selection[0])
+            refresh_queue()
+
+    ttk.Button(queue_frame, text="Remove selected", command=remove_queued).grid(row=0, column=1, padx=(8, 0), sticky="n")
     row += 1
 
     status = ttk.Frame(frame)
@@ -210,7 +234,19 @@ def main() -> None:
         if not on:
             spinner.configure(text=" ")
 
-    def start() -> None:
+    def launch(config: dict) -> None:
+        job.start(**config)
+        bar.configure(value=0)
+        state.configure(text=f"Starting {config['name']} (loading the models takes a little while)…")
+        set_running(True)
+
+    def start_next() -> None:
+        if pending and not job.running() and not job.stopping:
+            config = pending.pop(0)
+            refresh_queue()
+            launch(config)
+
+    def collect_config() -> dict | None:
         try:
             name, audio = v["name"].get().strip(), v["audio"].get().strip()
             batch, steps, save_every = (int(v[k].get()) for k in ("batch", "steps", "save_every"))
@@ -222,17 +258,34 @@ def main() -> None:
                 raise ValueError("Batch size, steps and save interval must be at least 1")
         except ValueError as err:
             state.configure(text=str(err) if "invalid literal" not in str(err) else "Batch size, steps and save interval must be whole numbers")
-            return
+            return None
         device = v["device"].get().split()[0]
+        app_models = v["app_models"].get().strip()
         SETTINGS.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS.write_text(json.dumps({"audio": audio, "name": name, "batch": batch, "steps": steps, "save_every": save_every,
-                                        "device": device, "app_models": v["app_models"].get().strip(), "fixes": v["fixes"].get()}, indent=1))
+                                        "device": device, "app_models": app_models, "fixes": v["fixes"].get()}, indent=1))
         base = v["base"].get() if v["custom"].get() and v["base"].get() else "default"
-        job.start(name, audio, batch, steps, save_every, base, device, v["restart"].get(), v["app_models"].get().strip(), v["fixes"].get())
+        return {"name": name, "audio": audio, "batch": batch, "steps": steps, "save_every": save_every,
+                "base": base, "device": device, "restart": v["restart"].get(), "app_models": app_models,
+                "fixes": v["fixes"].get()}
+
+    def start() -> None:
+        config = collect_config()
+        if config is not None:
+            launch(config)
+            v["restart"].set(False)
+
+    def queue_build() -> None:
+        config = collect_config()
+        if config is None:
+            return
+        pending.append(config)
+        refresh_queue()
         v["restart"].set(False)
-        bar.configure(value=0)
-        state.configure(text="Starting (loading the models takes a little while)…")
-        set_running(True)
+        if job.running():
+            state.configure(text=f"Queued {config['name']} ({len(pending)} waiting)")
+        else:
+            start_next()
 
     def stop() -> None:
         if job.stopping:
@@ -252,6 +305,8 @@ def main() -> None:
                     code = job.proc.returncode
                     state.configure(text="Finished" if code == 0 and not job.stopping else "Stopped" if job.stopping else f"Failed (exit code {code}); see the log below")
                     set_running(False)
+                    if not job.stopping and pending:
+                        start_next()
                     continue
                 m = PROGRESS.match(line)
                 if m:
@@ -274,6 +329,7 @@ def main() -> None:
         root.destroy()
 
     start_btn.configure(command=start)
+    queue_btn.configure(command=queue_build)
     stop_btn.configure(command=stop)
     root.protocol("WM_DELETE_WINDOW", close)
     hook = os.environ.get("CAUSALVC_GUI_TEST")  # test hook: start at once, optionally stop after N seconds, close when done
