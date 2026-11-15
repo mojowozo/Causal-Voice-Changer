@@ -14,7 +14,8 @@ public sealed class VoicePage : PageBase
 
     static readonly string[] AudioExtensions = [".wav", ".flac", ".mp3", ".ogg", ".m4a", ".opus", ".aac", ".wma"];
 
-    readonly TextBlock _audio = Build.Caption(S.AudioNone);
+    /// Typed or pasted, or filled in by the pickers.
+    readonly TextBox _audio = new() { Width = 320, PlaceholderText = S.AudioPlaceholder };
     readonly TextBox _name = new() { Width = 240 };
     readonly NumberBox _steps = Number(1000);
     readonly NumberBox _saveEvery = Number(1000);
@@ -28,7 +29,6 @@ public sealed class VoicePage : PageBase
     readonly SettingRow _appModelsRow;
     /// Rows by the trainer's field names, with their usual descriptions.
     readonly Dictionary<string, (SettingRow Row, string Description)> _rows = [];
-    string _audioPath = "";
     List<string> _bases = ["default"];
     List<Gpu> _gpus = [];
     string _wantedGpu = "cuda:0";
@@ -36,8 +36,8 @@ public sealed class VoicePage : PageBase
 
     public VoicePage(IHost host) : base(host)
     {
-        _audio.MaxWidth = 320;
         _audio.VerticalAlignment = VerticalAlignment.Center;
+        _audio.TextChanged += (_, _) => ClearError("audio");
         _appModels.MaxWidth = 320;
         _appModels.VerticalAlignment = VerticalAlignment.Center;
         _base.ItemsSource = new[] { S.BaseDefault };
@@ -142,7 +142,7 @@ public sealed class VoicePage : PageBase
         var config = new JsonObject
         {
             ["name"] = _name.Text.Trim(),
-            ["audio"] = _audioPath,
+            ["audio"] = _audio.Text.Trim(),
             ["steps"] = Whole(_steps),
             ["save_every"] = Whole(_saveEvery),
             ["batch"] = Whole(_batch),
@@ -178,9 +178,8 @@ public sealed class VoicePage : PageBase
 
     void SetAudio(string path)
     {
-        _audioPath = path;
-        _audio.Text = path.Length > 0 ? path : S.AudioNone;
-        ClearError("audio");
+        _audio.Text = path;
+        _audio.SelectionStart = path.Length;  // the end of a long path, which names the folder
     }
 
     async Task PickAudioFolder()

@@ -105,6 +105,11 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.job.started[0]["base"], "default")
         self.assertEqual(json.loads((self.root / "gui.json").read_text())["batch"], 4)
 
+    def test_a_pasted_path_keeps_working_with_quotes_and_spaces(self):
+        self.service.command("start", self.config(audio=f' "{self.audio}" \n'))
+        self.assertEqual(self.errors(), [])
+        self.assertEqual(self.job.started[0]["audio"], str(self.audio))
+
     def test_progress_moves_the_phase_and_noise_stays_out_of_the_log(self):
         self.service.command("start", self.config())
         self.assertEqual(self.state()["phase"], "starting")

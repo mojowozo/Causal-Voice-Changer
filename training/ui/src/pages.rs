@@ -21,9 +21,11 @@ pub fn view(app: &App, page: Page) -> Element<'_, Message> {
         Page::Log => return log_page(app),
     };
     widget::scrollable(
-        widget::container(content)
-            .max_width(900)
-            .padding([0, cosmic::theme::spacing().space_s]),
+        // Room at the end so the last section clears the control bar.
+        widget::container(content).max_width(900).padding(
+            cosmic::iced::Padding::from([0, cosmic::theme::spacing().space_s])
+                .bottom(cosmic::theme::spacing().space_l),
+        ),
     )
     .width(Length::Fill)
     .into()
@@ -54,7 +56,11 @@ fn connection_view(app: &App) -> Element<'_, Message> {
 
 /// A text field that shows the trainer's complaint about it, if any.
 fn field<'a>(app: &'a App, field: Field, value: &'a str, width: f32) -> Element<'a, Message> {
-    let mut input = widget::text_input("", value)
+    let placeholder = match field {
+        Field::Audio => fl!("audio-placeholder"),
+        _ => String::new(),
+    };
+    let mut input = widget::text_input(placeholder, value)
         .on_input(move |text| Message::Text(field, text))
         .width(Length::Fixed(width));
     if let Some((key, text)) = &app.field_error
@@ -67,24 +73,10 @@ fn field<'a>(app: &'a App, field: Field, value: &'a str, width: f32) -> Element<
 
 fn voice_page(app: &App) -> Element<'_, Message> {
     let space = cosmic::theme::spacing();
-    let audio_error = app.field_error.as_ref().filter(|(key, _)| key == "audio");
-    let audio_path: Element<_> = if app.audio.is_empty() {
-        widget::text::caption(fl!("audio-none")).into()
-    } else {
-        widget::text::body(app.audio.as_str())
-            .width(Length::Fixed(PATH_WIDTH))
-            .into()
-    };
-    let mut audio = settings::item::builder(fl!("audio")).description(match audio_error {
-        Some((_, text)) => text.clone(),
-        None => fl!("audio-detail"),
-    });
-    if audio_error.is_some() {
-        audio = audio.icon(widget::icon::from_name("dialog-warning-symbolic").size(16));
-    }
-    let audio = audio.control(
+    // Typed or pasted, or filled in by the pickers; the trainer's complaint shows under it.
+    let audio = settings::item::builder(fl!("audio")).description(fl!("audio-detail")).control(
         widget::row::with_capacity(3)
-            .push(audio_path)
+            .push(field(app, Field::Audio, &app.audio, PATH_WIDTH))
             .push(widget::button::standard(fl!("choose-folder")).on_press(Message::Pick(PickTarget::AudioFolder)))
             .push(widget::button::standard(fl!("choose-file")).on_press(Message::Pick(PickTarget::AudioFile)))
             .spacing(space.space_xs)

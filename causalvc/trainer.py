@@ -171,7 +171,8 @@ def check_config(args: dict, bases: list[str]) -> dict:
     if not isinstance(args, dict):
         raise ConfigError("bad_request", "config must be an object")
     name = str(args.get("name") or "").strip()
-    audio = str(args.get("audio") or "").strip()
+    # A pasted path may carry the quotes of Windows' "Copy as path".
+    audio = str(args.get("audio") or "").strip().strip('"').strip()
     if not NAME.fullmatch(name):
         raise ConfigError("invalid_name", "Give the voice a name using letters, digits, '-', '_' or '.'", "name")
     if not audio or not Path(audio).exists():

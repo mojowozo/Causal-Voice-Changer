@@ -32,9 +32,11 @@ pub fn view(app: &App, page: Page) -> Element<'_, Message> {
         Page::Log => return log_page(app),
     };
     widget::scrollable(
-        widget::container(content)
-            .max_width(900)
-            .padding([0, cosmic::theme::spacing().space_s]),
+        // Room at the end so the last section clears the control bar.
+        widget::container(content).max_width(900).padding(
+            cosmic::iced::Padding::from([0, cosmic::theme::spacing().space_s])
+                .bottom(cosmic::theme::spacing().space_l),
+        ),
     )
     .width(Length::Fill)
     .into()

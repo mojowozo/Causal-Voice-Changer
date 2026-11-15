@@ -21,7 +21,7 @@ static class S
     public const string SectionDataset = "Dataset";
     public const string Audio = "Recordings";
     public const string AudioDetail = "A folder of the target's speech, or one long recording. Any format and sample rate; pauses can stay in.";
-    public const string AudioNone = "Nothing chosen yet";
+    public const string AudioPlaceholder = "Paste a path, or choose a folder or file";
     public const string ChooseFolder = "Folder…";
     public const string ChooseFile = "File…";
     public const string VoiceName = "Voice name";
