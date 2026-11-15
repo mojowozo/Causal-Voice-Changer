@@ -1,5 +1,5 @@
 # Causal Voice Changer
-Causal Voice Changer is a 48Khz voice changer technology which attempts to bridge the gap between hyper-low latency options (ex. Beatrice) and higher-fidelity-but-slower options (ex. RVC) in order to achieve voice changing which balances speed and quality instead of sacrificing one for the other. It uses a distilled version of ContentVec and RMVPE to achieve this. 
+Causal Voice Changer is a 48Khz voice changer technology which attempts to bridge the voice changer gap between low latency options (ex. Beatrice) and higher-fidelity-but-slower options (ex. RVC) in order to achieve a balance between speed and quality instead of sacrificing one for the other. It uses a distilled version of ContentVec and RMVPE to achieve this. 
 
 ## Differences from RVC
 
