@@ -238,6 +238,7 @@ static class S
         "record_requires_running" => RecordHint,
         "no_common_samplerate" => "The input, output, and monitor devices have no common sample rate. Set them to the same rate (usually 48 kHz).",
         "audio_start_failed" => $"Could not start the audio devices: {error.Message}",
+        "asio_one_device" => "ASIO can only use one device at a time. Choose the same ASIO device for input and output, or a [WASAPI] device for one of them.",
         "monitor_failed" => $"The monitor device could not start; continuing on the main output only. ({error.Message})",
         "not_ready" => "The engine is still starting.",
         "import_no_model_file" => "Drop a voice's .cvc file (written when a voice is built).",

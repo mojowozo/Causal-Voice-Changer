@@ -271,6 +271,7 @@ error-ffmpeg-missing = FFmpeg was not found. Install ffmpeg and make sure it is 
 error-record-requires-running = Start conversion before recording.
 error-no-common-samplerate = The input, output, and monitor devices have no common sample rate. Set them to the same rate (usually 48 kHz).
 error-audio-start-failed = Could not start the audio devices: { $detail }
+error-asio-one-device = ASIO can only use one device at a time. Choose the same ASIO device for input and output, or a [WASAPI] device for one of them.
 error-monitor-failed = The monitor device could not start; continuing on the main output only. ({ $detail })
 error-not-ready = The engine is still starting.
 error-import-no-model-file = Drop a voice's .cvc file (written when a voice is built).

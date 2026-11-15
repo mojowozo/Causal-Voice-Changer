@@ -1114,6 +1114,7 @@ pub fn error_text(error: &ErrorInfo) -> String {
         "record_requires_running" => fl!("error-record-requires-running"),
         "no_common_samplerate" => fl!("error-no-common-samplerate"),
         "audio_start_failed" => fl!("error-audio-start-failed", detail = error.message.clone()),
+        "asio_one_device" => fl!("error-asio-one-device"),
         "monitor_failed" => fl!("error-monitor-failed", detail = error.message.clone()),
         "not_ready" => fl!("error-not-ready"),
         "import_no_model_file" => fl!("error-import-no-model-file"),

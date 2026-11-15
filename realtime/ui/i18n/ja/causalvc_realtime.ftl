@@ -271,6 +271,7 @@ error-ffmpeg-missing = FFmpegが見つかりません。ffmpeg をインスト�
 error-record-requires-running = 変換を開始してから録音してください。
 error-no-common-samplerate = 入力・出力・モニターデバイスに共通のサンプルレートがありません。同じレート（通常は48 kHz）に設定してください。
 error-audio-start-failed = 音声デバイスを開始できませんでした: { $detail }
+error-asio-one-device = ASIOは一度に1つのデバイスしか使えません。入力と出力に同じASIOデバイスを選ぶか、どちらかを[WASAPI]デバイスにしてください。
 error-monitor-failed = モニターデバイスを開始できませんでした。通常の出力のみで続行します。（{ $detail }）
 error-not-ready = エンジンを起動しています。
 error-import-no-model-file = 音声モデルの .cvc ファイル（作成時に書き出されます）をドロップしてください。

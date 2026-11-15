@@ -46,6 +46,7 @@ from engine.version import APP_TITLE, BUILD_LABEL
 from infer import causalvc_backend
 from tools.audio_fifo import AudioFrameFifo, enqueue_latest
 from tools.audio_routing import (
+    ASIO_API,
     check_options,
     is_native_api,
     scatter_mono,
@@ -145,6 +146,8 @@ class RealtimeEngine:
         self.output_selectors = []
         self.monitor_selectors = []
         self.monitor_device_index = None
+        #: The monitor is on the same ASIO device as the input or output and shares its stream.
+        self.monitor_shares_asio = False
         self.stream = None
         self.input_stream = None
         self.output_stream = None
@@ -689,6 +692,7 @@ class RealtimeEngine:
             self.monitor_device_index = None
             self.monitor_selectors = []
         self.monitor_api = monitor.api if self.monitor_device_index is not None else ""
+        self.check_asio_route(input_index, output.index)
         printt(
             "Audio route: Input [%s] %s / Output [%s] %s / Monitor [%s] %s",
             self.input_api,
@@ -698,6 +702,44 @@ class RealtimeEngine:
             self.monitor_api or "Disabled",
             settings.monitor_device or "Disabled",
         )
+
+    def check_asio_route(self, input_index, output_index):
+        """PortAudio's ASIO host opens one stream on one driver at a time.
+
+        Input, output and monitor on the same ASIO device therefore share one
+        stream (``open_asio_stream``); a second ASIO device cannot be used
+        alongside the first.
+        """
+        asio_index = None
+        for api, index in ((self.input_api, input_index), (self.output_api, output_index)):
+            if api != ASIO_API:
+                continue
+            if asio_index is not None and index != asio_index:
+                raise EngineError(
+                    "asio_one_device",
+                    "ASIO can only use one device at a time. Choose the same ASIO device for "
+                    "input and output, or a [WASAPI] device for one of them.",
+                    key="output_device",
+                )
+            asio_index = index
+        self.monitor_shares_asio = False
+        if self.monitor_api != ASIO_API or asio_index is None:
+            return
+        if self.monitor_device_index == asio_index:
+            self.monitor_shares_asio = True
+            return
+        printt("The monitor is on a second ASIO device; it was turned off for this run.")
+        self.emit(
+            "error",
+            {
+                "code": "monitor_failed",
+                "message": "ASIO can only use one device at a time; "
+                "choose a [WASAPI] device or the same ASIO device for the monitor.",
+            },
+        )
+        self.monitor_device_index = None
+        self.monitor_selectors = []
+        self.monitor_api = ""
 
     def start_vc(self, model):
         self.load_model(model)
@@ -792,6 +834,9 @@ class RealtimeEngine:
         """
         if native is None:
             native = is_native_api(self.output_api)
+        if self.output_api == ASIO_API and self.monitor_shares_asio:
+            self.open_asio_stream(with_input=False).start()
+            return
         self.output_queue = (
             AudioFrameFifo(1, max_frames=self.block_frame * 4)
             if native
@@ -824,6 +869,19 @@ class RealtimeEngine:
             name="causalvc-native-inference",
             daemon=True,
         )
+        if self.input_api == ASIO_API and (
+            self.output_api == ASIO_API or self.monitor_shares_asio
+        ):
+            # One full-duplex stream: ASIO cannot open the driver a second time.
+            if self.output_api != ASIO_API:
+                self.start_output_stream(native=True)
+            if not self.monitor_shares_asio:
+                self.start_monitor_stream()
+            self.open_asio_stream(with_input=True)
+            self.native_worker.start()
+            self.input_stream.start()
+            self.stream = self.input_stream
+            return
         self.start_output_stream(native=True)
         self.start_monitor_stream()
         self.input_stream = sd.InputStream(
@@ -838,6 +896,65 @@ class RealtimeEngine:
         self.native_worker.start()
         self.input_stream.start()
         self.stream = self.input_stream
+
+    def open_asio_stream(self, with_input):
+        """One stream for every role on the ASIO device: the input (when
+        ``with_input``), the main output and the monitor, each on its own
+        channels.  Sets the role's stream attributes and queues; not started.
+        """
+        with_output = self.output_api == ASIO_API
+        with_monitor = self.monitor_shares_asio
+        device = sd.default.device[1] if with_output else self.monitor_device_index
+        selectors = (self.output_selectors if with_output else []) + (
+            self.monitor_selectors if with_monitor else []
+        )
+        out_channels = self.stream_channels(device, "output", selectors)
+        if with_output:
+            self.output_queue = AudioFrameFifo(1, max_frames=self.block_frame * 4)
+            self.output_channels = out_channels
+        if with_monitor:
+            self.monitor_queue = AudioFrameFifo(1, max_frames=self.block_frame * 4)
+            self.monitor_channels = out_channels
+
+        def fill(outdata, frames, times, status):
+            if with_output:
+                self.output_audio_callback(outdata, frames, times, status)
+            else:
+                outdata.fill(0)
+            if with_monitor:
+                self.write_monitor_block(outdata, frames)
+
+        options = stream_options(sd, ASIO_API)
+        if with_input:
+            def duplex(indata, outdata, frames, times, status):
+                self.native_fifo_input_callback(indata, frames, times, status)
+                fill(outdata, frames, times, status)
+
+            stream = sd.Stream(
+                callback=duplex,
+                blocksize=0,
+                samplerate=self.samplerate,
+                channels=(self.input_channels, out_channels),
+                device=(sd.default.device[0], device),
+                dtype="float32",
+                **options,
+            )
+            self.input_stream = stream
+        else:
+            stream = sd.OutputStream(
+                callback=fill,
+                blocksize=0,
+                samplerate=self.samplerate,
+                channels=out_channels,
+                device=device,
+                dtype="float32",
+                **options,
+            )
+        if with_output:
+            self.output_stream = stream
+        if with_monitor:
+            self.monitor_stream = stream
+        return stream
 
     def native_inference_worker(self):
         while not self.native_worker_stop.is_set():
@@ -895,6 +1012,8 @@ class RealtimeEngine:
         scatter_mono(outdata, mono, self.output_selectors)
 
     def start_monitor_stream(self):
+        if self.monitor_shares_asio:
+            return  # opened with the ASIO stream it shares
         self.monitor_stream = None
         if self.monitor_device_index is None:
             self.monitor_queue = None
@@ -932,6 +1051,10 @@ class RealtimeEngine:
 
     def monitor_audio_callback(self, outdata, frames, times, status):
         outdata.fill(0)
+        self.write_monitor_block(outdata, frames)
+
+    def write_monitor_block(self, outdata, frames):
+        """Write the next monitor audio to its channels, leaving the others."""
         block = self.read_audio_target(self.monitor_queue, frames)
         if block is None:
             return
@@ -949,12 +1072,7 @@ class RealtimeEngine:
             self.native_worker_stop.set()
         if self.native_worker_wakeup is not None:
             self.native_worker_wakeup.set()
-        for stream_name in ("input_stream", "output_stream", "monitor_stream"):
-            stream = getattr(self, stream_name, None)
-            if stream is not None:
-                stream.abort()
-                stream.close()
-                setattr(self, stream_name, None)
+        self.close_streams("input_stream", "output_stream", "monitor_stream")
         self.stream = None
         self.output_queue = None
         self.monitor_queue = None
@@ -1361,13 +1479,22 @@ class RealtimeEngine:
         self.file_state = (False, False)
         if not self.running and self.output_stream is not None:
             # Close the preview-only output opened by file_play.
-            for stream_name in ("output_stream", "monitor_stream"):
-                stream = getattr(self, stream_name)
-                if stream is not None:
-                    stream.abort()
-                    stream.close()
-                    setattr(self, stream_name, None)
+            self.close_streams("output_stream", "monitor_stream")
             self.stream = None
+
+    def close_streams(self, *names):
+        """Close the named streams once each; a shared ASIO stream is held by
+        several roles, and every role holding it is cleared."""
+        roles = ("input_stream", "output_stream", "monitor_stream")
+        for name in names:
+            stream = getattr(self, name, None)
+            if stream is None:
+                continue
+            stream.abort()
+            stream.close()
+            for role in roles:
+                if getattr(self, role, None) is stream:
+                    setattr(self, role, None)
 
     # ------------------------------------------------------------------
     # Recording
