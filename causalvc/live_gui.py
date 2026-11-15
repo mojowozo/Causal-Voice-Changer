@@ -81,6 +81,7 @@ def main() -> None:
         "in_gain": tk.DoubleVar(value=saved.get("in_gain", 0.0)),
         "out_gain": tk.DoubleVar(value=saved.get("out_gain", 0.0)),
         "gate": tk.DoubleVar(value=saved.get("gate", -60.0)),
+        "denoise": tk.BooleanVar(value=saved.get("denoise", False)),
     }
     row = 0
 
@@ -149,6 +150,20 @@ def main() -> None:
     slider("Output gain", "out_gain", -24, 24, 0.5, "dB")
     slider("Noise gate", "gate", -60, 0, 1.0, "dB")
 
+    from causalvc import rnnoise
+
+    def denoise_changed() -> None:
+        if state["live"] is not None:  # applies while running
+            state["live"].denoise = v["denoise"].get()
+
+    noise_box = ttk.Checkbutton(frame, text="Noise reduction (RNNoise): removes background noise from the microphone, adds 20 ms",
+                                variable=v["denoise"], command=denoise_changed)
+    noise_box.grid(row=row, column=1, columnspan=2, sticky="w", pady=(4, 0))
+    if not rnnoise.available():
+        v["denoise"].set(False)
+        noise_box.configure(state="disabled", text="Noise reduction (RNNoise) is not available on this system")
+    row += 1
+
     buttons = ttk.Frame(frame)
     buttons.grid(row=row, column=0, columnspan=3, sticky="w", pady=(10, 4))
     start_btn = ttk.Button(buttons, text="Start")
@@ -180,7 +195,7 @@ def main() -> None:
         stop_btn.configure(state="disabled")
         status.configure(text="Loading the voice (a few seconds)…")
         state["busy"] = True
-        args = (path, v["gpu"].get().split()[0], int(v["block"].get()), v["pitch"].get(), v["in_gain"].get(), v["out_gain"].get(), v["gate"].get())
+        args = (path, v["gpu"].get().split()[0], int(v["block"].get()), v["pitch"].get(), v["in_gain"].get(), v["out_gain"].get(), v["gate"].get(), v["denoise"].get())
         route = (device_index(v["input"].get()), device_index(v["output"].get()))
 
         def work() -> None:
@@ -218,7 +233,8 @@ def main() -> None:
                 from causalvc.live import SR
 
                 block_ms = live.block / SR * 1000
-                status.configure(text=f"Converting as {live.speaker}: model delay {live.model_delay_ms:.0f} ms + {block_ms:.0f} ms block")
+                noise = " (including 20 ms of noise reduction)" if live.denoise and live.rnnoise is not None else ""
+                status.configure(text=f"Converting as {live.speaker}: delay {live.model_delay_ms:.0f} ms{noise} + {block_ms:.0f} ms block")
                 recent = live.stats(len(live.times) - state["seen"]) if len(live.times) > state["seen"] else {}
                 state["seen"] = len(live.times)
                 if recent:

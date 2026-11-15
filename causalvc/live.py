@@ -41,13 +41,18 @@ class Live:
     """Block-by-block conversion with the controls a live user needs, and timing of every block."""
 
     def __init__(self, voice: str, device: str = "cuda:0", block_ms: int = 20, semitones: float = 0.0,
-                 in_gain_db: float = 0.0, out_gain_db: float = 0.0, gate_db: float = -60.0):
+                 in_gain_db: float = 0.0, out_gain_db: float = 0.0, gate_db: float = -60.0, denoise: bool = False):
         assert block_ms % 20 == 0 and block_ms > 0, "the block must be a multiple of 20 ms"
         self.vc, self.speaker = load_voice(voice, device)
         self.device, self.block = device, SR * block_ms // 1000
         self.semitones, self.in_gain_db, self.out_gain_db, self.gate_db = semitones, in_gain_db, out_gain_db, gate_db
         self.vc.set_voice(self.speaker, semitones)
         self.vc.reset()
+        # Input noise reduction (RNNoise); it adds 20 ms. `denoise` can be switched while running.
+        from causalvc import rnnoise
+
+        self.rnnoise = rnnoise.RNNoise() if rnnoise.available() else None
+        self.denoise = denoise
         self.times: list[float] = []  # seconds of compute per block
         self.late = 0  # callbacks the sound card reported as too slow (audible gaps)
         self.lock = threading.Lock()
@@ -57,7 +62,7 @@ class Live:
 
     @property
     def model_delay_ms(self) -> float:
-        return self.vc.delay * 10.0
+        return self.vc.delay * 10.0 + (20.0 if self.denoise and self.rnnoise is not None else 0.0)
 
     def set_pitch(self, semitones: float) -> None:
         with self.lock:
@@ -71,6 +76,8 @@ class Live:
         level = 20 * math.log10(float(x.pow(2).mean().sqrt()) + 1e-7)
         if level < self.gate_db:
             x = torch.zeros_like(x)  # below the gate: feed silence, so the model's own state keeps running
+        if self.denoise and self.rnnoise is not None:
+            x = torch.from_numpy(self.rnnoise.process(x.clamp(-1.0, 1.0).numpy()))
         with self.lock:
             y = self.vc.process(x)
         out = (y * 10 ** (self.out_gain_db / 20)).clamp(-1.0, 1.0).cpu().numpy()  # .cpu() waits for the GPU
@@ -139,6 +146,7 @@ def main() -> None:
     ap.add_argument("--in-gain", type=float, default=0.0, help="dB")
     ap.add_argument("--out-gain", type=float, default=0.0, help="dB")
     ap.add_argument("--gate", type=float, default=-60.0, help="input blocks quieter than this (dB) are treated as silence")
+    ap.add_argument("--denoise", action="store_true", help="input noise reduction (RNNoise); adds 20 ms")
     ap.add_argument("--in-device", help="input device name or number (default: the system's)")
     ap.add_argument("--out-device", help="output device name or number (default: the system's)")
     ap.add_argument("--latency", default="low", help="sound card buffering to ask for: low, high, or seconds")
@@ -155,7 +163,7 @@ def main() -> None:
         return
     if not a.voice:
         sys.exit("--voice is required")
-    live = Live(a.voice, a.device, a.block, a.pitch, a.in_gain, a.out_gain, a.gate)
+    live = Live(a.voice, a.device, a.block, a.pitch, a.in_gain, a.out_gain, a.gate, a.denoise)
     print(f"voice {live.speaker}; model delay {live.model_delay_ms:.0f} ms + {a.block} ms block", flush=True)
 
     if a.in_file:
