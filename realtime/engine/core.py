@@ -55,6 +55,7 @@ from tools.audio_routing import (
 )
 from tools.file_audio_source import FileAudioSource
 from tools.model_import import ModelImportError, import_models, install_loose, voice_files
+from tools import asio as asio_driver
 from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
 from tools.loudness import TARGETS_LUFS, LoudnessMeter
@@ -148,6 +149,13 @@ class RealtimeEngine:
         self.monitor_device_index = None
         #: The monitor is on the same ASIO device as the input or output and shares its stream.
         self.monitor_shares_asio = False
+        #: What the ASIO driver accepts, per PortAudio device (read while idle).
+        self.asio_sizes = {}
+        #: The ASIO buffer the driver actually delivers, in samples (from its callbacks).
+        self.asio_frames = None
+        self.reported_asio_frames = None
+        #: The latency asked of ASIO streams this run ("low" or seconds).
+        self.asio_latency = None
         self.stream = None
         self.input_stream = None
         self.output_stream = None
@@ -230,6 +238,7 @@ class RealtimeEngine:
             "ffmpeg": os.path.isfile(self.ffmpeg_path),
             "rnnoise": rnnoise.available(),
             "hushwire": self.hushwire_status(),
+            "asio": self.asio_state(),
         }
 
     def emit_state(self):
@@ -387,6 +396,7 @@ class RealtimeEngine:
             self.stop()
             self.status("settings_changed")
         self.devices.refresh()
+        self.asio_sizes.clear()
         self.normalize_settings()
         save_settings(self.settings)
         self.emit_state()
@@ -540,6 +550,11 @@ class RealtimeEngine:
         """Called about 20 times per second from the command thread."""
         self.flush_model_settings_save()
         self.log_underruns()
+        if self.asio_frames != self.reported_asio_frames:
+            self.reported_asio_frames = self.asio_frames
+            if self.asio_frames is not None:
+                printt("ASIO buffer in use: %s samples", self.asio_frames)
+            self.emit_state()
         if self.running and not self.streams_active():
             printt("Audio stream stopped unexpectedly; returning to the idle state.")
             self.stop()
@@ -798,6 +813,8 @@ class RealtimeEngine:
         if self.running:
             return
         self.running = True
+        self.asio_frames = None
+        self.asio_latency = self.asio_request()
         self.log_active_audio_route()
         if self.file_source_active:
             self.start_file_stream()
@@ -807,13 +824,13 @@ class RealtimeEngine:
             return
         self.start_output_stream()
         self.input_stream = sd.InputStream(
-            callback=self.audio_callback,
+            callback=self.watch_asio(self.input_api, self.audio_callback),
             blocksize=self.block_frame,
             samplerate=self.samplerate,
             channels=self.input_channels,
             device=sd.default.device[0],
             dtype="float32",
-            **stream_options(sd, self.input_api),
+            **self.stream_kwargs(self.input_api),
         )
         self.input_stream.start()
         self.stream = self.output_stream
@@ -843,13 +860,13 @@ class RealtimeEngine:
             else queue.Queue(maxsize=3)
         )
         self.output_stream = sd.OutputStream(
-            callback=self.output_audio_callback,
+            callback=self.watch_asio(self.output_api, self.output_audio_callback),
             blocksize=0 if native else self.block_frame,
             samplerate=self.samplerate,
             channels=self.output_channels,
             device=sd.default.device[1],
             dtype="float32",
-            **stream_options(sd, self.output_api),
+            **self.stream_kwargs(self.output_api),
         )
         self.output_stream.start()
 
@@ -885,13 +902,13 @@ class RealtimeEngine:
         self.start_output_stream(native=True)
         self.start_monitor_stream()
         self.input_stream = sd.InputStream(
-            callback=self.native_fifo_input_callback,
+            callback=self.watch_asio(self.input_api, self.native_fifo_input_callback),
             blocksize=0,
             samplerate=self.samplerate,
             channels=self.input_channels,
             device=sd.default.device[0],
             dtype="float32",
-            **stream_options(sd, self.input_api),
+            **self.stream_kwargs(self.input_api),
         )
         self.native_worker.start()
         self.input_stream.start()
@@ -924,14 +941,14 @@ class RealtimeEngine:
             if with_monitor:
                 self.write_monitor_block(outdata, frames)
 
-        options = stream_options(sd, ASIO_API)
+        options = self.stream_kwargs(ASIO_API)
         if with_input:
             def duplex(indata, outdata, frames, times, status):
                 self.native_fifo_input_callback(indata, frames, times, status)
                 fill(outdata, frames, times, status)
 
             stream = sd.Stream(
-                callback=duplex,
+                callback=self.watch_asio(ASIO_API, duplex),
                 blocksize=0,
                 samplerate=self.samplerate,
                 channels=(self.input_channels, out_channels),
@@ -942,7 +959,7 @@ class RealtimeEngine:
             self.input_stream = stream
         else:
             stream = sd.OutputStream(
-                callback=fill,
+                callback=self.watch_asio(ASIO_API, fill),
                 blocksize=0,
                 samplerate=self.samplerate,
                 channels=out_channels,
@@ -955,6 +972,94 @@ class RealtimeEngine:
         if with_monitor:
             self.monitor_stream = stream
         return stream
+
+    # -- ASIO buffer ----------------------------------------------------
+    def asio_device(self):
+        """The PortAudio index of the ASIO device the selected route uses, or None."""
+        settings = self.settings
+        candidates = [
+            self.devices.outputs.get(settings.output_device),
+            self.devices.outputs.get(settings.monitor_device or ""),
+        ]
+        if not self.file_source_active:
+            candidates.insert(0, self.devices.inputs.get(settings.input_device))
+        return next(
+            (endpoint.index for endpoint in candidates if endpoint and endpoint.api == ASIO_API),
+            None,
+        )
+
+    def read_asio_sizes(self, device):
+        sizes = asio_driver.buffer_sizes(sd, device)
+        self.asio_sizes[device] = sizes
+        if sizes is not None:
+            printt(
+                "ASIO driver buffer sizes: min %s, max %s, preferred %s, granularity %s",
+                sizes.minimum, sizes.maximum, sizes.preferred, sizes.granularity,
+            )
+        return sizes
+
+    def asio_state(self):
+        device = self.asio_device()
+        if device is None:
+            return None
+        # Reading the sizes loads the driver, which an open stream holds
+        # (file preview holds an output without running).
+        if device not in self.asio_sizes and not self.streams_open():
+            self.read_asio_sizes(device)
+        sizes = self.asio_sizes.get(device)
+        return {
+            "sizes": sizes.to_dict() if sizes else None,
+            "in_use": self.asio_frames if self.running else None,
+        }
+
+    def asio_request(self):
+        """The latency to ask ASIO streams for: the chosen buffer, or the
+        driver's current size (read now, so a change made in its control panel
+        counts without reloading devices)."""
+        device = self.asio_device()
+        if device is None:
+            return None
+        sizes = self.read_asio_sizes(device)
+        frames = self.settings.asio_buffer or (sizes.preferred if sizes else 0)
+        if not frames:
+            return None
+        if sizes is not None and self.settings.asio_buffer:
+            opened = sizes.accepts(frames)
+            if opened != frames:
+                printt("The ASIO driver does not take %s samples; it opens %s.", frames, opened)
+        return frames / self.samplerate
+
+    def streams_open(self):
+        return self.running or any(
+            getattr(self, name, None) is not None
+            for name in ("input_stream", "output_stream", "monitor_stream")
+        )
+
+    def stream_kwargs(self, api):
+        return stream_options(sd, api, self.asio_latency if api == ASIO_API else None)
+
+    def watch_asio(self, api, callback):
+        """Note the buffer size an ASIO stream's callbacks receive."""
+        if api != ASIO_API:
+            return callback
+
+        def watched(*args):
+            self.asio_frames = args[-3]  # (..., frames, time, status)
+            return callback(*args)
+
+        return watched
+
+    def open_asio_control_panel(self):
+        device = self.asio_device()
+        if device is None:
+            raise EngineError("bad_request", "No ASIO device is selected.")
+        if self.streams_open():
+            raise EngineError("asio_panel_busy", "Stop the voice changer before opening the driver's control panel.")
+        if not asio_driver.show_control_panel(sd, device):
+            raise EngineError("asio_panel_failed", "The ASIO driver's control panel could not be opened.")
+        # The panel may have changed the buffer size.
+        self.asio_sizes.pop(device, None)
+        self.emit_state()
 
     def native_inference_worker(self):
         while not self.native_worker_stop.is_set():
@@ -1022,7 +1127,7 @@ class RealtimeEngine:
             self.monitor_channels = self.stream_channels(
                 self.monitor_device_index, "output", self.monitor_selectors
             )
-            monitor_options = stream_options(sd, self.monitor_api)
+            monitor_options = self.stream_kwargs(self.monitor_api)
             sd.check_output_settings(
                 device=self.monitor_device_index,
                 channels=self.monitor_channels,
@@ -1033,7 +1138,7 @@ class RealtimeEngine:
             self.monitor_queue = AudioFrameFifo(1, max_frames=self.block_frame * 4)
             self.monitor_stream = sd.OutputStream(
                 device=self.monitor_device_index,
-                callback=self.monitor_audio_callback,
+                callback=self.watch_asio(self.monitor_api, self.monitor_audio_callback),
                 blocksize=0,
                 samplerate=self.samplerate,
                 channels=self.monitor_channels,
@@ -1074,6 +1179,7 @@ class RealtimeEngine:
             self.native_worker_wakeup.set()
         self.close_streams("input_stream", "output_stream", "monitor_stream")
         self.stream = None
+        self.asio_frames = None
         self.output_queue = None
         self.monitor_queue = None
         self.native_input_fifo = None
@@ -1455,6 +1561,8 @@ class RealtimeEngine:
         self.output_channels = self.get_output_channels()
         self.samplerate = self.get_automatic_samplerate(48000)
         self.zc = self.samplerate // 100
+        self.asio_frames = None
+        self.asio_latency = self.asio_request()
         self.block_frame = max(
             self.zc,
             int(round(self.settings.block_time * self.samplerate / self.zc)) * self.zc,

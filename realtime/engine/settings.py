@@ -19,6 +19,8 @@ RECORDING_MODES = ("separate", "mix", "stereo")
 LOUDNESS_TARGETS = ("voice_chat", "streaming")
 #: Input noise reduction: Hushwire (Amazon Voice Focus, ~53 ms) or RNNoise (20 ms).
 INPUT_DENOISE_METHODS = ("hushwire", "rnnoise")
+#: ASIO buffer sizes (samples) the app can ask the driver for; 0 keeps the driver's own setting.
+ASIO_BUFFER_SIZES = (0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048)
 
 MODEL_SETTINGS_FILENAME = "realtime_settings.json"
 # Protocol name -> key stored in each model's realtime_settings.json.
@@ -43,6 +45,7 @@ RESTART_SETTING_KEYS = frozenset(
         "output_device",
         "monitor_device",
         "block_time",
+        "asio_buffer",
     )
 )
 
@@ -58,6 +61,8 @@ class EngineSettings:
     monitor_device: str | None = None
     #: Seconds of audio converted at a time; a multiple of 20 ms. Delay is the model's 60 ms plus one block.
     block_time: float = 0.04
+    #: ASIO buffer size to ask the driver for, in samples; 0 keeps the driver's own setting.
+    asio_buffer: int = 0
     input_denoise: bool = False
     input_denoise_method: str = "hushwire"
     #: What the output-level indicator aims for: voice chat (-21 LUFS) or
@@ -122,6 +127,13 @@ def coerce_setting(key, value):
     if key not in SETTING_TYPES:
         raise SettingError(key, f"Unknown setting: {key}")
     kind = SETTING_TYPES[key]
+    if kind is int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+            raise SettingError(key, f"{key} must be a whole number")
+        value = int(value)
+        if key == "asio_buffer" and value not in ASIO_BUFFER_SIZES:
+            raise SettingError(key, f"asio_buffer must be one of {', '.join(map(str, ASIO_BUFFER_SIZES))}")
+        return value
     if kind is bool:
         if not isinstance(value, bool):
             raise SettingError(key, f"{key} must be true or false")

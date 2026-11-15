@@ -62,6 +62,7 @@ translate by `code`.
 | `delete_model` | `{"name": "Voice"}` | `null`; moves `models/<name>/` to the desktop Trash (`gio trash` on Linux, the Recycle Bin on Windows; recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
 | `rename_model` | `{"name": "Voice", "new_name": "Voice v2"}` | `null`; renames `models/<name>/` (settings go with it; the selection follows). Names must be unique (ignoring case), not start with `.`, and avoid `/ \ : * ? " < > \|`. Refused with `model_in_use` while converting with it |
 | `reload_devices` | | `null` |
+| `asio_control_panel` | — | `null`; opens the selected ASIO device's own control panel (Windows). Refused while running (`asio_panel_busy`); `asio_panel_failed` when the driver can't show it |
 | `start` | `{"function": "vc" \| "passthrough"}` (default `vc`) | `null` |
 | `stop` | | `null` |
 | `file_select` | `{"path": "/abs/file.wav"}` | `null` |
@@ -88,6 +89,7 @@ translate by `code`.
 | `input_device` / `output_device` | string | restart; a device `label` from state |
 | `monitor_device` | string \| null | restart; `null` disables the monitor |
 | `block_time` | number (s) | restart; min 0.02 |
+| `asio_buffer` | 0, 32, 64, 96, 128, 192, 256, 512, 1024 or 2048 | restart; the ASIO buffer to ask the driver for, in samples. 0 (default) uses the driver's current size, read at start. PortAudio rounds to a size the driver accepts (state `asio.sizes`) |
 | `input_denoise` | bool | live: noise reduction on the input, with `input_denoise_method` |
 | `input_denoise_method` | `"hushwire"` (default) or `"rnnoise"` | live: Hushwire (Amazon Voice Focus, adds ~53–55 ms; needs its model, state `hushwire`) or RNNoise (adds 20 ms, state `rnnoise`). A denoiser that can't run leaves the input alone |
 | `loudness_target` | `"voice_chat"` \| `"streaming"` | live (default `"voice_chat"`): the output-level target, -21 or -16 LUFS (see [Output level](#output-level)) |
@@ -127,7 +129,11 @@ Front ends can re-render entirely from the latest state.
   "file": {"path": null, "duration": null, "playing": false},
   "ffmpeg": true,
   "rnnoise": true,                    // input noise reduction (RNNoise) is installed
-  "hushwire": "ready"                // Hushwire's model: ready, needs_download, downloading, failed, unavailable (no wasmtime)
+  "hushwire": "ready",               // Hushwire's model: ready, needs_download, downloading, failed, unavailable (no wasmtime)
+  "asio": {                          // null unless the route uses an ASIO device
+    "sizes": {"min": 32, "max": 2048, "preferred": 256, "granularity": -1},  // null if the driver can't say; granularity 0 = only min, max or preferred, -1 = powers of two
+    "in_use": 256                    // samples per driver callback while running, else null
+  }
 }
 ```
 
@@ -164,4 +170,5 @@ Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`
 `no_common_samplerate`, `audio_start_failed`, `record_requires_running`,
 `recording_failed`, `samplerate_unsupported`, `model_load_failed`, `import_no_model_file`, `import_failed`, `file_error`, `monitor_failed`, `log_save_failed`,
 `model_in_use`, `delete_failed`, `bad_model_name` (details: `reason`),
-`model_name_taken`, `rename_failed`, `export_failed`, `hushwire_unavailable`, `hushwire_download_failed`.
+`model_name_taken`, `rename_failed`, `export_failed`, `hushwire_unavailable`, `hushwire_download_failed`,
+`asio_one_device`, `asio_panel_busy`, `asio_panel_failed`.

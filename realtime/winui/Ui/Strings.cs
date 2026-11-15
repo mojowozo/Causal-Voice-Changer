@@ -126,7 +126,24 @@ static class S
     public static string SampleRateValue(int rate) => $"Sample rate: {rate} Hz";
     public const string SampleRateIdle = "Sample rate: — (not running)";
     // Windows in place of the Linux JACK hint.
-    public const string DeviceHint = "[ASIO] devices give the lowest latency; set their buffer size in the driver's control panel. [WASAPI] works with every device.";
+    public const string DeviceHint = "[ASIO] devices give the lowest latency; their buffer size is set below. [WASAPI] works with every device.";
+    public const string SectionAsio = "ASIO";
+    public const string AsioBuffer = "Buffer size";
+    public const string AsioBufferDetail = "Smaller buffers lower the delay; raise it if the sound crackles. Changing it stops the voice changer.";
+    public static string AsioBufferDriver(int? preferred) =>
+        preferred is int size ? $"Driver setting ({AsioSamples(size)})" : "Driver setting";
+    public static string AsioSamples(int frames) =>
+        $"{frames} samples ({(frames * 1000.0 / 48000).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} ms)";
+    public static string AsioInUse(int frames) => $"In use: {AsioSamples(frames)}.";
+    public const string AsioIdle = "In use: shown while running.";
+    public const string AsioUnknown = "The driver did not report which sizes it accepts.";
+    public static string AsioRange(Engine.AsioSizes sizes) =>
+        sizes.Fixed ? $"This driver only uses the size set in its control panel ({sizes.Min} samples)."
+        : sizes.Granularity == 0 ? $"This driver only takes its control panel size ({sizes.Preferred}), {sizes.Min} or {sizes.Max} samples; for other sizes, use its control panel."
+        : $"This driver accepts {sizes.Min} to {sizes.Max} samples.";
+    public const string AsioPanel = "Driver control panel";
+    public const string AsioPanelDetail = "The driver's own settings, including its buffer size. Available while stopped.";
+    public const string AsioPanelOpen = "Open";
 
     // Performance page
     public const string SectionBuffering = "Buffering";
@@ -239,6 +256,8 @@ static class S
         "no_common_samplerate" => "The input, output, and monitor devices have no common sample rate. Set them to the same rate (usually 48 kHz).",
         "audio_start_failed" => $"Could not start the audio devices: {error.Message}",
         "asio_one_device" => "ASIO can only use one device at a time. Choose the same ASIO device for input and output, or a [WASAPI] device for one of them.",
+        "asio_panel_busy" => "Stop the voice changer before opening the driver's control panel.",
+        "asio_panel_failed" => "The ASIO driver's control panel could not be opened.",
         "monitor_failed" => $"The monitor device could not start; continuing on the main output only. ({error.Message})",
         "not_ready" => "The engine is still starting.",
         "import_no_model_file" => "Drop a voice's .cvc file (written when a voice is built).",

@@ -244,6 +244,7 @@ class EngineServer:
             # The client shows hushwire.DOWNLOAD_NOTICE first; sending this means the user accepted it.
             "download_hushwire": lambda args: engine.download_hushwire(),
             "reload_devices": lambda args: engine.reload_devices(),
+            "asio_control_panel": lambda args: engine.open_asio_control_panel(),
             "start": lambda args: engine.start(args.get("function", "vc")),
             "stop": lambda args: engine.stop(),
             "file_select": lambda args: engine.file_select(require(args, "path", str)),

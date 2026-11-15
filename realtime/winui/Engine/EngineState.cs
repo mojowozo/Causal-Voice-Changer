@@ -79,6 +79,8 @@ public sealed class EngineState
     public bool RnNoise;
     /// Hushwire's model: "ready", "needs_download", "downloading", "failed" or "unavailable".
     public string Hushwire = "";
+    /// The ASIO device in the selected route, or null when none is ASIO.
+    public AsioInfo? Asio;
 
     public static EngineState From(JsonObject json)
     {
@@ -103,11 +105,30 @@ public sealed class EngineState
             Ffmpeg = json.Bool("ffmpeg"),
             RnNoise = json.Bool("rnnoise"),
             Hushwire = json.Str("hushwire"),
+            Asio = json["asio"] is JsonObject asio ? AsioInfo.From(asio) : null,
         };
     }
 
     static List<string> Labels(JsonNode? list) =>
         (list as JsonArray ?? []).OfType<JsonObject>().Select(device => device.Str("label")).ToList();
+}
+
+/// What the ASIO driver accepts (null when it could not be asked) and the
+/// buffer it is delivering while running, in samples.
+public sealed record AsioInfo(AsioSizes? Sizes, int? InUse)
+{
+    public static AsioInfo From(JsonObject json) => new(
+        json["sizes"] is JsonObject sizes
+            ? new AsioSizes(sizes.IntOrNull("min") ?? 0, sizes.IntOrNull("max") ?? 0,
+                sizes.IntOrNull("preferred") ?? 0, sizes.IntOrNull("granularity") ?? 0)
+            : null,
+        json.IntOrNull("in_use"));
+}
+
+/// Granularity 0: only min, max or the preferred size; -1: powers of two.
+public sealed record AsioSizes(int Min, int Max, int Preferred, int Granularity)
+{
+    public bool Fixed => Min == Max;
 }
 
 public sealed class Settings
@@ -119,6 +140,8 @@ public sealed class Settings
     public string OutputDevice = "";
     public string? MonitorDevice;
     public double BlockTime = 0.1;
+    /// Samples; 0 keeps the driver's own setting.
+    public int AsioBuffer;
     public bool InputDenoise;
     public string InputDenoiseMethod = "hushwire";
     public string LoudnessTarget = "voice_chat";
@@ -140,6 +163,7 @@ public sealed class Settings
         OutputDevice = json.Str("output_device"),
         MonitorDevice = json.StrOrNull("monitor_device"),
         BlockTime = json.DoubleOrNull("block_time") ?? 0.1,
+        AsioBuffer = json.IntOrNull("asio_buffer") ?? 0,
         InputDenoise = json.Bool("input_denoise"),
         InputDenoiseMethod = json.Str("input_denoise_method", "hushwire"),
         LoudnessTarget = json.Str("loudness_target", "voice_chat"),

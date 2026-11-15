@@ -45,18 +45,22 @@ def api_priority(api_name):
     return PREFERRED_APIS.index(api_name) if api_name in PREFERRED_APIS else len(PREFERRED_APIS)
 
 
-def stream_options(sd, api_name):
+def stream_options(sd, api_name, asio_buffer_seconds=None):
     """Extra keyword arguments for a stream (and its settings check) on ``api_name``.
 
     WASAPI shared mode only opens at the Windows mixer's rate unless asked to
     convert, and the model needs 48 kHz; its default ("high") latency also adds
-    tens of milliseconds, so ask for the low one.  ASIO's latency is the
-    driver's buffer size, set in its own control panel.
+    tens of milliseconds, so ask for the low one.
+
+    ASIO's latency is the driver's buffer.  "low" keeps the size set in the
+    driver's control panel; a number asks the driver for that buffer instead
+    (PortAudio rounds it to a size the driver allows; a driver that allows
+    only one size keeps it).
     """
     if api_name == WASAPI_API:
         return {"extra_settings": sd.WasapiSettings(auto_convert=True), "latency": "low"}
     if api_name == ASIO_API:
-        return {"latency": "low"}
+        return {"latency": asio_buffer_seconds or "low"}
     return {}
 
 

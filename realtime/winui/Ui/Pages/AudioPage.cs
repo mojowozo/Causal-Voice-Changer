@@ -12,6 +12,8 @@ namespace CausalVC.Realtime.Ui.Pages;
 public sealed class AudioPage : PageBase
 {
     public static readonly string[] InputSources = ["microphone", "file"];
+    /// engine/settings.py ASIO_BUFFER_SIZES; 0 keeps the driver's own setting.
+    public static readonly int[] AsioBuffers = [0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048];
 
     readonly SettingsSection _input = new(S.SectionInput);
     readonly SettingRow _sourceRow;
@@ -30,6 +32,11 @@ public sealed class AudioPage : PageBase
     readonly Action<IReadOnlyList<string>, int> _setOutput;
     readonly Action<IReadOnlyList<string>, int> _setMonitor;
     readonly TextBlock _rate = Build.Caption("");
+    readonly SettingsSection _asio = new(S.SectionAsio);
+    readonly Action<IReadOnlyList<string>, int> _setAsioBuffer;
+    readonly TextBlock _asioInfo = Build.Caption("");
+    readonly Button _asioPanel;
+    List<int> _asioBuffers = [];
     List<string> _inputs = [];
     List<string> _outputs = [];
     string _layout = "";
@@ -73,8 +80,16 @@ public sealed class AudioPage : PageBase
                 // Index 0 is "Disabled"; the rest mirror the output list.
                 Choice(index => Host.SendSetting("monitor_device", index == 0 ? null : _outputs[index - 1]), out _setMonitor)));
 
+        // Shown when the route uses an ASIO device (Update).
+        _asioInfo.TextWrapping = TextWrapping.Wrap;
+        _asioPanel = Build.Button(S.AsioPanelOpen, (_, _) => Host.Send("asio_control_panel"));
+        var buffer = new SettingRow(S.AsioBuffer, S.AsioBufferDetail,
+            Choice(index => Host.SendSetting("asio_buffer", _asioBuffers[index]), out _setAsioBuffer));
+        _asio.Add(buffer).Add(_asioInfo).Add(new SettingRow(S.AsioPanel, S.AsioPanelDetail, _asioPanel));
+
         Column.Children.Add(_input);
         Column.Children.Add(output);
+        Column.Children.Add(_asio);
         Column.Children.Add(Build.Bar(_rate, Build.Button(S.ReloadDevices, (_, _) => Host.Send("reload_devices"), "\uE72C")));
     }
 
@@ -118,8 +133,27 @@ public sealed class AudioPage : PageBase
         _setMonitor([S.MonitorDisabled, .. _outputs],
             settings.MonitorDevice is null ? 0 : monitor >= 0 ? monitor + 1 : -1);
 
+        UpdateAsio(state);
         _rate.Text = (state.SampleRate is int rate ? S.SampleRateValue(rate) : S.SampleRateIdle) + "\n" + S.DeviceHint;
         UpdateMeters(state, Host.Meters);
+    }
+
+    void UpdateAsio(EngineState state)
+    {
+        _asio.Visibility = state.Asio is null ? Visibility.Collapsed : Visibility.Visible;
+        if (state.Asio is not { } asio) return;
+        var sizes = asio.Sizes;
+        int chosen = state.Settings.AsioBuffer;
+        // Sizes the driver accepts, plus the chosen one so the box always shows it.
+        _asioBuffers = AsioBuffers
+            .Where(frames => frames == 0 || frames == chosen || sizes is null || (frames >= sizes.Min && frames <= sizes.Max))
+            .ToList();
+        _setAsioBuffer(
+            _asioBuffers.Select(frames => frames == 0 ? S.AsioBufferDriver(sizes?.Preferred) : S.AsioSamples(frames)).ToList(),
+            _asioBuffers.IndexOf(chosen));
+        _asioInfo.Text = (asio.InUse is int inUse ? S.AsioInUse(inUse) : S.AsioIdle) + " "
+            + (sizes is null ? S.AsioUnknown : S.AsioRange(sizes));
+        _asioPanel.IsEnabled = !state.Running;
     }
 
     public override void UpdateMeters(EngineState state, Meters meters)

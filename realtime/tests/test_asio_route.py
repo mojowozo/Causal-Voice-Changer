@@ -11,6 +11,8 @@ from test_engine_pipeline import passthrough_engine
 
 from engine.core import EngineError
 from engine.devices import Endpoint
+from engine.settings import SettingError, coerce_setting
+from tools.asio import BufferSizes
 from tools.audio_routing import ASIO_API, WASAPI_API
 
 ASIO = 4
@@ -81,7 +83,9 @@ OUTPUTS = {
 }
 
 
-class AsioRouteTest(unittest.TestCase):
+class AsioCase(unittest.TestCase):
+    """An engine on fake devices; ``self.sd.opened`` lists the streams it opened."""
+
     def setUp(self):
         self.sd = FakeSoundDevice()
         patcher = mock.patch("engine.core.sd", self.sd)
@@ -89,7 +93,14 @@ class AsioRouteTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.events = []
 
-    def engine(self, input_device, output_device, monitor_device=None):
+    def engine(self, input_device, output_device, monitor_device=None, sizes=None):
+        self.sizes = sizes
+        patcher = mock.patch("engine.core.asio_driver.buffer_sizes", lambda sd, device: self.sizes)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return self.make_engine(input_device, output_device, monitor_device)
+
+    def make_engine(self, input_device, output_device, monitor_device=None):
         engine = passthrough_engine(block_time=0.04)
         engine.emit = lambda event, data: self.events.append((event, data))
         engine.devices = SimpleNamespace(inputs=INPUTS, outputs=OUTPUTS)
@@ -100,6 +111,10 @@ class AsioRouteTest(unittest.TestCase):
         engine.native_worker_stop = None
         engine.native_worker_wakeup = None
         engine.native_worker = None
+        engine.asio_sizes = {}
+        engine.asio_frames = None
+        engine.reported_asio_frames = None
+        engine.asio_latency = None
         engine.file_audio_source = None
         engine.stream = engine.input_stream = engine.output_stream = engine.monitor_stream = None
         engine.emit_state = lambda: None
@@ -109,6 +124,8 @@ class AsioRouteTest(unittest.TestCase):
         self.addCleanup(engine.stop)
         return engine
 
+
+class AsioRouteTest(AsioCase):
     def test_input_and_output_on_one_asio_device_share_a_duplex_stream(self):
         engine = self.engine("asio in", "asio 5/6")
         engine.start_stream()
@@ -176,6 +193,89 @@ class AsioRouteTest(unittest.TestCase):
 
         self.assertIsNone(engine.monitor_device_index)
         self.assertEqual(self.events[-1][1]["code"], "monitor_failed")
+
+
+class AsioBufferTest(AsioCase):
+    SIZES = BufferSizes(minimum=32, maximum=2048, preferred=256, granularity=-1)
+
+    def test_chosen_buffer_is_requested_as_latency(self):
+        engine = self.engine("asio in", "asio 1/2", sizes=self.SIZES)
+        engine.settings.asio_buffer = 128
+        engine.start_stream()
+
+        self.assertAlmostEqual(self.sd.opened[0].options["latency"], 128 / 48000)
+
+    def test_driver_setting_reads_the_drivers_current_size(self):
+        engine = self.engine("asio in", "asio 1/2", sizes=self.SIZES)
+        engine.start_stream()
+
+        self.assertAlmostEqual(self.sd.opened[0].options["latency"], 256 / 48000)
+
+    def test_without_the_drivers_sizes_the_driver_setting_is_low(self):
+        engine = self.engine("asio in", "asio 1/2")
+        engine.start_stream()
+
+        self.assertEqual(self.sd.opened[0].options["latency"], "low")
+
+    def test_wasapi_streams_are_not_affected(self):
+        engine = self.engine("asio in", "wasapi speakers", sizes=self.SIZES)
+        engine.settings.asio_buffer = 64
+        engine.start_stream()
+
+        latencies = {stream.kind: stream.options["latency"] for stream in self.sd.opened}
+        self.assertEqual(latencies["output"], "low")
+        self.assertAlmostEqual(latencies["input"], 64 / 48000)
+
+    def test_buffer_in_use_comes_from_the_callbacks(self):
+        engine = self.engine("asio in", "asio 1/2", sizes=self.SIZES)
+        engine.start_stream()
+        self.assertIsNone(engine.asio_state()["in_use"])
+
+        frames = 192
+        stream = self.sd.opened[0]
+        stream.options["callback"](
+            np.zeros((frames, 2), np.float32), np.zeros((frames, 2), np.float32), frames, None, None
+        )
+        state = engine.asio_state()
+        self.assertEqual(state["in_use"], 192)
+        self.assertEqual(state["sizes"]["preferred"], 256)
+
+    def test_no_asio_state_without_an_asio_device(self):
+        engine = self.engine("wasapi mic", "wasapi speakers", sizes=self.SIZES)
+
+        self.assertIsNone(engine.asio_state())
+
+    def test_control_panel_is_refused_while_running(self):
+        engine = self.engine("asio in", "asio 1/2", sizes=self.SIZES)
+        engine.start_stream()
+
+        with self.assertRaises(EngineError) as raised:
+            engine.open_asio_control_panel()
+        self.assertEqual(raised.exception.code, "asio_panel_busy")
+
+
+class BufferSizesTest(unittest.TestCase):
+    def test_portaudio_rounding(self):
+        powers = BufferSizes(minimum=32, maximum=2048, preferred=256, granularity=-1)
+        self.assertEqual(powers.accepts(100), 128)
+        self.assertEqual(powers.accepts(16), 32)
+        self.assertEqual(powers.accepts(4096), 2048)
+        steps = BufferSizes(minimum=48, maximum=1024, preferred=256, granularity=48)
+        self.assertEqual(steps.accepts(100), 144)
+        # Granularity 0: anything between min and max opens the preferred size.
+        preferred_only = BufferSizes(minimum=64, maximum=1024, preferred=256, granularity=0)
+        self.assertEqual(preferred_only.accepts(128), 256)
+        self.assertEqual(preferred_only.accepts(64), 64)
+        fixed = BufferSizes(minimum=512, maximum=512, preferred=512, granularity=0)
+        self.assertTrue(fixed.fixed)
+        self.assertEqual(fixed.accepts(64), 512)
+
+    def test_setting_accepts_only_listed_sizes(self):
+        self.assertEqual(coerce_setting("asio_buffer", 128), 128)
+        self.assertEqual(coerce_setting("asio_buffer", 128.0), 128)
+        for bad in (100, True, "128", 12.5):
+            with self.assertRaises(SettingError):
+                coerce_setting("asio_buffer", bad)
 
 
 if __name__ == "__main__":
