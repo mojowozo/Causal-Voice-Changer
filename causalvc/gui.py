@@ -1,4 +1,4 @@
-"""A small window for building a voice.
+"""A small window for building a voice (the fallback when the COSMIC or WinUI app can't be built).
 
     PYTHONPATH=$PWD .venv/bin/python -m causalvc.gui
 
@@ -15,78 +15,12 @@ import json
 import os
 import queue
 import re
-import subprocess
-import sys
-import threading
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-SETTINGS = ROOT / "runs" / "gui.json"
-PROGRESS = re.compile(r"^step (\d+)/(\d+) \((\d+)%\)\s+elapsed (\S+)\s+remaining (\S+)\s+([\d.]+) it/s")
-NOISE = ("Warning", "warnings.warn", "WeightNorm.apply", "_canonical_mask")
+from causalvc.trainer import NOISE, PROGRESS, ROOT, SETTINGS, Job, custom_bases, gpus
+
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 COLOURS = ("#ff5f5f", "#ff875f", "#ffaf5f", "#ffd75f", "#d7ff5f", "#87ff5f", "#5fffaf", "#5fffff", "#5fafff", "#875fff", "#d75fff", "#ff5fd7")
-
-
-def custom_bases() -> list[str]:
-    from causalvc.build import bases
-
-    return [name for name in bases() if name != "default"]
-
-
-def gpus() -> list[str]:
-    """Device choices, named when nvidia-smi is there to ask."""
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"], capture_output=True, text=True, timeout=5).stdout
-        found = [f"cuda:{a.strip()}  ({b.strip()})" for a, b in (line.split(",", 1) for line in out.splitlines() if "," in line)]
-    except (OSError, subprocess.SubprocessError):
-        found = []
-    return found or ["cuda:0"]
-
-
-class Job:
-    """One build process: start it, read its lines, ask it to stop."""
-
-    def __init__(self):
-        self.proc: subprocess.Popen | None = None
-        self.lines: queue.Queue[str | None] = queue.Queue()
-        self.run_dir: Path | None = None
-        self.stopping = False
-
-    def running(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
-
-    def start(self, name: str, audio: str, batch: int, steps: int, save_every: int, base: str, device: str,
-              restart: bool = False, app_models: str = "", fixes: bool = True) -> None:
-        self.run_dir, self.stopping = ROOT / "runs" / "models" / f"voice-{name}", False
-        cmd = [sys.executable, "-u", "-m", "causalvc.build", "--name", name, "--audio", audio, "--batch", str(batch),
-               "--steps", str(steps), "--save-every", str(save_every), "--base", base, "--device", device]
-        cmd += ["--restart"] if restart else []
-        # Natural breath noise, steadier tone, and less of the source voice leaking through; about a quarter slower.
-        cmd += ["--perturb", "0.75", "--energy-loss", "20", "--decorr", "10"] if fixes else []
-        cmd += ["--app-models", app_models] if app_models else []
-        env = dict(os.environ, PYTHONPATH=str(ROOT), CAUSALVC_PROGRESS_SECONDS="1", PYTHONIOENCODING="utf-8")
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        self.proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True, encoding="utf-8", errors="replace", creationflags=flags)
-        threading.Thread(target=self._read, daemon=True).start()
-
-    def _read(self) -> None:
-        for line in self.proc.stdout:
-            self.lines.put(line.rstrip("\n"))
-        self.proc.wait()
-        self.lines.put(None)  # finished
-
-    def stop(self) -> None:
-        """First call: ask for a checkpoint and a clean exit. Second call: end the process now."""
-        if not self.running():
-            return
-        if self.stopping:
-            self.proc.kill()
-            return
-        self.stopping = True
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        (self.run_dir / "stop").touch()
 
 
 def main() -> None:

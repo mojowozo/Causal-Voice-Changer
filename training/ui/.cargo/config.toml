@@ -1,0 +1,4 @@
+# Shares compiled libraries with the realtime app (same libcosmic), so building this one
+# after that one takes a minute instead of many.
+[build]
+target-dir = "../../realtime/ui/target"

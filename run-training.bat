@@ -24,6 +24,55 @@ if errorlevel 1 goto failed
 echo Checking pretrained files...
 uv run --no-sync python -m causalvc.weights
 if errorlevel 1 goto failed
+
+rem The Windows front end (training\winui, WinUI 3) is built once with the .NET 10 SDK, installed
+rem into .dotnet in this folder when missing (no admin rights). If that fails, the small window in
+rem causalvc\gui.py opens instead. Set CAUSALVC_REBUILD=1 to build it again (after updating).
+set "APP=training\winui\out\CausalVC.Training.exe"
+if defined CAUSALVC_REBUILD if exist "%APP%" del "%APP%"
+if exist "%APP%" goto launch
+
+call :find_dotnet
+if not defined DOTNET goto small_window
+echo Building the training window ^(first run only^)...
+"%DOTNET%" publish "training\winui\CausalVC.Training.csproj" -c Release -o "training\winui\out"
+if errorlevel 1 goto small_window_after_build
+if not exist "%APP%" goto small_window_after_build
+
+:launch
+set "CAUSALVC_DIR=%~dp0."
+start "" "%APP%"
+exit /b 0
+
+:find_dotnet
+rem Sets DOTNET to a dotnet that has a .NET 10 (or newer) SDK: the one in .dotnet, then the
+rem system one, else installs one into .dotnet. An older SDK alone cannot build the project.
+set "DOTNET_NOLOGO=1"
+set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+set "DOTNET="
+set "LOCAL_DOTNET=%~dp0.dotnet\dotnet.exe"
+rem (Each dotnet is checked to exist first: piping from a missing program ends the whole script.)
+if exist "%LOCAL_DOTNET%" call :has_sdk "%LOCAL_DOTNET%" && (set "DOTNET=%LOCAL_DOTNET%" & exit /b 0)
+where dotnet >nul 2>nul && call :has_sdk dotnet && (set "DOTNET=dotnet" & exit /b 0)
+echo The .NET 10 SDK was not found. Installing it into .dotnet in this folder
+echo ^(about 250 MB to download, first run only^)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $s = Join-Path $env:TEMP 'dotnet-install.ps1'; Invoke-WebRequest 'https://dot.net/v1/dotnet-install.ps1' -OutFile $s -UseBasicParsing; & $s -Channel 10.0 -InstallDir '%~dp0.dotnet' -NoPath"
+if exist "%LOCAL_DOTNET%" call :has_sdk "%LOCAL_DOTNET%" && set "DOTNET=%LOCAL_DOTNET%"
+exit /b 0
+
+:has_sdk
+rem Succeeds when the dotnet given as %1 lists an SDK of version 10 or newer.
+"%~1" --list-sdks 2>nul | findstr /r /b /c:"[1-9][0-9]\." >nul
+exit /b
+
+:small_window_after_build
+echo The training window could not be built; the small window opens instead.
+goto open_small_window
+
+:small_window
+echo The .NET 10 SDK could not be installed, so the small window opens instead of the full app.
+echo For the full app, install it ^(winget install Microsoft.DotNet.SDK.10^) and run this again.
+:open_small_window
 uv run --no-sync python -m causalvc.gui
 if errorlevel 1 goto failed
 exit /b 0

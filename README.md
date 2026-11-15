@@ -21,6 +21,10 @@ packages with [uv](https://astral.sh/uv), downloads the pretrained files (the ba
 model and RMVPE, about 900 MB) into `weights/`, and opens the training window. This will also handle
 installing the perquisites for the realtime portion, so please run this first! 
 
+The training window is a COSMIC app on Linux (built with Rust's `cargo` on first run) and a WinUI 3
+app on acrylic on Windows (built with the .NET 10 SDK, installed into `.dotnet` when missing). If it
+can't be built, a small Tk window opens instead. See [training/README.md](training/README.md).
+
 On Windows it installs the PyTorch build for your graphics card: CUDA for NVIDIA, ROCm for AMD
 (Radeon RX 7000/9000 and Ryzen AI graphics). Set `CAUSALVC_GPU=cuda` or `rocm` to choose yourself;
 when running `uv` commands by hand on Windows, add `--extra cuda` or `--extra rocm`.
@@ -69,7 +73,9 @@ Linux GUI:
 | `causalvc/stream.py` | The original block-by-block runtime (recomputes its whole window) |
 | `causalvc/live.py` | Live audio in and out |
 | `causalvc/infer.py` | Whole-file conversion |
-| `causalvc/build.py`, `causalvc/gui.py` | Building a voice: command and window |
+| `causalvc/build.py`, `causalvc/trainer.py` | Building a voice: command, and the service the training windows drive |
+| `causalvc/gui.py` | The small fallback training window (Tk) |
+| `training/` | The training windows: COSMIC (`ui/`) and WinUI 3 (`winui/`) |
 | `causalvc/weights.py` | Downloads of the pretrained files |
 
 The harness and its metric models are an optional extra: `uv sync --extra bench`.
