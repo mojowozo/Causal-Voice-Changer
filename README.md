@@ -1,6 +1,8 @@
 # Causal Voice Changer
 Causal Voice Changer is a 48Khz voice changer technology which attempts to bridge the voice changer gap between low latency options (ex. Beatrice) and higher-fidelity-but-slower options (ex. RVC) in order to achieve a balance between speed and quality instead of sacrificing one for the other. It uses a distilled version of ContentVec and RMVPE to achieve this. 
 
+<img width="463" height="55" alt="Latency Measurement" src="https://github.com/user-attachments/assets/2d15c1d7-c32b-44bf-953b-d38e5f877341" />
+
 ## Differences from RVC
 
 RVC takes in audio, converts the chunk, and then stitches them together via a crossfade algorithm. RVC was originally designed to convert files, and as a result its mechanism of voice changing starts to degrade at low block sizes, as both accuracy and audio quality drop. This is easy to notice if you set a low block size, and then attempt to draw out a word. You will hear the seams of the blocks as they stitch together. 
@@ -48,6 +50,13 @@ under `custom-base/`, or a path.
 ## Using a voice live
 Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. Both open the full app in `realtime/`: a COSMIC window on Linux, a WinUI 3 window with acrylic on Windows (built on first launch with the .NET 10 SDK, which is installed into `.dotnet` if missing; if that fails, a smaller window with the basic controls opens instead). You need to ensure you've
 run the training GUI first so the prerequisites can be installed. 
+
+Windows GUI:
+<img width="1897" height="1515" alt="gui-windows" src="https://github.com/user-attachments/assets/a20cfe23-5b69-4ffb-a4fd-078c1e36dcaf" />
+
+Linux GUI:
+<img width="1246" height="980" alt="gui-window-linux" src="https://github.com/user-attachments/assets/98fdf4f8-c2ee-481e-9a1d-7d6b7310b029" />
+
 
 ## Layout
 
