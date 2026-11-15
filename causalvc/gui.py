@@ -56,11 +56,13 @@ class Job:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, name: str, audio: str, batch: int, steps: int, save_every: int, base: str, device: str,
-              restart: bool = False, app_models: str = "") -> None:
+              restart: bool = False, app_models: str = "", fixes: bool = True) -> None:
         self.run_dir, self.stopping = ROOT / "runs" / "models" / f"voice-{name}", False
         cmd = [sys.executable, "-u", "-m", "causalvc.build", "--name", name, "--audio", audio, "--batch", str(batch),
                "--steps", str(steps), "--save-every", str(save_every), "--base", base, "--device", device]
         cmd += ["--restart"] if restart else []
+        # Natural breath noise, steadier tone, and less of the source voice leaking through; about a quarter slower.
+        cmd += ["--perturb", "0.75", "--energy-loss", "20", "--decorr", "10"] if fixes else []
         cmd += ["--app-models", app_models] if app_models else []
         env = dict(os.environ, PYTHONPATH=str(ROOT), CAUSALVC_PROGRESS_SECONDS="1", PYTHONIOENCODING="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -109,6 +111,7 @@ def main() -> None:
         "base": tk.StringVar(value=""),
         "device": tk.StringVar(value=""),
         "restart": tk.BooleanVar(value=False),
+        "fixes": tk.BooleanVar(value=saved.get("fixes", True)),
         "app_models": tk.StringVar(value=saved.get("app_models", str(ROOT / "realtime" / "models"))),
     }
     row = 0
@@ -169,6 +172,9 @@ def main() -> None:
     ttk.Checkbutton(frame, text="Start over (ignores existing checkpoints for this voice name)", variable=v["restart"]).grid(
         row=row, column=1, columnspan=2, sticky="w", pady=(2, 8))
     row += 1
+    ttk.Checkbutton(frame, text="Quality fixes: natural breaths and whispers, brighter tone (about 25% slower)", variable=v["fixes"]).grid(
+        row=row, column=1, columnspan=2, sticky="w", pady=(0, 8))
+    row += 1
 
     buttons = ttk.Frame(frame)
     buttons.grid(row=row, column=0, columnspan=3, sticky="w")
@@ -220,9 +226,9 @@ def main() -> None:
         device = v["device"].get().split()[0]
         SETTINGS.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS.write_text(json.dumps({"audio": audio, "name": name, "batch": batch, "steps": steps, "save_every": save_every,
-                                        "device": device, "app_models": v["app_models"].get().strip()}, indent=1))
+                                        "device": device, "app_models": v["app_models"].get().strip(), "fixes": v["fixes"].get()}, indent=1))
         base = v["base"].get() if v["custom"].get() and v["base"].get() else "default"
-        job.start(name, audio, batch, steps, save_every, base, device, v["restart"].get(), v["app_models"].get().strip())
+        job.start(name, audio, batch, steps, save_every, base, device, v["restart"].get(), v["app_models"].get().strip(), v["fixes"].get())
         v["restart"].set(False)
         bar.configure(value=0)
         state.configure(text="Starting (loading the models takes a little while)…")
