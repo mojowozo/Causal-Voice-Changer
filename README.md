@@ -12,7 +12,7 @@ CVC by comparison converts audio as it receives it. It mostly only looks backwar
 Running on Linux (CachyOS, JACK audio) my total end-to-end latency often measures at 130ms. 
 
 # Important Note
-The base model/pretrain was built using Ears, VCTK, and LibriTTS-R. Because of the inclusion of Ears, you may **not** use the included pretrain for commercial usage, and this includes finetunes. By using this program, you accept that no models built using the pretrain will be used for commercial purposes. 
+The base model/pretrain was built using EARS, VCTK, and LibriTTS-R. Because of the inclusion of Ears, you may **not** use the included pretrain for commercial usage, and this includes finetunes. By using this program, you accept that no models built using the pretrain will be used for commercial purposes. 
 
 ## Quick start
 
