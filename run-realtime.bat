@@ -22,25 +22,53 @@ echo Checking Python packages (PyTorch for %CAUSALVC_GPU%)...
 uv sync --extra %CAUSALVC_GPU%
 if errorlevel 1 goto failed
 
-rem The Windows front end (realtime\winui, WinUI 3) is built once with the .NET SDK. Without
-rem the SDK, the small window in causalvc\live_gui.py opens instead.
+rem The Windows front end (realtime\winui, WinUI 3) is built once with the .NET 10 SDK. When no
+rem .NET 10 SDK is installed, one is installed into .dotnet in this folder (no admin rights; delete
+rem the folder to remove it). If that fails, the small window in causalvc\live_gui.py opens instead.
 rem Set CAUSALVC_REBUILD=1 to build it again (after updating the project).
 set "APP=realtime\winui\out\CausalVC.Realtime.exe"
 if defined CAUSALVC_REBUILD if exist "%APP%" del "%APP%"
+if exist "%APP%" goto launch
+
+call :find_dotnet
+if not defined DOTNET goto small_window
+echo Building the voice changer window ^(first run only^)...
+"%DOTNET%" publish "realtime\winui\CausalVC.Realtime.csproj" -c Release -o "realtime\winui\out"
+if errorlevel 1 goto failed
 if not exist "%APP%" (
-    where dotnet >nul 2>nul
-    if errorlevel 1 goto small_window
-    echo Building the voice changer window ^(first run only^)...
-    dotnet publish "realtime\winui\CausalVC.Realtime.csproj" -c Release -o "realtime\winui\out"
-    if errorlevel 1 goto failed
+    echo The build finished but %APP% was not created.
+    goto failed
 )
+
+:launch
 set "CAUSALVC_REALTIME_DIR=%~dp0realtime"
 start "" "%APP%"
 exit /b 0
 
+:find_dotnet
+rem Sets DOTNET to a dotnet that has a .NET 10 (or newer) SDK: the one in .dotnet, then the
+rem system one, else installs one into .dotnet. An older SDK alone cannot build the project.
+set "DOTNET_NOLOGO=1"
+set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+set "DOTNET="
+set "LOCAL_DOTNET=%~dp0.dotnet\dotnet.exe"
+rem (Each dotnet is checked to exist first: piping from a missing program ends the whole script.)
+if exist "%LOCAL_DOTNET%" call :has_sdk "%LOCAL_DOTNET%" && (set "DOTNET=%LOCAL_DOTNET%" & exit /b 0)
+where dotnet >nul 2>nul && call :has_sdk dotnet && (set "DOTNET=dotnet" & exit /b 0)
+echo The .NET 10 SDK was not found. Installing it into .dotnet in this folder
+echo ^(about 250 MB to download, first run only^)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $s = Join-Path $env:TEMP 'dotnet-install.ps1'; Invoke-WebRequest 'https://dot.net/v1/dotnet-install.ps1' -OutFile $s -UseBasicParsing; & $s -Channel 10.0 -InstallDir '%~dp0.dotnet' -NoPath"
+if exist "%LOCAL_DOTNET%" call :has_sdk "%LOCAL_DOTNET%" && set "DOTNET=%LOCAL_DOTNET%"
+exit /b 0
+
+:has_sdk
+rem Succeeds when the dotnet given as %1 lists an SDK of version 10 or newer.
+"%~1" --list-sdks 2>nul | findstr /r /b /c:"[1-9][0-9]\." >nul
+exit /b
+
 :small_window
-echo The .NET SDK was not found, so the small window opens instead of the full app.
-echo For the full app, install the .NET 10 SDK ^(winget install Microsoft.DotNet.SDK.10^) and run this again.
+echo The .NET 10 SDK could not be installed, so the small window opens instead of the full app.
+echo For the full app, install it ^(winget install Microsoft.DotNet.SDK.10^) and run this again.
 uv run --no-sync python -m causalvc.live_gui
 if errorlevel 1 goto failed
 exit /b 0

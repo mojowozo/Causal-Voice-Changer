@@ -23,7 +23,8 @@ public interface IHost
 }
 
 /// A scrolling column of settings sections, at most 900 px wide.
-public abstract class PageBase : ScrollViewer
+/// (A UserControl holding a ScrollViewer: WinUI 3's ScrollViewer is sealed.)
+public abstract class PageBase : UserControl
 {
     /// Room at the bottom for the control bar, which floats over the page.
     public const double ControlBarRoom = 112;
@@ -34,11 +35,14 @@ public abstract class PageBase : ScrollViewer
     protected PageBase(IHost host)
     {
         Host = host;
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-        Content = new Border
+        Content = new ScrollViewer
         {
-            Padding = new Thickness(24, 0, 24, ControlBarRoom),
-            Child = Column,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = new Border
+            {
+                Padding = new Thickness(24, 0, 24, ControlBarRoom),
+                Child = Column,
+            },
         };
     }
 

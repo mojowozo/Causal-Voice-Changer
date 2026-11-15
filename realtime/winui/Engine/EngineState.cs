@@ -20,7 +20,8 @@ public abstract record EngineEvent
     public sealed record Status(string Code, JsonObject Data) : EngineEvent;
     public sealed record Error(ErrorInfo Info) : EngineEvent;
     public sealed record Log(string Text) : EngineEvent;
-    public sealed record Response(long Id, JsonNode? Result, ErrorInfo? Error) : EngineEvent;
+    /// Failure is set when the command failed (named so it does not clash with the Error event).
+    public sealed record Response(long Id, JsonNode? Result, ErrorInfo? Failure) : EngineEvent;
 
     public static EngineEvent? Parse(string line)
     {

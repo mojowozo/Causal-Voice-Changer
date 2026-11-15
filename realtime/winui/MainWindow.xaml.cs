@@ -92,9 +92,8 @@ public sealed partial class MainWindow : Window, IHost
 
     void SetUpWindow()
     {
-        // Mica on Windows 11; desktop acrylic on Windows 10, which has no Mica.
-        if (MicaController.IsSupported()) SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
-        else if (DesktopAcrylicController.IsSupported()) SystemBackdrop = new DesktopAcrylicBackdrop();
+        // Desktop acrylic: a blur of whatever is behind the window (Mica only tints by the wallpaper).
+        if (DesktopAcrylicController.IsSupported()) SystemBackdrop = new DesktopAcrylicBackdrop();
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -324,7 +323,7 @@ public sealed partial class MainWindow : Window, IHost
             _starting = false;
             RenderControlBar();
         }
-        if (response.Error is { } error)
+        if (response.Failure is { } error)
         {
             var text = S.ErrorText(error);
             _controlBar.Status = text;

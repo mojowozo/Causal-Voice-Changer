@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The window: a Mica backdrop under a title bar and a navigation pane, the page, and a
+<!-- The window: a desktop acrylic backdrop under a title bar and a navigation pane, the page, and a
      control bar in in-app acrylic floating over the page's bottom (pages scroll under it).
      Mirrors the COSMIC front end in ../ui: same pages, same control bar. -->
 <Window

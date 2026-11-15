@@ -46,7 +46,7 @@ as folders by older versions convert with `python -m causalvc.voice cvc FOLDER`,
 under `custom-base/`, or a path.
 
 ## Using a voice live
-Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. Both open the full app in `realtime/`: a COSMIC window on Linux, a WinUI 3 window with Mica on Windows (built on first launch with the .NET 10 SDK; without it, a smaller window with the basic controls opens instead). You need to ensure you've
+Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. Both open the full app in `realtime/`: a COSMIC window on Linux, a WinUI 3 window with acrylic on Windows (built on first launch with the .NET 10 SDK, which is installed into `.dotnet` if missing; if that fails, a smaller window with the basic controls opens instead). You need to ensure you've
 run the training GUI first so the prerequisites can be installed. 
 
 ## Layout

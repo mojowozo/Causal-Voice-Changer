@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The Windows front end of the realtime voice changer (WinUI 3, Mica). It drives the same
+  <!-- The Windows front end of the realtime voice changer (WinUI 3, acrylic). It drives the same
        Python engine as the Linux COSMIC front end in ../ui, over loopback TCP (see
        ../docs/engine-protocol.md). Build: dotnet publish -c Release -r win-x64 -o out -->
   <PropertyGroup>
@@ -18,7 +18,9 @@
     <!-- Unpackaged, with the Windows App SDK runtime copied beside the exe: nothing to install. -->
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <SelfContained>false</SelfContained>
+    <!-- The .NET runtime goes beside the exe as well: the SDK run-realtime.bat installs lives in
+         .dotnet, which the exe would not look in, and the exe then runs on any PC. -->
+    <SelfContained>true</SelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -33,4 +35,13 @@
   <ItemGroup>
     <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!-- An unpackaged publish leaves out the app's own resources (CausalVC.Realtime.pri and the
+       compiled XAML), without which the window crashes on start: copy them from the build output. -->
+  <Target Name="PublishAppXamlResources" AfterTargets="Publish">
+    <ItemGroup>
+      <AppXamlResource Include="$(OutDir)$(AssemblyName).pri;$(OutDir)*.xbf" />
+    </ItemGroup>
+    <Copy SourceFiles="@(AppXamlResource)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

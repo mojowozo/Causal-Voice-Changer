@@ -1,7 +1,8 @@
 # Windows front end (WinUI 3)
 
 The realtime voice changer's window on Windows: the same pages and control bar as the
-COSMIC front end in `../ui`, drawn with WinUI 3 on a Mica backdrop (desktop acrylic on
+COSMIC front end in `../ui`, 
+
 Windows 10), with the control bar, drop overlay and toasts in in-app acrylic. It drives
 the same Python engine (`../engine`), which on Windows listens on loopback TCP with a token
 ([protocol](../docs/engine-protocol.md)).
