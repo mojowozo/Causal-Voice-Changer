@@ -28,6 +28,14 @@ rem the folder to remove it). If that fails, the small window in causalvc\live_g
 rem Set CAUSALVC_REBUILD=1 to build it again (after updating the project).
 set "APP=realtime\winui\out\CausalVC.Realtime.exe"
 if defined CAUSALVC_REBUILD if exist "%APP%" del "%APP%"
+rem After an update (git pull): rebuild when any of the window's source files is newer than the program.
+if exist "%APP%" (
+    powershell -NoProfile -Command "$exe = (Get-Item '%APP%').LastWriteTime; $new = Get-ChildItem 'realtime\winui', 'nuget.config' -Recurse -File -Include *.cs,*.xaml,*.csproj,*.config | Where-Object { $_.FullName -notmatch '\\(out|bin|obj)\\' -and $_.LastWriteTime -gt $exe }; if ($new) { exit 1 }"
+    if errorlevel 1 (
+        echo The voice changer window was updated; building it again...
+        del "%APP%"
+    )
+)
 if exist "%APP%" goto launch
 
 call :find_dotnet

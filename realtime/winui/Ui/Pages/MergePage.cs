@@ -9,12 +9,21 @@ namespace CausalVC.Realtime.Ui.Pages;
 /// new voice's name. Only voices the engine says can be merged are offered.
 public sealed class MergePage : PageBase
 {
+    /// One voice and its strength. Its controls and row are made once and re-added when slots
+    /// come and go: an element can only have one parent, so it is never put in a second row.
     sealed class Slot
     {
         public readonly ComboBox Voice = new() { Width = 220, PlaceholderText = S.MergeSlotEmpty };
         public readonly Slider Strength = new() { Minimum = 1, Maximum = 100, StepFrequency = 1, Value = 50, Width = 160 };
         public readonly TextBlock Value = new() { Width = 32, VerticalAlignment = VerticalAlignment.Center };
-        public SettingRow? Row;
+        public readonly Button Remove;
+        public readonly SettingRow Row;
+
+        public Slot(Action<Slot> remove)
+        {
+            Remove = Build.IconButton("\uE738", S.MergeRemoveSlot, (_, _) => remove(this));
+            Row = new SettingRow("", null, Build.Row(Voice, Strength, Value, Remove));
+        }
     }
 
     readonly List<Slot> _slots = [];
@@ -23,6 +32,7 @@ public sealed class MergePage : PageBase
     readonly Button _merge;
     readonly TextBlock _problem = Build.Caption("");
     readonly TextBlock _notEnough = Build.Text(S.MergeNotEnough);
+    readonly Button _addSlot;
     List<string> _labels = [];
     List<string> _families = [];
     bool _merging;
@@ -30,6 +40,7 @@ public sealed class MergePage : PageBase
     public MergePage(IHost host) : base(host)
     {
         _merge = Build.Button(S.MergeButton, (_, _) => Merge(), null, "AccentButtonStyle");
+        _addSlot = Build.Button(S.MergeAddSlot, (_, _) => AddSlot(), "\uE710");
         _name.TextChanged += (_, _) => Refresh();
         _name.KeyDown += (_, args) =>
         {
@@ -76,7 +87,12 @@ public sealed class MergePage : PageBase
 
     void AddSlot()
     {
-        var slot = new Slot();
+        var slot = new Slot(removed =>
+        {
+            if (_slots.Count <= 2) return;
+            _slots.Remove(removed);
+            RenderSlots();
+        });
         slot.Voice.ItemsSource = _labels.ToList();
         slot.Voice.SelectionChanged += (_, _) => Refresh();
         slot.Strength.ValueChanged += (_, _) => Refresh();
@@ -90,17 +106,11 @@ public sealed class MergePage : PageBase
         for (int index = 0; index < _slots.Count; index++)
         {
             var slot = _slots[index];
-            var controls = Build.Row(slot.Voice, slot.Strength, slot.Value);
-            if (_slots.Count > 2)
-                controls.Children.Add(Build.IconButton("", S.MergeRemoveSlot, (_, _) =>
-                {
-                    _slots.Remove(slot);
-                    RenderSlots();
-                }));
-            slot.Row = new SettingRow(S.MergeSlot(index + 1), null, controls);
+            slot.Row.Title = S.MergeSlot(index + 1);
+            slot.Remove.Visibility = _slots.Count > 2 ? Visibility.Visible : Visibility.Collapsed;
             _voices.Add(slot.Row);
         }
-        _voices.Add(Build.Button(S.MergeAddSlot, (_, _) => AddSlot(), ""));
+        _voices.Add(_addSlot);
         Refresh();
     }
 
@@ -118,7 +128,6 @@ public sealed class MergePage : PageBase
         foreach (var slot in _slots)
         {
             slot.Value.Text = $"{slot.Strength.Value:0}";
-            if (slot.Row is null) continue;
             slot.Row.Description = slot.Voice.SelectedItem is not string name ? S.MergeSlotEmpty
                 : FamilyOf(name) != first ? S.MergeSlotIncompatible
                 : S.MergeShare(slot.Strength.Value / total * 100);
