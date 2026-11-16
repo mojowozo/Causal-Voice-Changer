@@ -99,13 +99,14 @@ class ServiceTest(unittest.TestCase):
             trainer.Job().start("Quiet", str(self.audio), 8, 100, 50, "default", "cuda:0", noise=True)
         self.assertEqual(command[command.index("--noise-aug") + 1], "0.6")
 
-    def test_builds_train_in_bfloat16_with_microphone_colour(self):
+    def test_builds_train_in_bfloat16_with_microphone_colour_and_save_averaged_weights(self):
         command = []
         with mock.patch.object(trainer.subprocess, "Popen", side_effect=lambda cmd, **_: command.extend(cmd) or mock.MagicMock()), \
                 mock.patch.object(trainer.threading, "Thread"):
             trainer.Job().start("Fast", str(self.audio), 8, 100, 50, "default", "cuda:0")
         self.assertIn("--bf16", command)
         self.assertEqual(command[command.index("--colour-aug") + 1], "0.5")
+        self.assertEqual(command[command.index("--ema") + 1], "0.999")
 
     def test_bad_forms_are_refused_naming_the_field(self):
         for changes, code, field in (

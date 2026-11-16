@@ -118,6 +118,9 @@ class Job:
         # Random microphone colour on half of the inputs: the voice depends less on the microphone, keeps bright or
         # breathy voices clearer and sounds a little more natural for everyone (P89: MOS +0.08 over 40 sentences).
         cmd += ["--colour-aug", "0.5"]
+        # Save an average of the recent weights rather than the last step's, which varies from run to run
+        # (P89: MOS +0.08 over the same run's last weights, clearer on a bright voice); costs no time.
+        cmd += ["--ema", "0.999"]
         # Trained to stay quiet through clicks, snaps, claps and background noise; costs a little on whispers and laughs.
         cmd += ["--noise-aug", "0.6"] if noise else []
         cmd += ["--app-models", app_models] if app_models else []

@@ -85,6 +85,7 @@ def main() -> None:
     ap.add_argument("--decorr", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--colour-aug", type=float, default=0.0, help="share of inputs given a random microphone colour (the training window uses 0.5); see causalvc.decoder.train")
+    ap.add_argument("--ema", type=float, default=0.0, help="save a moving average of the decoder's weights (the training window uses 0.999); see causalvc.decoder.train")
     ap.add_argument("--bf16", action="store_true", help="train in bfloat16, about 1.5x faster at the same quality (the training window always passes it); see causalvc.decoder.train")
     ap.add_argument("--run", help="run folder name under runs/models (default voice-NAME)")
     ap.add_argument("--app-models", help="a realtime app's models folder to register the voice in (the bundled app's is realtime/models)")
@@ -137,6 +138,7 @@ def main() -> None:
     argv += ["--tone", str(base["tone"])] if base.get("tone") else []
     argv += ["--bf16"] if a.bf16 else []
     argv += ["--colour-aug", str(a.colour_aug)] if a.colour_aug else []
+    argv += ["--ema", str(a.ema)] if a.ema else []
     from causalvc.decoder import train
 
     sys.argv = [sys.argv[0], *argv]

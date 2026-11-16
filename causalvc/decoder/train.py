@@ -210,6 +210,9 @@ def main(on_save=None) -> None:
     ap.add_argument("--bf16", action="store_true", help="run the decoder and discriminators in bfloat16, about 1.5x faster at the same "
                     "quality; the excitation, spectrograms and spectral losses stay in full precision. GPUs without native "
                     "bfloat16 train in full precision")
+    ap.add_argument("--ema", type=float, default=0.0, help="keep a moving average of the decoder's weights with this decay per step "
+                    "(the training window uses 0.999) and save that: it is smoother than the weights of any one step. "
+                    "The average starts short and lengthens to 1/(1-decay) steps, so early checkpoints do not lag")
     ap.add_argument("--tone", type=float, default=0.0, help="experimental: also tell the decoder each frame's brightness and vowel openness; "
                     "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
@@ -248,11 +251,12 @@ def main(on_save=None) -> None:
     opt_g = torch.optim.AdamW(gen.parameters(), args.lr, betas=(0.8, 0.99))
     opt_d = torch.optim.AdamW(disc.parameters(), args.lr, betas=(0.8, 0.99))
     step = 0
+    saved_ema = None
     if args.resume and last.exists():
         ck = torch.load(last, map_location=dev)
         gen.load_state_dict(ck["generator"]), disc.load_state_dict(ck["discriminator"])
         opt_g.load_state_dict(ck["opt_g"]), opt_d.load_state_dict(ck["opt_d"])
-        step = ck["step"]
+        step, saved_ema = ck["step"], ck.get("ema")
         print(f"resumed at step {step}", flush=True)
     elif args.init:
         ck = torch.load(args.init, map_location=dev)
@@ -279,6 +283,17 @@ def main(on_save=None) -> None:
             w[base_n:] = w[:base_n].mean(0, keepdim=True)
             print(f"added {len(spk) - base_n} new voice(s): {list(spk)[base_n:]}", flush=True)
         print(f"initialised from {args.init} (step {ck['step']})", flush=True)
+    # The average of the generator's weights: the state_dict's tensors share the parameters' storage, so
+    # `live` follows every optimiser step. last.pt keeps the raw weights (to resume or fine-tune from) and
+    # the average under "ema"; the decoder files hold the average.
+    ema = live = None
+    if args.ema:
+        own = gen.state_dict()
+        names = [a for a, b in own.items() if b.is_floating_point()]
+        live = [own[a] for a in names]
+        ema = {a: (saved_ema or {}).get(a, own[a]).detach().clone().float() for a in names}
+        if saved_ema is None and step:
+            print("the checkpoint has no weight average: it starts from the current weights", flush=True)
     decay = lambda s: 0.999996**s  # noqa: E731  (halves every ~170k steps)
     sch_g = torch.optim.lr_scheduler.LambdaLR(opt_g, decay, last_epoch=-1)
     sch_d = torch.optim.lr_scheduler.LambdaLR(opt_d, decay, last_epoch=-1)
@@ -395,6 +410,9 @@ def main(on_save=None) -> None:
         loss_g.backward()
         disc.requires_grad_(True)
         opt_g.step()
+        if ema is not None:
+            with torch.no_grad():
+                torch._foreach_lerp_(list(ema.values()), live, 1.0 - min(args.ema, (1 + step) / (10 + step)))
         sch_g.step(), sch_d.step()
         step += 1
 
@@ -410,8 +428,12 @@ def main(on_save=None) -> None:
                 "opt_g": opt_g.state_dict(), "opt_d": opt_d.state_dict(), "step": step,
                 "cfg": cfg, "speakers": list(spk), "encoder": args.encoder,  # a hint only: causalvc.voice.encoder_path falls back to the shared encoder
             }
+            if ema is not None:
+                ck["ema"] = ema
             torch.save(ck, last)
-            slim = {a: b for a, b in ck.items() if a not in ("discriminator", "opt_g", "opt_d")}
+            slim = {a: b for a, b in ck.items() if a not in ("discriminator", "opt_g", "opt_d", "ema")}
+            if ema is not None:
+                slim["generator"] = {**ck["generator"], **ema}
             torch.save(slim, out / "decoder.pt")
             if args.voice:  # every checkpoint of a voice is kept, so different amounts of training can be compared
                 torch.save(slim, out / f"decoder-{step}s.pt")
