@@ -37,6 +37,8 @@ pub struct Form {
     pub device: String,
     #[serde(default)]
     pub app_models: String,
+    #[serde(default)]
+    pub noise: bool,
 }
 
 fn default_batch() -> u64 {

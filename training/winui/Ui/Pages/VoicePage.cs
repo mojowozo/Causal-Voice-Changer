@@ -21,6 +21,7 @@ public sealed class VoicePage : PageBase
     readonly NumberBox _saveEvery = Number(1000);
     readonly NumberBox _batch = Number(1);
     readonly ToggleSwitch _restart = Toggle();
+    readonly ToggleSwitch _noise = Toggle();
     readonly ComboBox _base = new() { MinWidth = 220 };
     readonly ComboBox _gpu = new() { MinWidth = 220, ItemsSource = new[] { S.GpuLoading }, SelectedIndex = 0, IsEnabled = false };
     readonly ToggleSwitch _install = Toggle();
@@ -63,6 +64,7 @@ public sealed class VoicePage : PageBase
             .Add(Row("steps", S.Steps, S.StepsDetail, _steps))
             .Add(Row("save_every", S.SaveEvery, S.SaveEveryDetail, _saveEvery))
             .Add(Row("batch", S.Batch, S.BatchDetail, _batch))
+            .Add(new SettingRow(S.Noise, S.NoiseDetail, _noise))
             .Add(new SettingRow(S.Restart, S.RestartDetail, _restart)));
 
         Column.Children.Add(new SettingsSection(S.SectionHardware)
@@ -115,6 +117,7 @@ public sealed class VoicePage : PageBase
         _steps.Value = form.Steps;
         _saveEvery.Value = form.SaveEvery;
         _batch.Value = form.Batch;
+        _noise.IsOn = form.Noise;
         _install.IsOn = form.AppModels.Length > 0;
         _appModels.Text = form.AppModels.Length > 0
             ? form.AppModels
@@ -146,6 +149,7 @@ public sealed class VoicePage : PageBase
             ["device"] = _wantedGpu,
             // Not offered in the window: every voice trains with the quality fixes.
             ["fixes"] = true,
+            ["noise"] = _noise.IsOn,
             ["restart"] = _restart.IsOn,
             ["app_models"] = _install.IsOn ? _appModels.Text.Trim() : "",
         };

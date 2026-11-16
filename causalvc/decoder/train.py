@@ -22,6 +22,7 @@ import torchaudio
 
 from causalvc.decoder.disc import Discriminators, EnergyLoss, MelLoss, SpecLoss, d_loss, g_loss
 from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder
+from causalvc.augment import add_noise
 from causalvc.decoder.model import tone as tone_of
 from causalvc.infer import CausalVC, extract, load_encoder
 from causalvc.pitch import Rmvpe
@@ -194,6 +195,8 @@ def main(on_save=None) -> None:
     ap.add_argument("--perturb", type=float, default=0.0, help="share of steps whose content comes from a spectrally warped copy of the crop")
     ap.add_argument("--energy-loss", type=float, default=0.0, help="weight of a loss on each band's segment-averaged power (long-term tone)")
     ap.add_argument("--decorr", type=float, default=0.0, help="weight of a loss that makes unvoiced output depend on the random noise input (breaths, whispers, sibilants)")
+    ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: share of examples whose input gets background noise, clicks, snaps or thumps "
+                    "while the target stays clean (some are noise alone with a silent target), so non-voice sounds come out quiet")
     ap.add_argument("--tone", type=float, default=0.0, help="experimental: also tell the decoder each frame's brightness and vowel openness; "
                     "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
@@ -300,12 +303,15 @@ def main(on_save=None) -> None:
         if step % 10 == 0 and stop_file.exists():
             stop["now"] = True
         wav, s = wav.to(dev, non_blocking=True), s.to(dev)
-        content, f0, loud = extract(enc, rmvpe, wav)
+        src = wav
+        if args.noise_aug:  # what the microphone hears (src) differs from what should come out (wav)
+            src, wav = add_noise(wav, args.noise_aug)
+        content, f0, loud = extract(enc, rmvpe, src)
         if args.perturb and random.random() < args.perturb:
-            content = warped_content(enc, wav, content.shape[1])
+            content = warped_content(enc, src, content.shape[1])
         if bank is not None:
             content = looked_up(content, bank, s)
-        tn = tone_of(wav) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
+        tn = tone_of(src) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
         h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn)
         exc = gen.source(f0[:, : h.shape[-1]])
         fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME])

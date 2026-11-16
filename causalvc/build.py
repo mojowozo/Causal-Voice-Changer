@@ -83,6 +83,7 @@ def main() -> None:
     ap.add_argument("--perturb", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--energy-loss", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--decorr", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
+    ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--run", help="run folder name under runs/models (default voice-NAME)")
     ap.add_argument("--app-models", help="a realtime app's models folder to register the voice in (the bundled app's is realtime/models)")
     a = ap.parse_args()
@@ -127,7 +128,7 @@ def main() -> None:
             "--batch", str(a.batch), "--lr", "1e-4", "--stft-loss", "20", "--steps", str(a.steps),
             "--save-every", str(a.save_every or max(1, a.steps // 4)), "--device", a.device,
             "--voice", f"{a.name}={a.audio}", "--only", a.name,
-            "--perturb", str(a.perturb), "--energy-loss", str(a.energy_loss), "--decorr", str(a.decorr)]
+            "--perturb", str(a.perturb), "--energy-loss", str(a.energy_loss), "--decorr", str(a.decorr), "--noise-aug", str(a.noise_aug)]
     argv += ["--resume"] if done else ["--init", str(base_dir / "last.pt")]
     argv += ["--glide-next"] if base.get("glide_next") else ["--glide"] if base.get("glide") else []
     argv += ["--smooth-in", base["smooth_in"]] if base.get("smooth_in") else []

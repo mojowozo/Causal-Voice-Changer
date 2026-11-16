@@ -110,6 +110,11 @@ fn voice_page(app: &App) -> Element<'_, Message> {
                 .control(field(app, Field::Batch, &app.batch, NUMBER_WIDTH)),
         )
         .add(
+            settings::item::builder(fl!("noise"))
+                .description(fl!("noise-detail"))
+                .toggler(app.noise, Message::Noise),
+        )
+        .add(
             settings::item::builder(fl!("restart"))
                 .description(fl!("restart-detail"))
                 .toggler(app.restart, Message::Restart),

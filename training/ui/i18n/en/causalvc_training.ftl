@@ -27,6 +27,8 @@ save-every = Save a version every
 save-every-detail = Steps between saved versions (NAME-1000s, NAME-2000s and so on), to compare and keep the best.
 batch = Batch size
 batch-detail = Clips trained on at once. Lower it if the GPU runs out of memory.
+noise = Ignore background sounds
+noise-detail = Trains the voice to stay silent through clicks, snaps, claps and room noise. Whispers and laughs lose a little detail.
 restart = Start over
 restart-detail = Ignore this voice name's earlier progress and train from the beginning. Applies to the next build only.
 

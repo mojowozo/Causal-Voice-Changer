@@ -65,6 +65,7 @@ pub enum Message {
     Trainer(Event),
     Text(Field, String),
     Restart(bool),
+    Noise(bool),
     Install(bool),
     SelectBase(usize),
     SelectGpu(usize),
@@ -98,6 +99,7 @@ pub struct App {
     pub save_every: String,
     pub batch: String,
     pub restart: bool,
+    pub noise: bool,
     pub install: bool,
     pub app_models: String,
     /// Base names from the trainer ("default" first) and their labels.
@@ -160,6 +162,7 @@ impl cosmic::Application for App {
             save_every: "1000".into(),
             batch: "8".into(),
             restart: false,
+            noise: false,
             install: true,
             app_models: String::new(),
             bases: vec!["default".into()],
@@ -210,6 +213,7 @@ impl cosmic::Application for App {
                 *self.text_mut(field) = text;
             }
             Message::Restart(on) => self.restart = on,
+            Message::Noise(on) => self.noise = on,
             Message::Install(on) => self.install = on,
             Message::SelectBase(index) => self.base = index,
             Message::SelectGpu(index) => {
@@ -317,6 +321,7 @@ impl App {
                 "device": device,
                 // Not offered in the window: every voice trains with the quality fixes.
                 "fixes": true,
+                "noise": self.noise,
                 "restart": self.restart,
                 "app_models": if self.install { self.app_models.trim() } else { "" },
             }),
@@ -392,6 +397,7 @@ impl App {
         self.steps = form.steps.to_string();
         self.save_every = form.save_every.to_string();
         self.batch = form.batch.to_string();
+        self.noise = form.noise;
         self.install = !form.app_models.is_empty();
         if !form.app_models.is_empty() {
             self.app_models = form.app_models;

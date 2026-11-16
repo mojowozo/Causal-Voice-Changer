@@ -34,6 +34,8 @@ static class S
     public const string SaveEveryDetail = "Steps between saved versions (NAME-1000s, NAME-2000s and so on), to compare and keep the best.";
     public const string Batch = "Batch size";
     public const string BatchDetail = "Clips trained on at once. Lower it if the GPU runs out of memory.";
+    public const string Noise = "Ignore background sounds";
+    public const string NoiseDetail = "Trains the voice to stay silent through clicks, snaps, claps and room noise. Whispers and laughs lose a little detail.";
     public const string Restart = "Start over";
     public const string RestartDetail = "Ignore this voice name's earlier progress and train from the beginning. Applies to the next build only.";
 

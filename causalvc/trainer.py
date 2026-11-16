@@ -18,7 +18,7 @@ Commands ({"cmd": ..., "args": {...}}):
     stop              first: save a checkpoint and stop; second: end at once
 
 A config is {"name", "audio", "batch", "steps", "save_every", "base", "device",
-"restart", "fixes", "app_models"}; it is checked, and the form is remembered
+"restart", "fixes", "noise", "app_models"}; it is checked, and the form is remembered
 for next time (runs/gui.json, shared with the Tk window).
 
 Events ({"event": ..., "data": {...}}):
@@ -61,6 +61,7 @@ DEFAULT_FORM = {
     "base": "default",
     "device": "cuda:0",
     "fixes": True,
+    "noise": False,
     "app_models": str(ROOT / "realtime" / "models"),
 }
 
@@ -106,13 +107,15 @@ class Job:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, name: str, audio: str, batch: int, steps: int, save_every: int, base: str, device: str,
-              restart: bool = False, app_models: str = "", fixes: bool = True) -> None:
+              restart: bool = False, app_models: str = "", fixes: bool = True, noise: bool = False) -> None:
         self.run_dir, self.stopping = ROOT / "runs" / "models" / f"voice-{name}", False
         cmd = [sys.executable, "-u", "-m", "causalvc.build", "--name", name, "--audio", audio, "--batch", str(batch),
                "--steps", str(steps), "--save-every", str(save_every), "--base", base, "--device", device]
         cmd += ["--restart"] if restart else []
         # Natural breath noise, steadier tone, and less of the source voice leaking through; about a quarter slower.
         cmd += ["--perturb", "0.75", "--energy-loss", "20", "--decorr", "10"] if fixes else []
+        # Trained to stay quiet through clicks, snaps, claps and background noise; costs a little on whispers and laughs.
+        cmd += ["--noise-aug", "0.6"] if noise else []
         cmd += ["--app-models", app_models] if app_models else []
         env = dict(os.environ, PYTHONPATH=str(ROOT), CAUSALVC_PROGRESS_SECONDS="1", PYTHONIOENCODING="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -203,6 +206,7 @@ def check_config(args: dict, bases: list[str]) -> dict:
         "restart": bool(args.get("restart")),
         "app_models": str(args.get("app_models") or "").strip(),
         "fixes": bool(args.get("fixes", True)),
+        "noise": bool(args.get("noise", False)),
     }
 
 

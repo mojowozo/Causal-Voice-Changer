@@ -48,3 +48,38 @@ def degrade(wav: torch.Tensor, sr: int = 16000, strength: float = 1.0) -> torch.
     peak = out.abs().amax(1, keepdim=True).clamp_min(1e-5)
     limit = torch.where(coin(0.1 * strength) > 0, rand(0.25, 0.8), torch.full_like(peak, 10.0)) * peak
     return torch.maximum(torch.minimum(out, limit), -limit)
+
+
+@torch.no_grad()
+def add_noise(wav: torch.Tensor, share: float = 0.6, silent: float = 0.12, sr: int = 48000) -> tuple[torch.Tensor, torch.Tensor]:
+    """Non-voice sounds a microphone picks up, for teaching a decoder to stay quiet through them.
+
+    [B, N] clean -> (input, target). For `share` of the examples the input gains steady background
+    noise and/or short bursts (clicks, snaps, claps, thumps) while the target stays clean; for `silent`
+    of them the voice is removed as well, so the input is noise alone and the target is silence."""
+    b, n = wav.shape
+    dev = wav.device
+    inp, target = wav.clone(), wav.clone()
+    freq = torch.fft.rfftfreq(n, 1 / sr, device=dev).clamp_min(20)
+    u = lambda lo, hi: float(torch.empty(1).uniform_(lo, hi))  # noqa: E731
+    for i in range(b):
+        r = u(0, 1)
+        if r >= share:
+            continue
+        if r < silent:
+            inp[i], target[i] = 0.0, 0.0
+        if r < silent or u(0, 1) < 0.6:  # steady noise with a random tilt, far below ordinary speech
+            x = torch.fft.irfft(torch.fft.rfft(torch.randn(n, device=dev)) * freq ** (-u(0.0, 1.5)), n)
+            inp[i] += x / x.pow(2).mean().sqrt() * 10 ** (u(-65, -35) / 20)
+        if u(0, 1) < 0.75:
+            for _ in range(int(u(1, 6))):  # bursts: 3-90 ms of band-limited noise with a sharp start and a decaying tail
+                k = int(u(0.003, 0.09) * sr)
+                at = int(u(0, n - k))
+                burst = torch.randn(k, device=dev) * torch.exp(-torch.arange(k, device=dev) / (k / u(3, 8)))
+                f = torch.fft.rfftfreq(k, 1 / sr, device=dev)
+                lo = 10 ** u(1.6, 3.5)
+                spec = torch.fft.rfft(burst)
+                spec[(f < lo) | (f > min(lo * u(2, 10), 14000.0))] = 0
+                burst = torch.fft.irfft(spec, k)
+                inp[i, at : at + k] += burst / burst.abs().max().clamp_min(1e-6) * 10 ** (u(-35, -3) / 20)
+    return inp.clamp(-1.0, 1.0), target

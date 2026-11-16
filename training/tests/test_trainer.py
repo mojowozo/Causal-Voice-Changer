@@ -86,6 +86,19 @@ class ServiceTest(unittest.TestCase):
         form = trainer.load_form()
         self.assertEqual((form["steps"], form["fixes"], form["name"]), (10000, True, "Ok"))
 
+    def test_noise_training_is_off_unless_asked_and_is_remembered(self):
+        self.service.command("start", self.config())
+        self.assertFalse(self.job.started[-1]["noise"])
+        self.assertFalse(trainer.load_form()["noise"])
+        self.service.command("queue", self.config(name="Quiet", noise=True))
+        self.assertTrue(self.state()["queue"])
+        self.assertTrue(trainer.load_form()["noise"])
+        command = []
+        with mock.patch.object(trainer.subprocess, "Popen", side_effect=lambda cmd, **_: command.extend(cmd) or mock.MagicMock()), \
+                mock.patch.object(trainer.threading, "Thread"):
+            trainer.Job().start("Quiet", str(self.audio), 8, 100, 50, "default", "cuda:0", noise=True)
+        self.assertEqual(command[command.index("--noise-aug") + 1], "0.6")
+
     def test_bad_forms_are_refused_naming_the_field(self):
         for changes, code, field in (
             ({"name": "two words"}, "invalid_name", "name"),

@@ -59,6 +59,7 @@ public sealed class Form
     public string Base = "default";
     public string Device = "";
     public string AppModels = "";
+    public bool Noise;
 
     public static Form From(JsonObject json) => new()
     {
@@ -70,6 +71,7 @@ public sealed class Form
         Base = json.Str("base", "default"),
         Device = json.Str("device"),
         AppModels = json.Str("app_models"),
+        Noise = json.Bool("noise"),
     };
 }
 
