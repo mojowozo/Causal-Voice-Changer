@@ -20,7 +20,6 @@ public sealed class VoicePage : PageBase
     readonly NumberBox _steps = Number(1000);
     readonly NumberBox _saveEvery = Number(1000);
     readonly NumberBox _batch = Number(1);
-    readonly ToggleSwitch _fixes = Toggle();
     readonly ToggleSwitch _restart = Toggle();
     readonly ComboBox _base = new() { MinWidth = 220 };
     readonly ComboBox _gpu = new() { MinWidth = 220, ItemsSource = new[] { S.GpuLoading }, SelectedIndex = 0, IsEnabled = false };
@@ -64,7 +63,6 @@ public sealed class VoicePage : PageBase
             .Add(Row("steps", S.Steps, S.StepsDetail, _steps))
             .Add(Row("save_every", S.SaveEvery, S.SaveEveryDetail, _saveEvery))
             .Add(Row("batch", S.Batch, S.BatchDetail, _batch))
-            .Add(new SettingRow(S.Fixes, S.FixesDetail, _fixes))
             .Add(new SettingRow(S.Restart, S.RestartDetail, _restart)));
 
         Column.Children.Add(new SettingsSection(S.SectionHardware)
@@ -77,7 +75,6 @@ public sealed class VoicePage : PageBase
             .Add(new SettingRow(S.Install, S.InstallDetail, _install))
             .Add(_appModelsRow));
 
-        _fixes.IsOn = true;
         _install.IsOn = true;
         _steps.Value = 10000;
         _saveEvery.Value = 10000;
@@ -118,7 +115,6 @@ public sealed class VoicePage : PageBase
         _steps.Value = form.Steps;
         _saveEvery.Value = form.SaveEvery;
         _batch.Value = form.Batch;
-        _fixes.IsOn = form.Fixes;
         _install.IsOn = form.AppModels.Length > 0;
         _appModels.Text = form.AppModels.Length > 0
             ? form.AppModels
@@ -148,7 +144,8 @@ public sealed class VoicePage : PageBase
             ["batch"] = Whole(_batch),
             ["base"] = _base.SelectedIndex >= 0 && _base.SelectedIndex < _bases.Count ? _bases[_base.SelectedIndex] : "default",
             ["device"] = _wantedGpu,
-            ["fixes"] = _fixes.IsOn,
+            // Not offered in the window: every voice trains with the quality fixes.
+            ["fixes"] = true,
             ["restart"] = _restart.IsOn,
             ["app_models"] = _install.IsOn ? _appModels.Text.Trim() : "",
         };

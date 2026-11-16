@@ -47,7 +47,6 @@ def main() -> None:
         "base": tk.StringVar(value=""),
         "device": tk.StringVar(value=""),
         "restart": tk.BooleanVar(value=False),
-        "fixes": tk.BooleanVar(value=saved.get("fixes", True)),
         "app_models": tk.StringVar(value=saved.get("app_models", str(ROOT / "realtime" / "models"))),
     }
     row = 0
@@ -107,9 +106,6 @@ def main() -> None:
     row += 1
     ttk.Checkbutton(frame, text="Start over (ignores existing checkpoints for this voice name)", variable=v["restart"]).grid(
         row=row, column=1, columnspan=2, sticky="w", pady=(2, 8))
-    row += 1
-    ttk.Checkbutton(frame, text="Quality fixes: natural breaths and whispers, brighter tone (about 25% slower)", variable=v["fixes"]).grid(
-        row=row, column=1, columnspan=2, sticky="w", pady=(0, 8))
     row += 1
 
     buttons = ttk.Frame(frame)
@@ -197,11 +193,11 @@ def main() -> None:
         app_models = v["app_models"].get().strip()
         SETTINGS.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS.write_text(json.dumps({"audio": audio, "name": name, "batch": batch, "steps": steps, "save_every": save_every,
-                                        "device": device, "app_models": app_models, "fixes": v["fixes"].get()}, indent=1))
+                                        "device": device, "app_models": app_models, "fixes": True}, indent=1))
         base = v["base"].get() if v["custom"].get() and v["base"].get() else "default"
         return {"name": name, "audio": audio, "batch": batch, "steps": steps, "save_every": save_every,
                 "base": base, "device": device, "restart": v["restart"].get(), "app_models": app_models,
-                "fixes": v["fixes"].get()}
+                "fixes": True}
 
     def start() -> None:
         config = collect_config()

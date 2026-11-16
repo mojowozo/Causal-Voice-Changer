@@ -13,6 +13,7 @@ JACK worker, and the file decoder only touch the audio buffers and the
 ``latest_*`` meter values.
 """
 
+import json
 import os
 import queue
 import shutil
@@ -37,10 +38,12 @@ from engine.settings import (
     RESTART_SETTING_KEYS,
     EngineSettings,
     coerce_setting,
-    load_model_settings,
     load_settings,
-    save_model_settings,
+    load_voice_settings,
+    model_settings_from,
+    model_settings_to_save,
     save_settings,
+    save_voice_settings,
 )
 from engine.version import APP_TITLE, BUILD_LABEL
 from infer import causalvc_backend
@@ -54,7 +57,7 @@ from tools.audio_routing import (
     stream_options,
 )
 from tools.file_audio_source import FileAudioSource
-from tools.model_import import ModelImportError, import_models, install_loose, voice_files
+from tools.model_import import ModelImportError, import_models, voice_files
 from tools import asio as asio_driver
 from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
@@ -62,9 +65,11 @@ from tools.loudness import TARGETS_LUFS, LoudnessMeter
 from tools.model_registry import (
     TrashError,
     discover_models,
+    embedded_settings,
     model_name_problem,
     move_to_trash,
-    rename_model_folder,
+    remove_if_empty,
+    rename_model,
 )
 from tools.wav_recorder import WavRecorder
 
@@ -194,6 +199,8 @@ class RealtimeEngine:
         self.file_state = (False, False)
         self.pending_model_settings_name = None
         self.model_settings_save_due = 0.0
+        #: Every voice's saved settings (configs/voice_settings.json), by name.
+        self.voice_settings = load_voice_settings()
         self.ffmpeg_path = shutil.which("ffmpeg") or os.path.join(
             PROJECT_ROOT, "tools", "ffmpeg", "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
         )
@@ -251,17 +258,22 @@ class RealtimeEngine:
     # Models, GPUs, devices
     # ------------------------------------------------------------------
     def refresh_models(self):
-        installed, problems = install_loose(MODELS_ROOT)
-        if installed:
-            printt("Installed voice file(s) from the models folder: %s", ", ".join(installed))
-        for problem in problems:
-            printt("Skipped a voice file in the models folder: %s", problem)
         self.models = discover_models(MODELS_ROOT)
         self.models_by_name = {model.name: model for model in self.models}
 
     def model_settings_for(self, model_name):
+        """A voice's settings: the ones saved for it here, else the ones it came with."""
         model = self.models_by_name.get(model_name)
-        return load_model_settings(str(model.directory) if model else None)
+        if model is None:
+            return model_settings_from(None)
+        saved = self.voice_settings.get(model_name)
+        return model_settings_from(saved if saved is not None else embedded_settings(model))
+
+    def save_voice_settings(self):
+        try:
+            save_voice_settings(self.voice_settings)
+        except OSError as error:
+            printt("Could not save voice settings: %s", error)
 
     def refresh_gpu_options(self):
         self.gpu_options = [{"id": "auto", "label": None}]
@@ -322,7 +334,7 @@ class RealtimeEngine:
         return names
 
     def export_model(self, name, path):
-        """Pack a model folder into one .cvc file at ``path``, with its saved settings, to share."""
+        """Write a voice as one .cvc file at ``path``, with its settings, to share."""
         model = self.models_by_name.get(name)
         if model is None:
             raise EngineError("no_model", f"No model named {name}.")
@@ -330,9 +342,14 @@ class RealtimeEngine:
             raise EngineError("bad_request", "path must be an absolute file path")
         if not path.lower().endswith(voice_files.CVC_SUFFIX):
             path += voice_files.CVC_SUFFIX
-        self.flush_model_settings_save(force=True)  # the settings file is packed too
+        self.flush_model_settings_save(force=True)  # its settings go along
+        settings = json.dumps(model_settings_to_save(self.model_settings_for(name)), indent=2).encode()
         try:
-            written = voice_files.folder_to_cvc(model.directory, path, settings=True)
+            if model.is_file:
+                written = voice_files.copy_with_settings(model.path, path, settings)
+            else:  # an older voice folder
+                written = voice_files.folder_to_cvc(model.path, path, settings=False, name=name)
+                voice_files.copy_with_settings(written, written, settings)
         except (OSError, ValueError, KeyError) as error:
             raise EngineError("export_failed", f"Could not write {path}: {error}") from error
         printt("Exported %s to %s", name, written)
@@ -340,25 +357,29 @@ class RealtimeEngine:
         return str(written)
 
     def delete_model(self, name):
-        """Move a model's folder to the Trash; another model is selected if needed."""
+        """Move a voice (its .cvc, or an older voice's folder) to the Trash, and its voice's folder
+        once that is empty; another is selected if needed."""
         model = self.models_by_name.get(name)
         if model is None:
             raise EngineError("no_model", f"Unknown model: {name}")
         if self.running and self.function == "vc" and name == self.settings.model_name:
             raise EngineError("model_in_use", "Stop converting before deleting this model.")
-        # A pending settings save would recreate the folder after it is gone.
         self.flush_model_settings_save(force=True)
         try:
-            move_to_trash(model.directory)
+            move_to_trash(model.path)
         except (OSError, subprocess.SubprocessError, TrashError) as error:
             raise EngineError("delete_failed", str(error), model=name) from error
-        printt("Moved model to the Trash: %s", model.directory)
+        printt("Moved model to the Trash: %s", model.path)
+        if model.is_file:
+            remove_if_empty(model.path.parent, MODELS_ROOT)
+        if self.voice_settings.pop(name, None) is not None:
+            self.save_voice_settings()
         self.reload_models()
         save_settings(self.settings)
         self.status("model_deleted", name=name)
 
     def rename_model(self, name, new_name):
-        """Rename a model's folder (its name everywhere); settings go with it."""
+        """Rename a voice (its .cvc, or an older voice's folder); its settings go with it."""
         model = self.models_by_name.get(name)
         if model is None:
             raise EngineError("no_model", f"Unknown model: {name}")
@@ -376,15 +397,17 @@ class RealtimeEngine:
             raise EngineError("model_name_taken", f"A model named {clash} already exists.")
         if self.running and self.function == "vc" and name == self.settings.model_name:
             raise EngineError("model_in_use", "Stop converting before renaming this model.")
-        # A pending settings save would recreate the old folder.
         self.flush_model_settings_save(force=True)
         try:
-            rename_model_folder(model.directory, new_name)
+            rename_model(model.path, new_name)
         except FileExistsError as error:
             raise EngineError("model_name_taken", f"{new_name} already exists.") from error
         except OSError as error:
             raise EngineError("rename_failed", str(error), model=name) from error
         printt("Renamed model %s to %s", name, new_name)
+        if name in self.voice_settings:
+            self.voice_settings[new_name] = self.voice_settings.pop(name)
+            self.save_voice_settings()
         if self.settings.model_name == name:
             self.settings.model_name = new_name
         self.reload_models()
@@ -484,12 +507,9 @@ class RealtimeEngine:
             return
         if not force and time.monotonic() < self.model_settings_save_due:
             return
-        model = self.models_by_name.get(model_name)
-        if model is not None:
-            try:
-                save_model_settings(str(model.directory), self.settings)
-            except OSError as error:
-                printt("Could not save model settings: %s", error)
+        if model_name in self.models_by_name:
+            self.voice_settings[model_name] = model_settings_to_save(self.settings)
+            self.save_voice_settings()
         self.pending_model_settings_name = None
         self.model_settings_save_due = 0.0
 

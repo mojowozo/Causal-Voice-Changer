@@ -28,6 +28,8 @@ MODELS = Path(__file__).resolve().parent.parent / "models"
 
 def find_voice():
     for model in discover_models(MODELS):
+        if model.is_file:  # a .cvc needs nothing else
+            return model
         if causalvc_backend.is_causalvc(model.model_path):
             spec = json.loads(model.model_path.read_text())
             if os.path.isdir(spec.get("project") or causalvc_backend.REPOSITORY):
@@ -60,7 +62,7 @@ def causalvc_engine(model, block_time, device):
 class CausalVCBackendTest(unittest.TestCase):
     def test_registry_lists_the_voice_without_an_index(self):
         model = find_voice()
-        self.assertTrue(str(model.model_path).endswith((".causalvc.json", ".nextvc.json")))
+        self.assertTrue(str(model.model_path).endswith(causalvc_backend.SUFFIXES))
 
     def test_block_is_rounded_to_whole_frames(self):
         device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")

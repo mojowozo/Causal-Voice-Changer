@@ -19,8 +19,9 @@ import sys
 
 import torch
 
-#: Voice descriptions; the second spelling is the project's earlier name and still loads.
-SUFFIXES = (".causalvc.json", ".nextvc.json")
+#: A voice file (.cvc), or an older voice folder's description (the second spelling is the
+#: project's earlier name and still loads).
+SUFFIXES = (".cvc", ".causalvc.json", ".nextvc.json")
 #: Blocks must be a whole number of 20 ms encoder frames at 48 kHz.
 SAMPLE_RATE = 48000
 #: The repository this app is part of (the folder above realtime/).

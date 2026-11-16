@@ -10,10 +10,11 @@ A voice is shared as one file, NAME-10000s.cvc: a zip holding
                                 pitch tracker instead of the shared ones (voice.json then
                                 names them: "encoder": "encoder.pt")
 
-and installed (by the realtime app, or unpack()) as a folder of the same files,
-the description renamed to NAME-10000s.causalvc.json. Nothing in either names
-a place on the machine that made it, so both work anywhere this project is
-installed. The two networks every voice shares (the content encoder and the
+The realtime app uses the file as it is: its voices folder holds one .cvc per
+voice, loaded through a cache outside the project (cached()). Older installs
+unpacked each voice into a folder of the same files, the description renamed
+to NAME-10000s.causalvc.json; those still load. Nothing in either names a place
+on the machine that made it, so both work anywhere this project is installed. The two networks every voice shares (the content encoder and the
 pitch tracker) are not included unless the voice uses its own: they come with the
 base that setup downloads.
 
@@ -194,7 +195,7 @@ def export_cvc(decoder, speaker: str, target, name: str | None = None) -> Path:
     return write_cvc(target, name or voice_name(target), speaker, buffer.getvalue())
 
 
-def folder_to_cvc(path, target, settings: bool = True) -> Path:
+def folder_to_cvc(path, target, settings: bool = True, name: str | None = None) -> Path:
     """Pack an installed voice (its folder, or the description in it) into a .cvc file.
 
     With `settings`, the folder's realtime_settings.json (pitch, gains) goes along."""
@@ -204,7 +205,7 @@ def folder_to_cvc(path, target, settings: bool = True) -> Path:
     extra = description.parent / CVC_SETTINGS
     return write_cvc(
         target,
-        voice_name(target),
+        name or voice_name(target),
         spec["speaker"],
         own_decoder(decoder, spec["speaker"]),
         extra.read_bytes() if settings and extra.is_file() else None,
@@ -330,29 +331,76 @@ def unpack(path, folder, name: str | None = None) -> Path:
     return folder / f"{name}.causalvc.json"
 
 
-def install(path, folder) -> Path:
-    """Install a .cvc as `folder`, replacing the voice files of one already there (a rebuild
-    of the same checkpoint) but keeping its realtime settings. Returns the description's path."""
-    folder = Path(folder)
-    if not folder.exists():
-        return unpack(path, folder)
-    fresh = unpack(path, folder.with_name(f".install-{uuid.uuid4().hex}"), folder.name).parent
+def install(path, target) -> Path:
+    """Put a .cvc in a voices folder as `target` (replacing one there: a rebuild of the same
+    checkpoint). A hard link when both are on one disk, else a copy; either way it appears
+    complete or not at all. The realtime app keeps its own settings for the voice by name."""
+    path, target = Path(path), Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
     try:
-        for old in folder.iterdir():
-            if old.name.endswith(SUFFIXES):
-                old.unlink()
-        for item in fresh.iterdir():
-            if item.name == CVC_SETTINGS and (folder / CVC_SETTINGS).exists():
-                continue  # the settings chosen on this machine win over the file's
-            item.replace(folder / item.name)
-    finally:
-        shutil.rmtree(fresh, ignore_errors=True)
-    return description_in(folder)
+        try:
+            os.link(path, partial)
+        except OSError:
+            shutil.copyfile(path, partial)
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def voice_folder(models, name) -> Path:
+    """Where a voice's checkpoints go in a voices folder: ``models/NAME/``.  An older install
+    already called NAME (a folder holding a voice description) is a voice of its own, so
+    checkpoints then go straight into ``models``."""
+    folder = Path(models) / name
+    if folder.is_dir() and any(path.name.endswith(SUFFIXES) for path in folder.iterdir()):
+        return Path(models)
+    return folder
+
+
+def settings_in(path) -> bytes | None:
+    """The realtime settings a .cvc carries (its realtime_settings.json), or None."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo(CVC_SETTINGS)
+            if info.file_size > 1 << 20:
+                return None
+            return archive.read(info)
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return None
+
+
+def copy_with_settings(path, target, settings: bytes | None) -> Path:
+    """Copy a .cvc to `target` with `settings` as its realtime_settings.json (none: without one)."""
+    path, target = Path(path), Path(target)
+    read_cvc(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".part")
+    try:
+        with zipfile.ZipFile(path) as source, zipfile.ZipFile(partial, "w") as archive:
+            for info in source.infolist():
+                if info.filename == CVC_SETTINGS:
+                    continue
+                with source.open(info) as data, archive.open(info, "w") as out:
+                    shutil.copyfileobj(data, out, 1 << 20)
+            if settings is not None:
+                archive.writestr(CVC_SETTINGS, settings, zipfile.ZIP_DEFLATED)
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def cache_folder() -> Path:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
     return Path(base) / "causalvc" / "voices"
+
+
+#: In each cache folder: the .cvc it was unpacked from, so it can be dropped when that is gone or changed.
+CACHE_SOURCE = "source.txt"
 
 
 def cached(path) -> Path:
@@ -369,7 +417,33 @@ def cached(path) -> Path:
             unpack(path, folder, name)
         except FileExistsError:  # unpacked by another process meanwhile
             pass
+        try:
+            (folder / CACHE_SOURCE).write_text(str(path), encoding="utf-8")
+        except OSError:
+            pass
+        prune_cache(keep=folder)
     return description
+
+
+def prune_cache(keep: Path | None = None) -> None:
+    """Drop cached voices whose .cvc was deleted, renamed or replaced (a new version is
+    cached under a new key). Best effort: a folder in use elsewhere is left for next time."""
+    root = cache_folder()
+    if not root.is_dir():
+        return
+    for folder in root.iterdir():
+        source = folder / CACHE_SOURCE
+        if folder == keep or not source.is_file():
+            continue
+        try:
+            origin = Path(source.read_text(encoding="utf-8"))
+            stat = origin.stat()
+        except OSError:
+            shutil.rmtree(folder, ignore_errors=True)  # its file is gone
+            continue
+        key = hashlib.sha1(f"{origin}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:16]
+        if not folder.name.endswith(f"-{key}"):
+            shutil.rmtree(folder, ignore_errors=True)  # an older version of the file
 
 
 def pack(path, out=None) -> Path:

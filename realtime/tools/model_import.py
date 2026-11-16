@@ -1,9 +1,9 @@
-"""Install dropped voices into the models folder.
+"""Add dropped voices to the models folder.
 
-A .cvc voice file (see causalvc/voice.py) is unpacked into a folder of its own.
-An older voice description (.causalvc.json) is copied into one; it only points
-at the voice's weights, so nothing large is copied.  Each folder is named after
-the file.
+A .cvc voice file (see causalvc/voice.py) is copied in as it is, into its
+voice's folder: Kira-3000s.cvc goes to models/Kira/.  An older voice
+description (.causalvc.json) is packed into a .cvc there.  Each voice is
+named after its file.
 """
 
 import os
@@ -12,7 +12,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from tools.model_registry import PROJECT_ROOT, VOICE_SUFFIXES
+from tools.model_registry import PROJECT_ROOT, VOICE_SUFFIXES, discover_models, remove_if_empty, voice_folder_name
 
 if str(PROJECT_ROOT) not in sys.path:  # the causalvc package, when it is not installed in this environment
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -41,7 +41,7 @@ def voice_name(path):
 
 
 def plan_import(paths):
-    """The voice descriptions among the dropped paths."""
+    """The voice files among the dropped paths."""
     files = [Path(path) for path in paths]
     missing = [str(path) for path in files if not path.is_file()]
     if missing:
@@ -52,64 +52,47 @@ def plan_import(paths):
     return voices
 
 
-def unique_folder_name(models_root, name):
+def unique_name(models_root, name):
+    """``name``, or ``name (2)`` and so on, so it clashes with no voice there (in any of its
+    folders) and no file or folder at its top."""
+    root = Path(models_root)
+    taken = {entry.name.casefold() for entry in discover_models(root)}
+    if root.is_dir():
+        taken |= {path.name.casefold() for path in root.iterdir()}
     candidate = name
     number = 2
-    while (Path(models_root) / candidate).exists():
+    while candidate.casefold() in taken or f"{candidate}{CVC_SUFFIX}".casefold() in taken:
         candidate = f"{name} ({number})"
         number += 1
     return candidate
 
 
 def import_models(paths, models_root):
-    """Copy the dropped voices in and return the new voice (folder) names.
+    """Add the dropped voices and return their names.
 
-    Files are copied into a hidden temporary folder that is renamed into
-    place only when complete, so an interrupted copy never shows up as a
-    half-imported voice.
+    Each is written under a hidden name and renamed into place only when
+    complete, so an interrupted copy never shows up as a half-added voice.
     """
     voices = plan_import(paths)
     os.makedirs(models_root, exist_ok=True)
     names = []
     for voice in voices:
-        name = unique_folder_name(models_root, voice_name(voice).strip() or "Voice")
-        if voice_files.is_cvc(voice):
-            try:
-                voice_files.unpack(voice, Path(models_root) / name, name)
-            except (OSError, ValueError) as error:  # VoiceFileError is a ValueError
-                raise ModelImportError("import_failed", str(error)) from error
-            names.append(name)
-            continue
-        # os.mkdir honours the umask (tempfile.mkdtemp would force 0700).
-        staging = os.path.join(models_root, f".import-{uuid.uuid4().hex}")
+        base = voice_name(voice).strip() or "Voice"
+        name = unique_name(models_root, base)
+        folder = voice_files.voice_folder(models_root, voice_folder_name(base))
+        target = folder / f"{name}{CVC_SUFFIX}"
+        staging = folder / f".import-{uuid.uuid4().hex}{CVC_SUFFIX}"
         try:
-            os.mkdir(staging)
-            shutil.copy2(voice, os.path.join(staging, voice.name))
-            os.rename(staging, os.path.join(models_root, name))
-        except OSError as error:
-            shutil.rmtree(staging, ignore_errors=True)
+            folder.mkdir(parents=True, exist_ok=True)
+            if voice_files.is_cvc(voice):
+                voice_files.read_cvc(voice)  # refuse a file that is not a voice
+                shutil.copyfile(voice, staging)
+            else:
+                voice_files.folder_to_cvc(voice, staging, settings=True, name=name)
+            os.replace(staging, target)
+        except (OSError, ValueError, KeyError) as error:  # VoiceFileError is a ValueError
+            staging.unlink(missing_ok=True)
+            remove_if_empty(folder, models_root)
             raise ModelImportError("import_failed", str(error)) from error
         names.append(name)
     return names
-
-
-def install_loose(models_root):
-    """Install .cvc files put straight into the models folder; returns (names, problems).
-
-    Each installed file is removed (its folder replaces it), so it is not
-    installed again on the next reload.  One that is not a voice is left as is
-    and reported."""
-    root = Path(models_root)
-    if not root.is_dir():
-        return [], []
-    names, problems = [], []
-    for path in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
-        if not path.is_file() or path.name.startswith(".") or not voice_files.is_cvc(path):
-            continue
-        try:
-            names += import_models([str(path)], root)
-        except ModelImportError as error:
-            problems.append(error.message)
-            continue
-        path.unlink(missing_ok=True)
-    return names, problems

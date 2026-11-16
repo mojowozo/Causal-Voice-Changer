@@ -1,7 +1,9 @@
 """Engine settings, defaults, and their JSON persistence.
 
-Global settings live in ``configs/engine.json``.  The per-model settings
-(gains, noise gate, pitch) live beside each voice in ``realtime_settings.json``.
+Global settings live in ``configs/engine.json``.  The per-voice settings
+(gains, noise gate, pitch) live in ``configs/voice_settings.json``, by voice
+name; a voice with none there starts from the ones it carries (the
+``realtime_settings.json`` inside its .cvc, or in an older voice folder).
 """
 
 import json
@@ -11,6 +13,7 @@ from dataclasses import asdict, dataclass, fields
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "engine.json")
+VOICE_SETTINGS_PATH = os.path.join(PROJECT_ROOT, "configs", "voice_settings.json")
 DEFAULT_RECORDING_FOLDER = os.path.join(PROJECT_ROOT, "recordings")
 
 INPUT_SOURCES = ("microphone", "file")
@@ -22,8 +25,7 @@ INPUT_DENOISE_METHODS = ("hushwire", "rnnoise")
 #: ASIO buffer sizes (samples) the app can ask the driver for; 0 keeps the driver's own setting.
 ASIO_BUFFER_SIZES = (0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048)
 
-MODEL_SETTINGS_FILENAME = "realtime_settings.json"
-# Protocol name -> key stored in each model's realtime_settings.json.
+# Protocol name -> key in a voice's saved settings (voice_settings.json, realtime_settings.json).
 MODEL_SETTING_FILE_KEYS = {
     "input_gain_db": "input_gain_db",
     "output_gain_db": "output_gain_db",
@@ -190,21 +192,10 @@ def save_settings(settings, path=ENGINE_CONFIG_PATH):
     write_json_atomic(path, settings.global_dict())
 
 
-def load_model_settings(directory):
-    """Return one model's per-model settings, or the defaults."""
+def model_settings_from(saved):
+    """One voice's settings (protocol keys) from what was saved for it (file keys), over the defaults."""
     defaults = EngineSettings()
     values = {key: getattr(defaults, key) for key in MODEL_SETTING_KEYS}
-    if directory is None:
-        return values
-    path = os.path.join(directory, MODEL_SETTINGS_FILENAME)
-    try:
-        with open(path, "r", encoding="utf-8") as settings_file:
-            saved = json.load(settings_file)
-    except FileNotFoundError:
-        return values
-    except (OSError, ValueError):
-        print(f"Could not read model settings: {path}")
-        return values
     if not isinstance(saved, dict):
         return values
     for key, file_key in MODEL_SETTING_FILE_KEYS.items():
@@ -214,15 +205,29 @@ def load_model_settings(directory):
     return values
 
 
-def save_model_settings(directory, settings):
-    path = os.path.join(directory, MODEL_SETTINGS_FILENAME)
-    write_json_atomic(
-        path,
-        {
-            file_key: float(getattr(settings, key))
-            for key, file_key in MODEL_SETTING_FILE_KEYS.items()
-        },
-    )
+def model_settings_to_save(values):
+    """One voice's settings (protocol keys, or an EngineSettings) in their saved form (file keys)."""
+    get = values.get if isinstance(values, dict) else lambda key: getattr(values, key)
+    return {file_key: float(get(key)) for key, file_key in MODEL_SETTING_FILE_KEYS.items()}
+
+
+def load_voice_settings(path=VOICE_SETTINGS_PATH):
+    """Every voice's saved settings: {voice name: {file key: value}}."""
+    try:
+        with open(path, "r", encoding="utf-8") as settings_file:
+            saved = json.load(settings_file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        print(f"Could not read voice settings: {path}")
+        return {}
+    if not isinstance(saved, dict):
+        return {}
+    return {name: values for name, values in saved.items() if isinstance(name, str) and isinstance(values, dict)}
+
+
+def save_voice_settings(store, path=VOICE_SETTINGS_PATH):
+    write_json_atomic(path, dict(sorted(store.items(), key=lambda item: item[0].casefold())))
 
 
 def write_json_atomic(path, data):

@@ -35,8 +35,6 @@ pub struct Form {
     pub base: String,
     #[serde(default)]
     pub device: String,
-    #[serde(default = "yes")]
-    pub fixes: bool,
     #[serde(default)]
     pub app_models: String,
 }
@@ -51,10 +49,6 @@ fn default_steps() -> u64 {
 
 fn default_base() -> String {
     "default".to_string()
-}
-
-fn yes() -> bool {
-    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -87,6 +81,9 @@ pub struct State {
     pub queue: Vec<Build>,
     pub progress: Option<Progress>,
     pub exit_code: Option<i64>,
+    /// The build that starts once the current one has saved and stopped (Build now).
+    #[serde(default)]
+    pub next: Option<Build>,
 }
 
 impl State {
@@ -114,6 +111,8 @@ pub enum Event {
     State(State),
     Log(String),
     Error(ErrorInfo),
+    /// A queued build is waiting; `position` 1 is next.
+    Queued { name: String, position: u64 },
 }
 
 /// Sends commands to the trainer; cheap to clone.
@@ -180,6 +179,10 @@ pub fn parse_line(line: &str) -> Option<Event> {
         "state" => Event::State(serde_json::from_value(data).ok()?),
         "log" => Event::Log(data.get("text")?.as_str()?.to_string()),
         "error" => Event::Error(serde_json::from_value(data).ok()?),
+        "queued" => Event::Queued {
+            name: data.get("name")?.as_str()?.to_string(),
+            position: data.get("position").and_then(Value::as_u64).unwrap_or(1),
+        },
         _ => return None,
     })
 }

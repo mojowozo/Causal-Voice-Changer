@@ -56,11 +56,11 @@ translate by `code`.
 | `update_settings` | `{"settings": {key: value, ...}}` | `null` |
 | `reset_settings` | `{"group": "general" \| "performance"}` | `null` |
 | `reload_models` | | `null` |
-| `import_model` | `{"paths": ["/abs/Voice-10000s.cvc", …]}` | `{"models": ["Voice-10000s"]}`; installs each voice into `models/<name>/` (a `.cvc` is unpacked; an older `.causalvc.json` description is copied) and selects the first. `.cvc` files placed directly in `models/` are installed (and removed) on startup and `reload_models` |
+| `import_model` | `{"paths": ["/abs/Voice-10000s.cvc", …]}` | `{"models": ["Voice-10000s"]}`; copies each `.cvc` into its voice's folder, `models/<voice>/<name>.cvc` (`Voice-10000s` goes into `Voice/`; an older `.causalvc.json` description is packed into one) and selects the first. A `.cvc` placed in `models/` or one folder down by hand is a voice as it is, listed on startup and `reload_models` |
 | `download_hushwire` | — | `null`; records that the user accepted Amazon's download notice (the client shows it first; `hushwire-notice-body`) and fetches Hushwire's model in the background into Hushwire's own folder (`~/.local/share/Hushwire/models`, `%APPDATA%\Hushwire\models`), shared with the Hushwire plugin. Ends with status `hushwire_downloaded` or error `hushwire_download_failed` |
-| `export_model` | `{"name": "Voice", "path": "/abs/Voice.cvc"}` | `{"path": …}`; packs `models/<name>/` and its saved settings into one `.cvc` file (`.cvc` is appended if missing) |
-| `delete_model` | `{"name": "Voice"}` | `null`; moves `models/<name>/` to the desktop Trash (`gio trash` on Linux, the Recycle Bin on Windows; recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
-| `rename_model` | `{"name": "Voice", "new_name": "Voice v2"}` | `null`; renames `models/<name>/` (settings go with it; the selection follows). Names must be unique (ignoring case), not start with `.`, and avoid `/ \ : * ? " < > \|`. Refused with `model_in_use` while converting with it |
+| `export_model` | `{"name": "Voice", "path": "/abs/Voice.cvc"}` | `{"path": …}`; writes the voice with its current settings as one `.cvc` file (`.cvc` is appended if missing) |
+| `delete_model` | `{"name": "Voice"}` | `null`; moves the voice (its `.cvc`, or an older voice's folder) to the desktop Trash, removing its voice's folder once that is empty, (`gio trash` on Linux, the Recycle Bin on Windows; recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
+| `rename_model` | `{"name": "Voice", "new_name": "Voice v2"}` | `null`; renames the voice's file (or an older voice's folder; settings go with it; the selection follows). Names must be unique (ignoring case), not start with `.`, and avoid `/ \ : * ? " < > \|`. Refused with `model_in_use` while converting with it |
 | `reload_devices` | | `null` |
 | `asio_control_panel` | — | `null`; opens the selected ASIO device's own control panel (Windows). Refused while running (`asio_panel_busy`); `asio_panel_failed` when the driver can't show it |
 | `start` | `{"function": "vc" \| "passthrough"}` (default `vc`) | `null` |
@@ -113,9 +113,9 @@ Front ends can re-render entirely from the latest state.
   "running": false,
   "function": "vc",                    // or "passthrough"
   "settings": { /* every key above */ },
-  "models": [{"name": "MyVoice-10000s", "model_file": "MyVoice-10000s.causalvc.json",
-              "size_bytes": 48000000,       // of the voice's decoder file
-              "modified": 1791067045}],     // the description's modification time (Unix seconds)
+  "models": [{"name": "MyVoice-10000s", "model_file": "MyVoice-10000s.cvc",
+              "size_bytes": 48000000,       // of the .cvc (an older voice folder: its decoder)
+              "modified": 1791067045}],     // the file's modification time (Unix seconds)
   "devices": {
     "inputs":  [{"label": "[JACK] Elgato Wave XLR Mono", "api": "JACK",
                  "name": "Elgato Wave XLR Mono", "channels": [1, 1]}],

@@ -15,6 +15,7 @@ public abstract record TrainerEvent
     public sealed record StateChanged(TrainerState State) : TrainerEvent;
     public sealed record Log(string Text) : TrainerEvent;
     public sealed record Error(string Code, string Message, string? Field) : TrainerEvent;
+    public sealed record Queued(string Name, int Position) : TrainerEvent;
 
     public static TrainerEvent? Parse(string line)
     {
@@ -31,6 +32,7 @@ public abstract record TrainerEvent
             "state" => new StateChanged(TrainerState.From(data)),
             "log" => new Log(data.Str("text")),
             "error" => new Error(data.Str("code"), data.Str("message"), data.StrOrNull("field")),
+            "queued" => new Queued(data.Str("name"), data["position"] is JsonValue position && position.TryGetValue(out int number) ? number : 1),
             _ => null,
         };
     }
@@ -56,7 +58,6 @@ public sealed class Form
     public long SaveEvery = 10000;
     public string Base = "default";
     public string Device = "";
-    public bool Fixes = true;
     public string AppModels = "";
 
     public static Form From(JsonObject json) => new()
@@ -68,7 +69,6 @@ public sealed class Form
         SaveEvery = json.LongOrNull("save_every") ?? 10000,
         Base = json.Str("base", "default"),
         Device = json.Str("device"),
-        Fixes = json["fixes"] is not JsonValue || json.Bool("fixes"),
         AppModels = json.Str("app_models"),
     };
 }
@@ -80,6 +80,8 @@ public sealed class TrainerState
     public List<Build> Queue = [];
     public Progress? Progress;
     public long? ExitCode;
+    /// The build that starts once the current one has saved and stopped (Build now).
+    public Build? Next;
 
     public bool Running => Phase is "starting" or "training" or "stopping";
 
@@ -97,6 +99,7 @@ public sealed class TrainerState
                 progress.LongOrNull("step") ?? 0, progress.LongOrNull("total") ?? 0,
                 progress.Str("elapsed"), progress.Str("remaining"), progress.DoubleOrNull("rate") ?? 0),
             ExitCode = json.LongOrNull("exit_code"),
+            Next = BuildFrom(json["next"]),
         };
     }
 }

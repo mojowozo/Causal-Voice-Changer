@@ -129,6 +129,8 @@ class ServiceTest(unittest.TestCase):
         self.service.command("queue", self.config(name="B"))
         self.service.command("queue", self.config(name="C"))
         self.assertEqual([c["name"] for c in self.state()["queue"]], ["B", "C"])
+        queued = [data for event, data in self.events if event == "queued"]
+        self.assertEqual(queued, [{"name": "B", "position": 1}, {"name": "C", "position": 2}])  # not A: it started
         self.service.command("start", self.config(name="D"))
         self.assertEqual(self.errors()[-1]["code"], "busy")
         self.service.command("remove", {"index": 0})
@@ -152,6 +154,58 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.state()["phase"], "stopped")
         self.assertEqual([c["name"] for c in self.job.started], ["A"])
         self.assertEqual([c["name"] for c in self.state()["queue"]], ["B"])
+
+    def test_queued_builds_can_be_reordered(self):
+        for name in "ABCD":
+            self.service.command("queue", self.config(name=name))  # A runs; B, C, D wait
+        self.service.command("move", {"from": 2, "to": 0})
+        self.assertEqual([c["name"] for c in self.state()["queue"]], ["D", "B", "C"])
+        self.service.command("move", {"from": 0, "to": 2})
+        self.assertEqual([c["name"] for c in self.state()["queue"]], ["B", "C", "D"])
+        for bad in ({"from": 0, "to": 3}, {"from": True, "to": 0}, {}):
+            self.service.command("move", bad)
+            self.assertEqual(self.errors()[-1]["code"], "bad_request")
+
+    def test_build_now_saves_the_running_build_and_resumes_it_next(self):
+        self.service.command("queue", self.config(name="A", restart=True))
+        self.service.command("queue", self.config(name="B"))
+        self.service.command("queue", self.config(name="C"))
+        self.service.command("build_now", {"index": 1})
+        self.assertEqual(self.job.stops, 1)  # saves a checkpoint first, not killed
+        self.assertEqual(self.state()["phase"], "stopping")
+        self.assertEqual(self.state()["next"], {"name": "C", "steps": 100})
+        self.assertEqual([c["name"] for c in self.state()["queue"]], ["A", "B"])
+        self.job.finish(-15)
+        self.service.pump()
+        self.assertEqual(self.job.started[-1]["name"], "C")
+        self.assertEqual((self.state()["phase"], self.state()["next"]), ("starting", None))
+        self.job.finish(0)
+        self.service.pump()
+        self.assertEqual(self.job.started[-1]["name"], "A")
+        self.assertFalse(self.job.started[-1]["restart"])  # resumes instead of starting over
+
+    def test_build_now_when_idle_starts_at_once(self):
+        self.service.command("queue", self.config(name="A"))
+        self.service.command("queue", self.config(name="B"))
+        self.service.command("stop", {})
+        self.job.finish(-15)
+        self.service.pump()
+        self.service.command("build_now", {"index": 0})
+        self.assertEqual([c["name"] for c in self.job.started], ["A", "B"])
+        self.assertEqual(self.state()["queue"], [])
+
+    def test_stop_during_a_switch_cancels_it_without_ending_the_build_at_once(self):
+        self.service.command("queue", self.config(name="A"))
+        self.service.command("queue", self.config(name="B"))
+        self.service.command("build_now", {"index": 0})
+        self.service.command("stop", {})
+        self.assertEqual(self.job.stops, 1)
+        self.assertIsNone(self.state()["next"])
+        self.assertEqual([c["name"] for c in self.state()["queue"]], ["B", "A"])
+        self.job.finish(-15)
+        self.service.pump()
+        self.assertEqual(self.state()["phase"], "stopped")
+        self.assertEqual(len(self.job.started), 1)
 
     def test_a_failed_build_stops_the_queue(self):
         self.service.command("queue", self.config(name="A"))

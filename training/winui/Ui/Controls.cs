@@ -118,6 +118,14 @@ public sealed class SettingsSection : StackPanel
         return this;
     }
 
+    /// A row that brings its own padding (a list of rows).
+    public SettingsSection AddUnpadded(UIElement row)
+    {
+        if (_rows.Children.Count > 0) _rows.Children.Add(new Border { Style = Build.Style("SettingsDividerStyle") });
+        _rows.Children.Add(row);
+        return this;
+    }
+
     /// Remove every row. Rows that were wrapped are taken out of their wrappers, so the same
     /// elements can be added again (an element can only have one parent).
     public void Clear()

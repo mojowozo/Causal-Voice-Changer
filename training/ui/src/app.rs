@@ -64,7 +64,6 @@ pub enum Connection {
 pub enum Message {
     Trainer(Event),
     Text(Field, String),
-    Fixes(bool),
     Restart(bool),
     Install(bool),
     SelectBase(usize),
@@ -75,6 +74,11 @@ pub enum Message {
     Queue,
     Stop,
     Remove(usize),
+    BuildNow(usize),
+    /// Dragging a queued build by its handle: pressed on one row, over another, released.
+    DragStart(usize),
+    DragOver(usize),
+    DragEnd,
     ClearLog,
     CloseToast(toaster::ToastId),
 }
@@ -93,7 +97,6 @@ pub struct App {
     pub steps: String,
     pub save_every: String,
     pub batch: String,
-    pub fixes: bool,
     pub restart: bool,
     pub install: bool,
     pub app_models: String,
@@ -108,6 +111,9 @@ pub struct App {
     wanted_gpu: String,
     /// The field the trainer refused, with the reason, until it is edited.
     pub field_error: Option<(String, String)>,
+    /// The queued build being dragged, and the row it would be dropped on.
+    pub dragging: Option<usize>,
+    pub drop_on: Option<usize>,
 }
 
 impl cosmic::Application for App {
@@ -153,7 +159,6 @@ impl cosmic::Application for App {
             steps: "10000".into(),
             save_every: "1000".into(),
             batch: "8".into(),
-            fixes: true,
             restart: false,
             install: true,
             app_models: String::new(),
@@ -165,6 +170,8 @@ impl cosmic::Application for App {
             gpu: 0,
             wanted_gpu: "cuda:0".into(),
             field_error: None,
+            dragging: None,
+            drop_on: None,
         };
         let task = app.update_title();
         (app, task)
@@ -180,7 +187,17 @@ impl cosmic::Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run(trainer::connection).map(Message::Trainer)
+        use cosmic::iced::{Event as WindowEvent, event, mouse};
+        let trainer = Subscription::run(trainer::connection).map(Message::Trainer);
+        if self.dragging.is_none() {
+            return trainer;
+        }
+        // The release ends a drag wherever it happens, also outside the rows.
+        let release = event::listen_with(|event, _status, _window| match event {
+            WindowEvent::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Message::DragEnd),
+            _ => None,
+        });
+        Subscription::batch([trainer, release])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -192,7 +209,6 @@ impl cosmic::Application for App {
                 }
                 *self.text_mut(field) = text;
             }
-            Message::Fixes(on) => self.fixes = on,
             Message::Restart(on) => self.restart = on,
             Message::Install(on) => self.install = on,
             Message::SelectBase(index) => self.base = index,
@@ -222,6 +238,23 @@ impl cosmic::Application for App {
             Message::Queue => self.send_build("queue"),
             Message::Stop => self.send("stop", json!({})),
             Message::Remove(index) => self.send("remove", json!({"index": index})),
+            Message::BuildNow(index) => self.send("build_now", json!({"index": index})),
+            Message::DragStart(index) => {
+                self.dragging = Some(index);
+                self.drop_on = Some(index);
+            }
+            Message::DragOver(index) => {
+                if self.dragging.is_some() {
+                    self.drop_on = Some(index);
+                }
+            }
+            Message::DragEnd => {
+                if let (Some(from), Some(to)) = (self.dragging.take(), self.drop_on.take()) {
+                    if from != to && from < self.state.queue.len() && to < self.state.queue.len() {
+                        self.send("move", json!({"from": from, "to": to}));
+                    }
+                }
+            }
             Message::ClearLog => self.log.clear(),
             Message::CloseToast(id) => self.toasts.remove(id),
         }
@@ -282,7 +315,8 @@ impl App {
                 "batch": self.batch.trim(),
                 "base": self.bases.get(self.base).cloned().unwrap_or_else(|| "default".into()),
                 "device": device,
-                "fixes": self.fixes,
+                // Not offered in the window: every voice trains with the quality fixes.
+                "fixes": true,
                 "restart": self.restart,
                 "app_models": if self.install { self.app_models.trim() } else { "" },
             }),
@@ -316,6 +350,11 @@ impl App {
                 self.gpus = gpus;
             }
             Event::State(state) => {
+                if state.queue.len() != self.state.queue.len() {
+                    // The rows changed under the pointer: drop the drag rather than move the wrong build.
+                    self.dragging = None;
+                    self.drop_on = None;
+                }
                 let ended = self.state.running() && !state.running();
                 self.state = state;
                 if ended {
@@ -323,6 +362,9 @@ impl App {
                 }
             }
             Event::Log(text) => self.append_log(&text),
+            Event::Queued { name, position } => {
+                return self.toast(fl!("build-queued", name = name, position = position));
+            }
             Event::Error(error) => {
                 let text = error_text(&error);
                 if let Some(field) = error.field.clone() {
@@ -350,7 +392,6 @@ impl App {
         self.steps = form.steps.to_string();
         self.save_every = form.save_every.to_string();
         self.batch = form.batch.to_string();
-        self.fixes = form.fixes;
         self.install = !form.app_models.is_empty();
         if !form.app_models.is_empty() {
             self.app_models = form.app_models;

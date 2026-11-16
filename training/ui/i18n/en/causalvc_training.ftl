@@ -27,8 +27,6 @@ save-every = Save a version every
 save-every-detail = Steps between saved versions (NAME-1000s, NAME-2000s and so on), to compare and keep the best.
 batch = Batch size
 batch-detail = Clips trained on at once. Lower it if the GPU runs out of memory.
-fixes = Quality fixes
-fixes-detail = Natural breaths and whispers, a steadier and brighter tone, less of your own voice showing through. About 25% slower.
 restart = Start over
 restart-detail = Ignore this voice name's earlier progress and train from the beginning. Applies to the next build only.
 
@@ -50,6 +48,10 @@ change = Change…
 
 start = Start training
 queue-build = Add to queue
+build-queued = { $name } added to the queue ({ $position ->
+    [1] next up
+   *[other] #{ $position } in line
+}). See it on the Builds page.
 stop = Stop
 end-now = End now
 stop-detail = Stop saves a checkpoint first; building the same voice again resumes. Click again to end at once without saving.
@@ -58,6 +60,7 @@ phase-idle = Ready. Fill in the voice and start training.
 phase-starting = Starting { $name } (loading the models takes a little while)…
 phase-training = Training { $name }
 phase-stopping = Stopping { $name }: saving a checkpoint first…
+phase-switching = Saving { $name } to switch to { $next }; { $name } resumes next…
 phase-finished = { $name } is finished
 phase-stopped = { $name } stopped; build it again to continue
 phase-failed = { $name } failed (exit code { $code }); the log says why
@@ -70,6 +73,8 @@ builds-queue = Up next
 builds-queue-empty = The queue is empty. Use “Add to queue” to train several voices one after another.
 builds-steps = { $steps } steps
 remove = Remove
+build-now = Build now
+builds-queue-drag = Drag a build by its handle to change the order. Build now saves the current build and puts it first in line, to resume after.
 close-note = Closing this window stops training the same way Stop does: a checkpoint is saved first.
 
 log-empty = Messages from training appear here.

@@ -23,7 +23,9 @@ def voices() -> dict[str, str]:
     """Voice name -> voice file (.cvc or description), from the realtime app's folder and from finished builds."""
     found: dict[str, str] = {}
     places = (
-        (ROOT / "realtime" / "models", "*/*.json"),
+        (ROOT / "realtime" / "models", "*/*.cvc"),  # the realtime app's voices: a folder per voice, a file per checkpoint
+        (ROOT / "realtime" / "models", "*.cvc"),  # voice files put straight in the folder
+        (ROOT / "realtime" / "models", "*/*.json"),  # older installs: one folder per voice
         (ROOT / "runs" / "models", "*/voices/*.cvc"),  # builds: one file per checkpoint
         (ROOT / "runs" / "models", "*/voices/*/*.json"),  # older builds: one folder per checkpoint
     )

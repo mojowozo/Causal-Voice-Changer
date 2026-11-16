@@ -110,11 +110,6 @@ fn voice_page(app: &App) -> Element<'_, Message> {
                 .control(field(app, Field::Batch, &app.batch, NUMBER_WIDTH)),
         )
         .add(
-            settings::item::builder(fl!("fixes"))
-                .description(fl!("fixes-detail"))
-                .toggler(app.fixes, Message::Fixes),
-        )
-        .add(
             settings::item::builder(fl!("restart"))
                 .description(fl!("restart-detail"))
                 .toggler(app.restart, Message::Restart),
@@ -174,16 +169,55 @@ fn builds_page(app: &App) -> Element<'_, Message> {
             widget::text::body(fl!("builds-queue-empty")).into(),
         ]));
     }
+    let space = cosmic::theme::spacing();
     for (index, build) in state.queue.iter().enumerate() {
-        queue = queue.add(
-            settings::item::builder(format!("{}. {}", index + 1, build.name))
-                .description(fl!("builds-steps", steps = build.steps))
-                .control(
-                    widget::button::standard(fl!("remove"))
-                        .leading_icon(widget::icon::from_name("list-remove-symbolic"))
-                        .on_press(Message::Remove(index)),
-                ),
-        );
+        let handle = widget::mouse_area(
+            widget::icon::from_name("list-drag-handle-symbolic").size(16).icon(),
+        )
+        .on_press(Message::DragStart(index))
+        .interaction(if app.dragging.is_some() {
+            cosmic::iced::mouse::Interaction::Grabbing
+        } else {
+            cosmic::iced::mouse::Interaction::Grab
+        });
+        let buttons = widget::row::with_capacity(2)
+            .spacing(space.space_xs)
+            .push(
+                widget::button::standard(fl!("build-now"))
+                    .leading_icon(widget::icon::from_name("media-playback-start-symbolic"))
+                    .on_press(Message::BuildNow(index)),
+            )
+            .push(
+                widget::button::standard(fl!("remove"))
+                    .leading_icon(widget::icon::from_name("list-remove-symbolic"))
+                    .on_press(Message::Remove(index)),
+            );
+        let row = settings::item::builder(format!("{}. {}", index + 1, build.name))
+            .description(fl!("builds-steps", steps = build.steps))
+            .icon(handle)
+            .control(buttons);
+        let target = app.dragging.is_some_and(|from| from != index) && app.drop_on == Some(index);
+        let row = widget::container(row).class(if target {
+            cosmic::theme::Container::custom(|theme| {
+                let cosmic = theme.cosmic();
+                cosmic::iced::widget::container::Style {
+                    border: cosmic::iced::Border {
+                        color: cosmic.accent_color().into(),
+                        width: 2.0,
+                        radius: cosmic.corner_radii.radius_s.into(),
+                    },
+                    ..Default::default()
+                }
+            })
+        } else {
+            cosmic::theme::Container::Transparent
+        });
+        queue = queue.add(widget::mouse_area(row).on_enter(Message::DragOver(index)));
+    }
+    if !state.queue.is_empty() {
+        queue = queue.add(settings::item_row(vec![
+            widget::text::caption(fl!("builds-queue-drag")).into(),
+        ]));
     }
     settings::view_column(vec![
         current.into(),
@@ -228,7 +262,10 @@ pub fn phase_text(state: &State) -> String {
     match state.phase.as_str() {
         "starting" => fl!("phase-starting", name = name),
         "training" => fl!("phase-training", name = name),
-        "stopping" => fl!("phase-stopping", name = name),
+        "stopping" => match &state.next {
+            Some(next) => fl!("phase-switching", name = name, next = next.name.clone()),
+            None => fl!("phase-stopping", name = name),
+        },
         "finished" => fl!("phase-finished", name = name),
         "stopped" => fl!("phase-stopped", name = name),
         "failed" => fl!(

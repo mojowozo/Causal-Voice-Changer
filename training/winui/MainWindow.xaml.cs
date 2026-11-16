@@ -181,6 +181,9 @@ public sealed partial class MainWindow : Window, IHost
                 if (_page == PageKind.Builds) _buildsPage.Update(State);
                 if (finished) Toast(S.Phase(State));
                 break;
+            case TrainerEvent.Queued queued:
+                Toast(S.BuildQueued(queued.Name, queued.Position));
+                break;
             case TrainerEvent.Log log:
                 AppendLog(log.Text);
                 break;

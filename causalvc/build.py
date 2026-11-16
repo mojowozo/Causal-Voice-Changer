@@ -5,7 +5,7 @@
 Fine-tunes a base decoder on that audio alone and writes
 a voice at every checkpoint, as one self-contained file that can be copied to
 another machine: runs/models/voice-NAME/voices/NAME-STEPs.cvc (also installed in
---app-models/NAME-STEPs/ when given), so NAME-1000s, NAME-2000s and so on can be
+--app-models/NAME/NAME-STEPs.cvc when given), so NAME-1000s, NAME-2000s and so on can be
 compared. The audio needs no preparation: any sample rate, any length, pauses left in.
 
 Ctrl-C (or a terminate signal) saves a checkpoint before stopping, and running
@@ -17,8 +17,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+if sys.platform != "win32":  # PyTorch supports this only on Linux
+    # Let the CUDA allocator grow its blocks instead of keeping fixed ones: a build at batch 16 on a
+    # 16 GB card otherwise loses a few hundred MB to fragmentation and runs out with the desktop's share
+    # taken. Set before torch is imported; a value the user set themselves is kept.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASE = "runs/models/dec-s6"
@@ -99,14 +106,14 @@ def main() -> None:
 
     def register(step: int, decoder: Path) -> None:
         """Turn one checkpoint into a voice of its own, NAME-STEPs.cvc: one file that needs nothing else from this machine."""
-        from causalvc.voice import export_cvc, install
+        from causalvc.voice import export_cvc, install, voice_folder
 
         label = f"{a.name}-{step}s"
         made = export_cvc(decoder, a.name, run_dir / "voices" / f"{label}.cvc", label)
         decoder.unlink(missing_ok=True)  # the voice's own copy (this voice only) replaces the checkpoint's
         if a.app_models:
-            install(made, Path(a.app_models) / label)
-        print(f"voice {label} ready: {made}" + (f" (installed in {a.app_models})" if a.app_models else ""), flush=True)
+            install(made, voice_folder(Path(a.app_models), a.name) / made.name)  # the same file, in the voice changer's folder for this voice
+        print(f"voice {label} ready: {made}" + (f" (installed in {voice_folder(Path(a.app_models), a.name)})" if a.app_models else ""), flush=True)
 
     done = None if a.restart else checkpoint_step(run_dir)
     if done is not None and done >= a.steps:

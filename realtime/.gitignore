@@ -6,7 +6,9 @@ recordings/
 configs/config.json
 configs/engine.json
 configs/voice_pitch.json
+configs/voice_settings.json
 models/*/
+models/*.cvc
 !models/README.md
 
 # Inference assets and bundled binaries are distributed separately.

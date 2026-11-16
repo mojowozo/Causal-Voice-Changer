@@ -13,7 +13,7 @@ import torch
 
 from engine import core
 from tests.test_model_library import ModelFolders
-from tools.model_import import ModelImportError, import_models, install_loose
+from tools.model_import import ModelImportError, import_models
 from tools.model_registry import discover_models
 from tools.model_import import voice_files
 
@@ -45,20 +45,17 @@ class InstallTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.models = self.root / "models"
 
-    def test_a_dropped_cvc_becomes_a_model_folder(self):
+    def test_a_dropped_cvc_is_copied_in_as_it_is(self):
         cvc = make_cvc(self.root / "Alto-1000s.cvc", settings=b'{"pitch": 3}')
 
         names = import_models([str(cvc)], self.models)
 
         self.assertEqual(names, ["Alto-1000s"])
-        folder = self.models / "Alto-1000s"
-        self.assertEqual(
-            sorted(p.name for p in folder.iterdir()),
-            ["Alto-1000s.causalvc.json", "decoder.pt", "realtime_settings.json"],
-        )
-        description = json.loads((folder / "Alto-1000s.causalvc.json").read_text())
-        self.assertEqual(description, {"decoder": "decoder.pt", "speaker": "Alto"})
-        self.assertEqual(discover_models(self.models)[0].size_bytes, len(b"weights"))
+        self.assertEqual([p.relative_to(self.models).as_posix() for p in self.models.rglob("*")],
+                         ["Alto", "Alto/Alto-1000s.cvc"])
+        self.assertEqual((self.models / "Alto" / "Alto-1000s.cvc").read_bytes(), cvc.read_bytes())
+        (entry,) = discover_models(self.models)
+        self.assertEqual(entry.size_bytes, cvc.stat().st_size)
         self.assertTrue(cvc.exists())  # a dropped file is copied, not moved
 
     def test_a_second_copy_gets_a_suffix(self):
@@ -77,15 +74,15 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(raised.exception.code, "import_failed")
         self.assertEqual([p.name for p in self.models.iterdir()], [])
 
-    def test_only_the_known_members_are_extracted(self):
+    def test_only_the_known_members_are_unpacked(self):
         path = self.root / "Evil.cvc"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("voice.json", json.dumps({"format": "causalvc-voice", "version": 1, "speaker": "x"}))
             archive.writestr("decoder.pt", b"x")
             archive.writestr("../escaped.txt", b"x")
             archive.writestr("run.bat", b"x")
-        import_models([str(path)], self.models)
-        self.assertEqual(sorted(p.name for p in (self.models / "Evil").iterdir()), ["Evil.causalvc.json", "decoder.pt"])
+        voice_files.unpack(path, self.root / "unpacked")
+        self.assertEqual(sorted(p.name for p in (self.root / "unpacked").iterdir()), ["decoder.pt", "unpacked.causalvc.json"])
         self.assertFalse((self.root / "escaped.txt").exists())
 
     def test_newer_formats_are_refused_with_a_reason(self):
@@ -97,27 +94,78 @@ class InstallTest(unittest.TestCase):
             import_models([str(path)], self.models)
         self.assertIn("newer version", raised.exception.message)
 
-    def test_loose_files_in_the_models_folder_are_installed_once(self):
+    def test_a_cvc_put_in_the_models_folder_by_hand_is_a_voice_as_it_is(self):
         self.models.mkdir()
         make_cvc(self.models / "Bass.cvc", speaker="Bass")
-        (self.models / "broken.cvc").write_bytes(b"nope")
 
-        names, problems = install_loose(self.models)
-
-        self.assertEqual(names, ["Bass"])
-        self.assertEqual(len(problems), 1)
-        self.assertFalse((self.models / "Bass.cvc").exists())
-        self.assertTrue((self.models / "broken.cvc").exists())
-        self.assertEqual(install_loose(self.models)[0], [])
         self.assertEqual([entry.name for entry in discover_models(self.models)], ["Bass"])
+        self.assertEqual([p.name for p in self.models.iterdir()], ["Bass.cvc"])
+
+
+class CacheTest(unittest.TestCase):
+    """A .cvc is loaded through a cache outside the project, which cleans up after itself."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.cache = self.root / "cache"
+        patcher = mock.patch.object(voice_files, "cache_folder", return_value=self.cache)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_renamed_replaced_and_deleted_files_leave_no_cache_behind(self):
+        alto = make_cvc(self.root / "Alto.cvc")
+        first = voice_files.cached(alto).parent
+        self.assertTrue((first / "decoder.pt").is_file())
+        self.assertEqual(voice_files.cached(alto).parent, first)  # unpacked once
+
+        make_cvc(self.root / "Alto.cvc", decoder=b"retrained")  # a rebuild of the same checkpoint
+        second = voice_files.cached(alto).parent
+        self.assertNotEqual(second, first)
+        self.assertFalse(first.exists())
+
+        renamed = alto.rename(self.root / "Alto-final.cvc")
+        voice_files.cached(renamed)
+        self.assertFalse(second.exists())
+
+        bass = make_cvc(self.root / "Bass.cvc", speaker="Bass")
+        renamed.unlink()
+        voice_files.cached(bass)
+        self.assertEqual([p.name.split("-")[0] for p in self.cache.iterdir()], ["Bass"])
+
+
+class BuildInstallTest(unittest.TestCase):
+    def test_a_build_puts_the_same_file_in_the_voices_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            made = make_cvc(root / "run" / "Alto-1000s.cvc")
+            voices = root / "models"
+
+            installed = voice_files.install(made, voices / made.name)
+            make_cvc(made, decoder=b"rebuilt")
+            voice_files.install(made, installed)  # a rebuild replaces it
+
+            self.assertEqual([p.name for p in voices.iterdir()], ["Alto-1000s.cvc"])
+            self.assertEqual(installed.read_bytes(), made.read_bytes())
+
+
+    def test_builds_go_into_the_voices_folder_unless_an_older_voice_has_that_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            models = Path(temp)
+            self.assertEqual(voice_files.voice_folder(models, "Kira"), models / "Kira")
+            (models / "Kira").mkdir()
+            self.assertEqual(voice_files.voice_folder(models, "Kira"), models / "Kira")
+            (models / "Kira" / "Kira.causalvc.json").write_text("{}")
+            self.assertEqual(voice_files.voice_folder(models, "Kira"), models)
 
 
 class ExportTest(ModelFolders):
     def setUp(self):
         super().setUp()
-        (self.root / "Alto" / "Alto.causalvc.json").write_text(json.dumps({"decoder": "decoder.pt", "speaker": "Alto"}))
-        checkpoint(self.root / "Alto" / "decoder.pt", ["Alto"])
-        self.alto = (self.root / "Alto" / "decoder.pt").read_bytes()
+        self.alto = checkpoint(self.root / "alto-decoder.pt", ["Alto"]).read_bytes()
+        (self.root / "alto-decoder.pt").unlink()
+        voice_files.write_cvc(self.root / "Alto.cvc", "Alto", "Alto", self.alto, b'{"pitch": 4.0}')
         self.out = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(self.out, ignore_errors=True))
         # No shared base here: the shared networks are these files.
@@ -129,21 +177,34 @@ class ExportTest(ModelFolders):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_export_writes_one_file_with_the_settings_and_reinstalls(self):
+    def test_export_writes_one_file_with_the_settings_and_adds_back(self):
         engine = self.engine(selected="Alto")
         written = engine.export_model("Alto", str(self.out / "Shared Alto"))
 
         self.assertEqual(written, str(self.out / "Shared Alto.cvc"))
         with zipfile.ZipFile(written) as archive:
             self.assertEqual(sorted(archive.namelist()), ["decoder.pt", "realtime_settings.json", "voice.json"])
-            self.assertEqual(archive.read("decoder.pt"), self.alto)  # one speaker already: copied as is
+            self.assertEqual(archive.read("decoder.pt"), self.alto)
             self.assertEqual(json.loads(archive.read("realtime_settings.json"))["pitch"], 4.0)
         self.assertIn(("status", {"code": "model_exported", "name": "Alto", "path": written}), engine.events)
 
         with mock.patch.object(engine, "update_settings"):
             names = engine.import_model([written])
         self.assertEqual(names, ["Shared Alto"])
-        self.assertEqual((self.root / "Shared Alto" / "decoder.pt").read_bytes(), self.alto)
+        self.assertEqual(decoder_in(self.root / "Shared Alto" / "Shared Alto.cvc")["speakers"], ["Alto"])
+
+    def test_an_older_voice_folder_exports_as_one_file(self):
+        folder = self.root / "Folded"
+        folder.mkdir()
+        checkpoint(folder / "decoder.pt", ["Folded"])
+        (folder / "Folded.causalvc.json").write_text(json.dumps({"decoder": "decoder.pt", "speaker": "Folded"}))
+        engine = self.engine(selected="Folded")
+        engine.voice_settings["Folded"] = {"pitch": -2.0}
+
+        written = engine.export_model("Folded", str(self.out / "Folded.cvc"))
+
+        self.assertEqual(voice_files.read_cvc(written)["name"], "Folded")
+        self.assertEqual(json.loads(voice_files.settings_in(written))["pitch"], -2.0)
 
     def test_export_errors(self):
         engine = self.engine()
@@ -153,10 +214,12 @@ class ExportTest(ModelFolders):
         with self.assertRaises(core.EngineError) as raised:
             engine.export_model("Alto", "relative.cvc")
         self.assertEqual(raised.exception.code, "bad_request")
+        (self.root / "Broken").mkdir()
+        (self.root / "Broken" / "Broken.causalvc.json").write_text('{"decoder": "decoder.pt", "speaker": "Broken"}')
+        engine.refresh_models()
         with self.assertRaises(core.EngineError) as raised:
-            engine.export_model("Bass", str(self.out / "bass.cvc"))  # its description points at no decoder
+            engine.export_model("Broken", str(self.out / "broken.cvc"))  # its description points at no decoder
         self.assertEqual(raised.exception.code, "export_failed")
-
 
     def test_a_decoder_with_other_speakers_is_trimmed_to_this_voice(self):
         folder = self.root / "Old"
@@ -172,7 +235,9 @@ class ExportTest(ModelFolders):
         self.assertEqual(decoder["step"], 7)
 
     def test_a_voice_on_its_own_encoder_carries_it_and_the_shared_ones_stay_out(self):
-        folder = self.root / "Alto"
+        folder = self.root / "Own"
+        folder.mkdir()
+        (folder / "decoder.pt").write_bytes(self.alto)
         (folder / "encoder.pt").write_bytes(b"fine-tuned encoder")
         (folder / "pitch.pt").write_bytes(b"shared pitch")  # a copy of the shared one
         (folder / "Alto.causalvc.json").write_text(

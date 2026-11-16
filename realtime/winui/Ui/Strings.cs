@@ -96,7 +96,7 @@ static class S
     public const string LibraryRename = "Rename";
     public const string LibraryRenameInUse = "Stop converting to rename this model";
     public const string RenameModelTitle = "Rename model";
-    public const string RenameModelBody = "This renames the model's folder; its saved settings stay with it.";
+    public const string RenameModelBody = "This renames the voice's file; its saved settings stay with it.";
     public const string RenameModelConfirm = "Rename";
     public static string StatusModelRenamed(string name, string newName) => $"Renamed {name} to {newName}";
     public const string ErrorModelNameTaken = "Another model already has that name.";

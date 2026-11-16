@@ -12,6 +12,9 @@ Commands ({"cmd": ..., "args": {...}}):
     start  {config}   start a build now (refused while one runs)
     queue  {config}   add a build to the queue; it starts at once when idle
     remove {"index"}  drop a queued build
+    move   {"from", "to"}  move a queued build to another position (indices into the queue)
+    build_now {"index"}  start a queued build now: a running one saves a checkpoint, stops and
+                      goes back to the front of the queue, so it resumes after this one
     stop              first: save a checkpoint and stop; second: end at once
 
 A config is {"name", "audio", "batch", "steps", "save_every", "base", "device",
@@ -21,9 +24,12 @@ for next time (runs/gui.json, shared with the Tk window).
 Events ({"event": ..., "data": {...}}):
     hello  {"form", "bases", "gpus"}       once, at start
     gpus   {"gpus": [{"id", "label"}]}     when the GPU list is known (PyTorch loads slowly)
-    state  {"phase", "current", "queue", "progress", "exit_code"}
+    state  {"phase", "current", "queue", "progress", "exit_code", "next"}
+                                           next: the build that starts once the current one has saved
+                                           and stopped (build_now), else null
     log    {"text"}                        a line from the build worth showing
     error  {"code", "message", "field"}    a refused command
+    queued {"name", "position"}            a queued build is waiting (position 1 is next)
 
 phase: idle, starting, training, stopping, finished, stopped or failed.
 Error codes: invalid_name, missing_audio, invalid_numbers, busy, bad_request.
@@ -212,6 +218,7 @@ class Service:
         self.phase = "idle"
         self.progress: dict | None = None
         self.exit_code: int | None = None
+        self.next: dict | None = None  # build_now: starts once the current build has stopped
 
     def hello(self) -> None:
         self.emit("hello", {"form": load_form(), "bases": ["default", *self.bases], "gpus": []})
@@ -225,6 +232,7 @@ class Service:
             "queue": [brief(config) for config in self.pending],
             "progress": self.progress,
             "exit_code": self.exit_code,
+            "next": brief(self.next) if self.next else None,
         })
 
     def command(self, cmd: str, args: dict) -> None:
@@ -239,13 +247,44 @@ class Service:
                 else:
                     self.pending.append(config)
                     self.start_next()
+                    if self.pending and self.pending[-1] is config:  # not started at once: it waits
+                        self.emit("queued", {"name": config["name"], "position": len(self.pending)})
             elif cmd == "remove":
                 index = args.get("index") if isinstance(args, dict) else None
                 if not isinstance(index, int) or not 0 <= index < len(self.pending):
                     raise ConfigError("bad_request", "no queued build at that position")
                 self.pending.pop(index)
+            elif cmd == "move":
+                moves = args if isinstance(args, dict) else {}
+                source, target = moves.get("from"), moves.get("to")
+                if not all(isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(self.pending)
+                           for i in (source, target)):
+                    raise ConfigError("bad_request", "no queued build at that position")
+                self.pending.insert(target, self.pending.pop(source))
+            elif cmd == "build_now":
+                index = args.get("index") if isinstance(args, dict) else None
+                if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(self.pending):
+                    raise ConfigError("bad_request", "no queued build at that position")
+                chosen = self.pending.pop(index)
+                if not self.job.running():
+                    self.launch(chosen)
+                else:
+                    if self.next is not None:  # chosen again before the last switch finished
+                        self.pending.insert(0, self.next)
+                    elif self.current is not None:
+                        # Back to the front of the queue; it resumes from the checkpoint it saves now.
+                        self.pending.insert(0, {**self.current, "restart": False})
+                    self.next = chosen
+                    if not self.job.stopping:
+                        self.phase = "stopping"
+                        self.job.stop()
             elif cmd == "stop":
-                if self.job.running():
+                if self.next is not None:
+                    # Stop during a switch cancels the switch (the build is already saving and stopping;
+                    # a second Stop ends it at once): the chosen build waits at the front of the queue.
+                    self.pending.insert(0, self.next)
+                    self.next = None
+                elif self.job.running():
                     self.phase = "stopping"
                     self.job.stop()
             else:
@@ -276,7 +315,10 @@ class Service:
                 code = self.job.proc.returncode
                 self.exit_code = code
                 self.phase = "stopped" if self.job.stopping else "finished" if code == 0 else "failed"
-                if self.phase == "finished" and self.pending:
+                if self.next is not None:
+                    chosen, self.next = self.next, None
+                    self.launch(chosen)
+                elif self.phase == "finished" and self.pending:
                     self.start_next()
                 self.emit_state()
                 continue

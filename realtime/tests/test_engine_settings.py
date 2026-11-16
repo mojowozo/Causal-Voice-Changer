@@ -7,10 +7,12 @@ from engine.settings import (
     EngineSettings,
     SettingError,
     coerce_setting,
-    load_model_settings,
     load_settings,
-    save_model_settings,
+    load_voice_settings,
+    model_settings_from,
+    model_settings_to_save,
     save_settings,
+    save_voice_settings,
 )
 
 
@@ -88,19 +90,26 @@ class PersistenceTest(unittest.TestCase):
             config_file.write("{not json")
         self.assertEqual(load_settings(self.path), EngineSettings())
 
-    def test_model_settings_keep_the_tk_file_format(self):
+    def test_voice_settings_keep_the_tk_key_names(self):
         settings = EngineSettings(noise_gate_db=-40.0, pitch=3.0)
-        save_model_settings(self.directory.name, settings)
+        path = os.path.join(self.directory.name, "voice_settings.json")
+        save_voice_settings({"Alto": model_settings_to_save(settings)}, path)
 
-        with open(
-            os.path.join(self.directory.name, "realtime_settings.json"), encoding="utf-8"
-        ) as saved_file:
+        with open(path, encoding="utf-8") as saved_file:
             saved = json.load(saved_file)
-        self.assertEqual(saved["threhold"], -40.0)
-        self.assertNotIn("noise_gate_db", saved)
-        loaded = load_model_settings(self.directory.name)
+        self.assertEqual(saved["Alto"]["threhold"], -40.0)
+        self.assertNotIn("noise_gate_db", saved["Alto"])
+        loaded = model_settings_from(load_voice_settings(path)["Alto"])
         self.assertEqual(loaded["noise_gate_db"], -40.0)
         self.assertEqual(loaded["pitch"], 3.0)
+
+    def test_damaged_voice_settings_give_defaults(self):
+        path = os.path.join(self.directory.name, "voice_settings.json")
+        self.assertEqual(load_voice_settings(path), {})
+        with open(path, "w", encoding="utf-8") as saved_file:
+            saved_file.write('{"Alto": {"pitch": "high"}, "Bass": 3')
+        self.assertEqual(load_voice_settings(path), {})
+        self.assertEqual(model_settings_from({"pitch": "high"})["pitch"], EngineSettings().pitch)
 
 
 if __name__ == "__main__":

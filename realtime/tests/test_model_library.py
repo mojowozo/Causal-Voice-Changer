@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -7,14 +8,15 @@ from types import SimpleNamespace
 from unittest import mock
 
 from engine import core
-from engine.settings import EngineSettings, load_model_settings, save_model_settings
+from engine.settings import EngineSettings
 from tools import model_registry
+from tools.model_import import voice_files
 from tools.model_registry import (
     TrashError,
     discover_models,
     model_name_problem,
     move_to_trash,
-    rename_model_folder,
+    rename_model,
 )
 
 
@@ -38,15 +40,14 @@ class MoveToTrashTest(unittest.TestCase):
 
 
 class ModelFolders(unittest.TestCase):
-    """models/ with Alto, Bass and Tenor, and an engine without devices."""
+    """models/ with Alto.cvc (carrying pitch 4), Bass.cvc and Tenor.cvc, and an engine without devices."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         for name in ("Alto", "Bass", "Tenor"):
-            (self.root / name).mkdir()
-            (self.root / name / f"{name}.causalvc.json").write_bytes(b"x" * 10)
-        save_model_settings(str(self.root / "Alto"), EngineSettings(pitch=4.0))
+            settings = json.dumps({"pitch": 4.0}).encode() if name == "Alto" else None
+            voice_files.write_cvc(self.root / f"{name}.cvc", name, name, b"decoder", settings)
         patcher = mock.patch.object(core, "MODELS_ROOT", str(self.root))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -54,6 +55,17 @@ class ModelFolders(unittest.TestCase):
         save = mock.patch.object(core, "save_settings")
         self.saved = save.start()
         self.addCleanup(save.stop)
+        # configs/voice_settings.json, in memory.
+        self.voice_settings_file = {}
+        store = mock.patch.object(
+            core, "save_voice_settings",
+            side_effect=lambda values: self.voice_settings_file.update({"saved": json.loads(json.dumps(values))}),
+        )
+        store.start()
+        self.addCleanup(store.stop)
+
+    def saved_voice_settings(self):
+        return self.voice_settings_file.get("saved", {})
 
     def engine(self, selected="Bass"):
         engine = core.RealtimeEngine.__new__(core.RealtimeEngine)
@@ -67,6 +79,7 @@ class ModelFolders(unittest.TestCase):
         engine.gpu_options = [{"id": "auto", "label": None}]
         engine.pending_model_settings_name = None
         engine.model_settings_save_due = 0.0
+        engine.voice_settings = {}
         engine.running = False
         engine.function = "vc"
         engine.events = []
@@ -76,7 +89,7 @@ class ModelFolders(unittest.TestCase):
         return engine
 
     def trash(self, path):
-        # Stand-in for gio: the folder leaves models/ (hidden folders are not models).
+        # Stand-in for gio: the voice leaves models/ (hidden entries are not models).
         os.rename(path, self.root / f".trashed-{Path(path).name}")
 
 
@@ -85,7 +98,7 @@ class DeleteModelTest(ModelFolders):
         engine = self.engine(selected="Bass")
         with mock.patch.object(core, "move_to_trash", side_effect=self.trash) as trash:
             engine.delete_model("Tenor")
-        self.assertEqual(trash.call_args.args[0], (self.root / "Tenor").resolve())
+        self.assertEqual(trash.call_args.args[0], (self.root / "Tenor.cvc").resolve())
         self.assertEqual([model.name for model in engine.models], ["Alto", "Bass"])
         self.assertEqual(engine.settings.model_name, "Bass")
         self.assertIn(("status", {"code": "model_deleted", "name": "Tenor"}), engine.events)
@@ -98,26 +111,15 @@ class DeleteModelTest(ModelFolders):
         self.assertEqual(engine.settings.pitch, 4.0)
         self.saved.assert_called()
 
-    def test_pending_settings_are_saved_first_and_not_into_a_dead_folder(self):
+    def test_a_deleted_voice_leaves_no_settings_behind(self):
         engine = self.engine(selected="Bass")
         engine.settings.pitch = 7.0
         engine.schedule_model_settings_save()
-        order = []
-        real_save = core.save_model_settings
-
-        def record_save(directory, settings):
-            order.append(("save", Path(directory).name))
-            real_save(directory, settings)
-
-        def record_trash(path):
-            order.append(("trash", Path(path).name))
-            self.trash(path)
-
-        with mock.patch.object(core, "save_model_settings", side_effect=record_save), \
-             mock.patch.object(core, "move_to_trash", side_effect=record_trash):
+        with mock.patch.object(core, "move_to_trash", side_effect=self.trash):
             engine.delete_model("Bass")
-        self.assertEqual(order, [("save", "Bass"), ("trash", "Bass")])
-        self.assertFalse((self.root / "Bass").exists())
+        self.assertFalse((self.root / "Bass.cvc").exists())
+        self.assertNotIn("Bass", engine.voice_settings)
+        self.assertNotIn("Bass", self.saved_voice_settings())
 
     def test_the_converting_model_cannot_be_deleted(self):
         engine = self.engine(selected="Bass")
@@ -137,7 +139,7 @@ class DeleteModelTest(ModelFolders):
             with self.assertRaises(core.EngineError) as raised:
                 engine.delete_model("Alto")
         self.assertEqual(raised.exception.code, "delete_failed")
-        self.assertTrue((self.root / "Alto").exists())
+        self.assertTrue((self.root / "Alto.cvc").exists())
 
 
 class RenameModelTest(ModelFolders):
@@ -148,21 +150,23 @@ class RenameModelTest(ModelFolders):
         self.assertEqual([m.name for m in engine.models], ["Alto-final_200e_14200s", "Bass", "Tenor"])
         self.assertEqual(engine.settings.model_name, "Alto-final_200e_14200s")
         self.assertEqual(engine.settings.pitch, 4.0)
-        self.assertTrue((self.root / "Alto-final_200e_14200s" / "Alto.causalvc.json").is_file())
-        self.assertFalse((self.root / "Alto").exists())
+        self.assertTrue((self.root / "Alto-final_200e_14200s.cvc").is_file())
+        self.assertFalse((self.root / "Alto.cvc").exists())
         self.saved.assert_called()
         self.assertIn(
             ("status", {"code": "model_renamed", "name": "Alto", "new_name": "Alto-final_200e_14200s"}),
             engine.events,
         )
 
-    def test_pending_settings_land_in_the_renamed_folder(self):
+    def test_pending_settings_follow_the_new_name(self):
         engine = self.engine(selected="Bass")
         engine.settings.pitch = 9.5
         engine.schedule_model_settings_save()
         engine.rename_model("Bass", "Baritone")
-        self.assertFalse((self.root / "Bass").exists())
-        self.assertEqual(load_model_settings(str(self.root / "Baritone"))["pitch"], 9.5)
+        self.assertFalse((self.root / "Bass.cvc").exists())
+        self.assertEqual(self.saved_voice_settings()["Baritone"]["pitch"], 9.5)
+        self.assertNotIn("Bass", self.saved_voice_settings())
+        self.assertEqual(engine.model_settings_for("Baritone")["pitch"], 9.5)
 
     def test_case_only_rename(self):
         engine = self.engine()
@@ -185,7 +189,7 @@ class RenameModelTest(ModelFolders):
                 with self.assertRaises(core.EngineError) as raised:
                     engine.rename_model("Alto", new_name)
                 self.assertEqual(raised.exception.code, code)
-        self.assertTrue((self.root / "Alto").is_dir())
+        self.assertTrue((self.root / "Alto.cvc").is_file())
 
     def test_the_converting_model_cannot_be_renamed(self):
         engine = self.engine(selected="Bass")
@@ -202,10 +206,92 @@ class RenameModelTest(ModelFolders):
         self.assertEqual(model_name_problem("x" * 201), "too_long")
         self.assertEqual(model_name_problem("tab\there"), "characters")
 
-    def test_folder_rename_refuses_to_overwrite(self):
+    def test_rename_refuses_to_overwrite(self):
         with self.assertRaises(FileExistsError):
-            rename_model_folder(self.root / "Alto", "Bass")
-        self.assertTrue((self.root / "Alto").is_dir())
+            rename_model(self.root / "Alto.cvc", "Bass")
+        self.assertTrue((self.root / "Alto.cvc").is_file())
+
+
+class VoiceSettingsTest(ModelFolders):
+    def test_settings_are_kept_by_name_not_in_the_voice(self):
+        engine = self.engine(selected="Bass")
+        before = (self.root / "Bass.cvc").read_bytes()
+        engine.settings.pitch = -3.0
+        engine.schedule_model_settings_save()
+        engine.flush_model_settings_save(force=True)
+        self.assertEqual(self.saved_voice_settings()["Bass"]["pitch"], -3.0)
+        self.assertEqual((self.root / "Bass.cvc").read_bytes(), before)
+
+    def test_saved_settings_win_over_the_ones_a_voice_carries(self):
+        engine = self.engine()
+        self.assertEqual(engine.model_settings_for("Alto")["pitch"], 4.0)
+        engine.voice_settings["Alto"] = {"pitch": -1.0}
+        self.assertEqual(engine.model_settings_for("Alto")["pitch"], -1.0)
+
+    def test_export_packs_the_current_settings(self):
+        engine = self.engine()
+        engine.voice_settings["Alto"] = {"pitch": 2.5}
+        written = engine.export_model("Alto", str(self.root / "out" / "Shared"))
+        self.assertTrue(written.endswith("Shared.cvc"))
+        self.assertEqual(json.loads(voice_files.settings_in(written))["pitch"], 2.5)
+        self.assertEqual(voice_files.read_cvc(written)["speaker"], "Alto")
+
+
+class OlderVoiceFolderTest(ModelFolders):
+    def setUp(self):
+        super().setUp()
+        (self.root / "Older").mkdir()
+        (self.root / "Older" / "Older.causalvc.json").write_text('{"decoder": "decoder.pt", "speaker": "Older"}')
+        (self.root / "Older" / "realtime_settings.json").write_text('{"pitch": 6.0}')
+
+    def test_older_folders_still_list_with_their_settings(self):
+        engine = self.engine(selected="Older")
+        self.assertEqual([m.name for m in engine.models], ["Alto", "Bass", "Older", "Tenor"])
+        self.assertFalse(engine.models_by_name["Older"].is_file)
+        self.assertEqual(engine.model_settings_for("Older")["pitch"], 6.0)
+
+    def test_a_cvc_wins_over_a_folder_of_the_same_name(self):
+        voice_files.write_cvc(self.root / "Older.cvc", "Older", "Older", b"decoder")
+        (entry,) = [m for m in discover_models(self.root) if m.name == "Older"]
+        self.assertTrue(entry.is_file)
+
+    def test_older_folders_rename_as_folders(self):
+        engine = self.engine()
+        engine.rename_model("Older", "Oldest")
+        self.assertTrue((self.root / "Oldest" / "Older.causalvc.json").is_file())
+
+
+class VoiceFolderTest(ModelFolders):
+    """models/Kira/ holding two checkpoints, beside the loose files."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "Kira").mkdir()
+        for name in ("Kira-1000s", "Kira-2000s"):
+            voice_files.write_cvc(self.root / "Kira" / f"{name}.cvc", name, "Kira", b"decoder")
+
+    def test_each_checkpoint_in_a_voices_folder_is_a_voice(self):
+        (self.root / "Kira" / ".import-x.cvc").write_bytes(b"partial")
+        voice_files.write_cvc(self.root / "Kira-1000s.cvc", "Kira-1000s", "Kira", b"loose")  # loose files win
+        entries = discover_models(self.root)
+        self.assertEqual([e.name for e in entries], ["Alto", "Bass", "Kira-1000s", "Kira-2000s", "Tenor"])
+        self.assertEqual(entries[2].path, (self.root / "Kira-1000s.cvc").resolve())
+        self.assertEqual(entries[3].path, (self.root / "Kira" / "Kira-2000s.cvc").resolve())
+
+    def test_deleting_the_last_checkpoint_removes_the_folder(self):
+        engine = self.engine(selected="Bass")
+        with mock.patch.object(core, "move_to_trash", side_effect=self.trash):
+            engine.delete_model("Kira-1000s")
+            self.assertTrue((self.root / "Kira").is_dir())
+            engine.delete_model("Kira-2000s")
+        self.assertFalse((self.root / "Kira").exists())
+        self.assertEqual([model.name for model in engine.models], ["Alto", "Bass", "Tenor"])
+
+    def test_a_rename_stays_in_the_voices_folder(self):
+        engine = self.engine(selected="Bass")
+        engine.rename_model("Kira-2000s", "Kira-best")
+        self.assertTrue((self.root / "Kira" / "Kira-best.cvc").is_file())
+        self.assertIn("Kira-best", [model.name for model in engine.models])
 
 
 class RegistryMetadataTest(unittest.TestCase):

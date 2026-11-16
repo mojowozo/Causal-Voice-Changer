@@ -34,8 +34,6 @@ static class S
     public const string SaveEveryDetail = "Steps between saved versions (NAME-1000s, NAME-2000s and so on), to compare and keep the best.";
     public const string Batch = "Batch size";
     public const string BatchDetail = "Clips trained on at once. Lower it if the GPU runs out of memory.";
-    public const string Fixes = "Quality fixes";
-    public const string FixesDetail = "Natural breaths and whispers, a steadier and brighter tone, less of your own voice showing through. About 25% slower.";
     public const string Restart = "Start over";
     public const string RestartDetail = "Ignore this voice name's earlier progress and train from the beginning. Applies to the next build only.";
 
@@ -56,6 +54,8 @@ static class S
 
     public const string Start = "Start training";
     public const string QueueBuild = "Add to queue";
+    public static string BuildQueued(string name, int position) =>
+        $"{name} added to the queue ({(position == 1 ? "next up" : $"#{position} in line")}). See it on the Builds page.";
     public const string Stop = "Stop";
     public const string EndNow = "End now";
     public const string StopDetail = "Stop saves a checkpoint first; building the same voice again resumes. Click again to end at once without saving.";
@@ -70,6 +70,8 @@ static class S
     public const string BuildsQueueEmpty = "The queue is empty. Use “Add to queue” to train several voices one after another.";
     public static string BuildsSteps(long steps) => $"{steps:N0} steps";
     public const string Remove = "Remove";
+    public const string BuildNow = "Build now";
+    public const string BuildsQueueDrag = "Drag a build to change the order. Build now saves the current build and puts it first in line, to resume after.";
     public const string CloseNote = "Closing this window stops training the same way Stop does: a checkpoint is saved first.";
 
     public const string LogEmpty = "Messages from training appear here.";
@@ -82,6 +84,7 @@ static class S
         {
             "starting" => $"Starting {name} (loading the models takes a little while)…",
             "training" => $"Training {name}",
+            "stopping" when state.Next is { } next => $"Saving {name} to switch to {next.Name}; {name} resumes next…",
             "stopping" => $"Stopping {name}: saving a checkpoint first…",
             "finished" => $"{name} is finished",
             "stopped" => $"{name} stopped; build it again to continue",

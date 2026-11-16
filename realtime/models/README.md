@@ -1,40 +1,48 @@
 # Voices
 
-Voices travel as single `.cvc` files and are installed here as one folder each.
-The folder name is the voice's name in the app, and the folder is
+Each voice is one `.cvc` file. A voice's checkpoints share a folder named
+after it. The file name is the voice's name in the app, and the file is
 self-contained: its description and its decoder, with nothing that names a
 place on the machine that made it.
 
 ```text
 models/
-  MyVoice-10000s/
-    MyVoice-10000s.causalvc.json
-    decoder.pt
+  MyVoice/
+    MyVoice-5000s.cvc
+    MyVoice-10000s.cvc
 ```
 
-To add a voice, drag its `.cvc` file onto the app's window, or put the file
-here and use **Reload**: it is unpacked into a folder and the file removed. To
-share one, use **Export** in the library, which writes a `.cvc`
-(`python -m causalvc.voice cvc FOLDER` does the same from a terminal). Building
-a voice with the training window installs every checkpoint here automatically.
+To add a voice, drag its `.cvc` file onto the app's window. It goes into its
+voice's folder (`MyVoice-15000s.cvc` into `MyVoice/`). You can also put the
+file here, in a folder or straight in `models/`, and use **Reload**. To share
+one, use **Export** in the library, which writes a copy with your pitch and
+gain settings inside. Building a voice with the training window, with **Add to
+the voice changer** on, puts every checkpoint here. Deleting a voice's last
+checkpoint removes its folder too.
 
-The app saves each voice's pitch and gain settings beside it as
-`realtime_settings.json`; Export puts them in the `.cvc`, and they come along
-when it is installed.
+The app keeps each voice's pitch and gain settings in
+`configs/voice_settings.json`, by name, so the voice files are never changed.
+A voice with none saved there starts from the settings inside its file.
+
+The app reads a voice through an unpacked copy in your cache folder
+(`~/.cache/causalvc/voices`, or `%LOCALAPPDATA%\causalvc\voices` on Windows),
+made the first time it is used and removed once the file is renamed,
+replaced or deleted.
 
 A `.cvc` holds only its own voice: a decoder that still contains the other
-speakers of the base it was trained on (older folders can point at one) is cut
-down to the one speaker when exported. A voice built on its own content encoder
-or pitch tracker, instead of the shared ones, carries that file too
-(`encoder.pt` or `pitch.pt` in its folder), so it sounds the same elsewhere.
+speakers of the base it was trained on is cut down to the one speaker when
+written. A voice built on its own content encoder or pitch tracker, instead of
+the shared ones, carries that file too, so it sounds the same elsewhere.
 
-To convert voices on a computer without this project's tools at hand, or to
-hand someone a way to convert theirs, give them
-[scripts/convert_to_cvc.py](../../scripts/convert_to_cvc.py): it is a single
-file that needs only Python and PyTorch, and converts a voice folder, or every
-voice in a folder such as `realtime/models`, into `.cvc` files in
-`./cvc-voices` without changing the originals.
+Older versions unpacked each voice into a folder here
+(`MyVoice-10000s/MyVoice-10000s.causalvc.json` and `decoder.pt`). A folder
+holding a `.causalvc.json` is one of those, not a voice's folder. They still
+work; Export turns one into a `.cvc`, and
+[scripts/convert_to_cvc.py](../../scripts/convert_to_cvc.py) converts all of
+them at once. That script is a single file that needs only Python and PyTorch,
+so it can also be handed to someone to convert their voices; it writes the
+`.cvc` files to `./cvc-voices` without changing the originals.
 
-A voice made by an older version (a lone `.causalvc.json` or `.nextvc.json` that
-points at weights elsewhere) can be converted with
-`python -m causalvc.voice pack PATH`.
+A voice made by an older version still (a lone `.causalvc.json` or
+`.nextvc.json` that points at weights elsewhere) is packed into a `.cvc` when
+it is dropped onto the window, or with `python -m causalvc.voice pack PATH`.

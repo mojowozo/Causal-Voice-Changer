@@ -27,8 +27,6 @@ save-every = 保存間隔
 save-every-detail = 保存するバージョンの間隔（NAME-1000s、NAME-2000s など）。比べて一番良いものを残せます。
 batch = バッチサイズ
 batch-detail = 一度に学習するクリップ数です。GPU のメモリが足りない場合は下げてください。
-fixes = 品質の改善
-fixes-detail = 自然な息づかいとささやき、安定して明るい声質、元の声の混じりを減らします。約 25% 遅くなります。
 restart = 最初からやり直す
 restart-detail = この名前の前回の進行を無視して最初から学習します。次のビルドだけに適用されます。
 
@@ -50,6 +48,7 @@ change = 変更…
 
 start = 学習を開始
 queue-build = キューに追加
+build-queued = { $name } をキューに追加しました（{ $position } 番目）。ビルドのページで確認できます。
 stop = 停止
 end-now = 今すぐ終了
 stop-detail = 停止するとまずチェックポイントを保存します。同じ声をもう一度ビルドすると再開します。もう一度クリックすると保存せずにすぐ終了します。
@@ -58,6 +57,7 @@ phase-idle = 準備ができました。声の情報を入力して学習を開�
 phase-starting = { $name } を開始しています（モデルの読み込みに少し時間がかかります）…
 phase-training = { $name } を学習中
 phase-stopping = { $name } を停止中: まずチェックポイントを保存しています…
+phase-switching = { $next } に切り替えるため { $name } を保存しています。{ $name } は次に再開します…
 phase-finished = { $name } が完了しました
 phase-stopped = { $name } を停止しました。もう一度ビルドすると続きから再開します
 phase-failed = { $name } が失敗しました（終了コード { $code }）。原因はログを確認してください
@@ -70,6 +70,8 @@ builds-queue = 次のビルド
 builds-queue-empty = キューは空です。「キューに追加」で複数の声を順番に学習できます。
 builds-steps = { $steps } ステップ
 remove = 削除
+build-now = 今すぐビルド
+builds-queue-drag = ハンドルをドラッグして順番を変更できます。「今すぐビルド」は現在のビルドを保存してキューの先頭に戻し、あとで再開します。
 close-note = このウィンドウを閉じると、停止と同じようにチェックポイントを保存してから学習を止めます。
 
 log-empty = 学習のメッセージがここに表示されます。
