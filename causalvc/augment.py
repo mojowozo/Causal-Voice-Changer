@@ -83,3 +83,59 @@ def add_noise(wav: torch.Tensor, share: float = 0.6, silent: float = 0.12, sr: i
                 burst = torch.fft.irfft(spec, k)
                 inp[i, at : at + k] += burst / burst.abs().max().clamp_min(1e-6) * 10 ** (u(-35, -3) / 20)
     return inp.clamp(-1.0, 1.0), target
+
+
+@torch.no_grad()
+def colour(wav: torch.Tensor, share: float = 0.5, sr: int = 48000) -> torch.Tensor:
+    """Microphone and voice colour on a decoder's input, for teaching it to give the same voice whatever
+    the microphone: [B, N] -> [B, N], for `share` of the examples (the rest pass unchanged); the clean
+    signal stays the target.
+
+    Each coloured example gets a smooth random tone curve; then, each by chance, a treble shelf (a bright
+    or dull microphone), extra breath (high-band noise that follows the voice's own level, as in a
+    breathy voice or a close bright microphone), a low-pass (cheap microphones, codecs) and light room
+    reflections. Everything stays time-aligned with the target."""
+    b, n = wav.shape
+    dev = wav.device
+    pick = (torch.rand(b, 1, device=dev) < share).float()
+    if not pick.any():
+        return wav
+    rand = lambda lo, hi: torch.empty(b, 1, device=dev).uniform_(lo, hi)  # noqa: E731
+    coin = lambda p: (torch.rand(b, 1, device=dev) < p).float()  # noqa: E731
+    tail = int(0.25 * sr)
+    m = n + tail
+    freq = torch.fft.rfftfreq(m, 1 / sr, device=dev)[None]
+    octave = torch.log2(freq.clamp_min(50) / 50)  # 0 at 50 Hz, about 8.9 at 24 kHz
+
+    # Tone: up to +-6 dB over 7 smooth control points spread by octave.
+    points = torch.empty(b, 1, 7, device=dev).uniform_(-6, 6)
+    curve = F.interpolate(points, size=1024, mode="linear", align_corners=True)[:, 0]
+    at = (octave / octave.max() * 1023).round().long().expand(b, -1)
+    gain_db = torch.gather(curve, 1, at)
+    # Treble shelf above 2-7 kHz, -12 to +12 dB: half of the coloured examples.
+    corner = rand(2000, 7000)
+    shelf = torch.sigmoid(4 * torch.log2(freq.clamp_min(1) / corner))
+    gain_db = gain_db + shelf * rand(-12, 12) * coin(0.5)
+    spec = torch.fft.rfft(wav, m) * 10 ** (gain_db / 20)
+    # Low-pass, 12 dB/octave above 3.5-9 kHz: a fifth of them.
+    spec = spec * (coin(0.2) * (1 / (1 + (freq / rand(3500, 9000)) ** 2) - 1) + 1)
+    # Room: a short decaying tail after the direct sound, 12-30 dB down: a quarter of them.
+    t = torch.arange(tail, device=dev)[None] / sr
+    rir = torch.randn(b, tail, device=dev) * torch.exp(-6.9 * t / rand(0.05, 0.25))
+    rir = rir / rir.pow(2).sum(1, keepdim=True).sqrt() * 10 ** (rand(-30, -12) / 20) * coin(0.25)
+    rir[:, 0] = 1.0
+    out = torch.fft.irfft(spec * torch.fft.rfft(rir, m), m)[:, :n]
+
+    # Breath: noise above 3-6 kHz shaped by the voice's own 10 ms level, 15-35 dB under it: a third of them.
+    hop = sr // 100
+    level = F.avg_pool1d(wav.pow(2)[:, None], hop, hop, ceil_mode=True)[:, 0].sqrt()
+    envelope = F.interpolate(level[:, None], size=n, mode="linear", align_corners=False)[:, 0]
+    nf = torch.fft.rfftfreq(n, 1 / sr, device=dev)[None]
+    noise = torch.fft.irfft(torch.fft.rfft(torch.randn(b, n, device=dev)) * torch.sigmoid(4 * torch.log2(nf.clamp_min(1) / rand(3000, 6000))), n)
+    noise = noise / noise.pow(2).mean(1, keepdim=True).sqrt().clamp_min(1e-6)
+    out = out + noise * envelope * 10 ** (-rand(15, 35) / 20) * coin(0.33)
+
+    # Same overall level as before, so only the colour changes.
+    rms = lambda x: x.pow(2).mean(1, keepdim=True).sqrt().clamp_min(1e-6)  # noqa: E731
+    out = out * rms(wav) / rms(out)
+    return (pick * out + (1 - pick) * wav).clamp(-1.0, 1.0)

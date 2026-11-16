@@ -50,7 +50,8 @@ class SpecD(nn.Module):
         self.post = weight_norm(nn.Conv2d(ch, 1, (3, 3), padding=1))
 
     def forward(self, x: torch.Tensor):
-        spec = torch.stft(x.squeeze(1), self.n_fft, self.hop, self.win, self.window, return_complex=True).abs()
+        with full_precision():
+            spec = torch.stft(x.squeeze(1).float(), self.n_fft, self.hop, self.win, self.window, return_complex=True).abs()
         x = spec[:, None]
         fmap = []
         for conv in self.convs:
@@ -84,8 +85,9 @@ class BandD(nn.Module):
         self.post = weight_norm(nn.Conv2d(ch, 1, (3, 3), padding=1))
 
     def forward(self, x: torch.Tensor):
-        spec = torch.stft(x.squeeze(1), self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
-        spec = torch.view_as_real(spec).permute(0, 3, 2, 1)  # [B, 2, frames, bins]
+        with full_precision():
+            spec = torch.stft(x.squeeze(1).float(), self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
+            spec = torch.view_as_real(spec).permute(0, 3, 2, 1)  # [B, 2, frames, bins]
         fmap, outs = [], []
         for (a, b), convs in zip(self.edges, self.bands):
             h = spec[..., a:b]
@@ -112,12 +114,17 @@ class Discriminators(nn.Module):
         return [d(x) for d in self.ds]
 
 
+def full_precision():
+    """Turns off mixed precision (train.py --bf16) for a spectrogram: the FFT needs float32."""
+    return torch.autocast("cuda", enabled=False)
+
+
 def d_loss(real, fake) -> torch.Tensor:
-    return sum(((1 - r) ** 2).mean() + (f**2).mean() for (r, _), (f, _) in zip(real, fake))
+    return sum(((1 - r.float()) ** 2).mean() + (f.float() ** 2).mean() for (r, _), (f, _) in zip(real, fake))
 
 
 def g_loss(real, fake) -> tuple[torch.Tensor, torch.Tensor]:
-    adv = sum(((1 - f) ** 2).mean() for f, _ in fake)
+    adv = sum(((1 - f.float()) ** 2).mean() for f, _ in fake)
     fm = sum(F.l1_loss(a, b.detach()) for (_, fr), (_, ff) in zip(real, fake) for a, b in zip(ff, fr))
     return adv, fm
 

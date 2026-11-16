@@ -22,7 +22,7 @@ import torchaudio
 
 from causalvc.decoder.disc import Discriminators, EnergyLoss, MelLoss, SpecLoss, d_loss, g_loss
 from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder
-from causalvc.augment import add_noise
+from causalvc.augment import add_noise, colour
 from causalvc.decoder.model import tone as tone_of
 from causalvc.infer import CausalVC, extract, load_encoder
 from causalvc.pitch import Rmvpe
@@ -85,6 +85,14 @@ class Crops(torch.utils.data.Dataset):
         peak = wav.abs().max().clamp_min(1e-4)
         gain = min(10 ** (random.uniform(-12.0, 3.0) / 20), 0.99 / peak.item())
         return wav * gain, s
+
+
+def split_outputs(outputs, n: int):
+    """The discriminators' outputs for a batch of 2n made of two halves -> the outputs of each half."""
+    def part(sl):
+        return [(score[sl], [f[sl] for f in fmap]) for score, fmap in outputs]
+
+    return part(slice(0, n)), part(slice(n, None))
 
 
 @torch.no_grad()
@@ -197,6 +205,11 @@ def main(on_save=None) -> None:
     ap.add_argument("--decorr", type=float, default=0.0, help="weight of a loss that makes unvoiced output depend on the random noise input (breaths, whispers, sibilants)")
     ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: share of examples whose input gets background noise, clicks, snaps or thumps "
                     "while the target stays clean (some are noise alone with a silent target), so non-voice sounds come out quiet")
+    ap.add_argument("--colour-aug", type=float, default=0.0, help="share of examples whose input gets a random microphone colour "
+                    "(tone curve, treble shelf, breath, low-pass, room) while the target stays clean, so the voice does not depend on the microphone")
+    ap.add_argument("--bf16", action="store_true", help="run the decoder and discriminators in bfloat16, about 1.5x faster at the same "
+                    "quality; the excitation, spectrograms and spectral losses stay in full precision. GPUs without native "
+                    "bfloat16 train in full precision")
     ap.add_argument("--tone", type=float, default=0.0, help="experimental: also tell the decoder each frame's brightness and vowel openness; "
                     "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
@@ -288,6 +301,19 @@ def main(on_save=None) -> None:
         bank = build_bank(spk, enc, args.index_bank, dev, Path("runs/cache") / f"bank_{Path(args.encoder).parent.name}_{args.index_bank}.pt")
         print(f"bank {tuple(bank.shape)}", flush=True)
     log, shown = {}, ""
+
+    # bfloat16 only where the GPU does it natively (NVIDIA RTX 30 series and newer, recent AMD); elsewhere it
+    # would be emulated, slower than full precision.
+    use_bf16 = False
+    if args.bf16 and "cuda" in str(dev):
+        with torch.cuda.device(dev):
+            use_bf16 = torch.cuda.is_bf16_supported(including_emulation=False)
+        print("training in bfloat16" if use_bf16 else "this GPU has no native bfloat16: training in full precision", flush=True)
+
+    def amp():
+        """bfloat16 for the networks when --bf16; the spectrogram front ends switch it off for themselves."""
+        return torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16)
+
     prog = Progress(args.steps, step)
     stop = {"now": False}  # set by Ctrl-C or a terminate signal: save a checkpoint, then leave
 
@@ -306,18 +332,25 @@ def main(on_save=None) -> None:
         src = wav
         if args.noise_aug:  # what the microphone hears (src) differs from what should come out (wav)
             src, wav = add_noise(wav, args.noise_aug)
+        if args.colour_aug:
+            src = colour(src, args.colour_aug)
         content, f0, loud = extract(enc, rmvpe, src)
         if args.perturb and random.random() < args.perturb:
             content = warped_content(enc, src, content.shape[1])
         if bank is not None:
             content = looked_up(content, bank, s)
         tn = tone_of(src) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
-        h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn)
+        with amp():
+            h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn)
         exc = gen.source(f0[:, : h.shape[-1]])
-        fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME])
+        with amp():
+            fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME]).float()
         real = wav[:, None, lo * FRAME : hi * FRAME]
 
-        loss_d = d_loss(disc(real), disc(fake.detach()))
+        # Real and generated audio in one pass: the discriminators treat every example on its own, so
+        # this is the same as two passes, with half the kernel launches.
+        with amp():
+            loss_d = d_loss(*split_outputs(disc(torch.cat([real, fake.detach()])), real.shape[0]))
         opt_d.zero_grad(set_to_none=True)
         loss_d.backward()
         opt_d.step()
@@ -328,9 +361,13 @@ def main(on_save=None) -> None:
             prog.update(step, f"warmup d {loss_d.item():.3f}")
             continue
         loss_mel = mel_loss(fake, real)
-        with torch.no_grad():
+        with torch.no_grad(), amp():
             real_out = disc(real)
-        adv, fm = g_loss(real_out, disc(fake))
+        # The generator's loss reaches it through the discriminators, but their own weight gradients
+        # from it were only thrown away (cleared before their next step): skip computing them.
+        disc.requires_grad_(False)
+        with amp():
+            adv, fm = g_loss(real_out, disc(fake))
         loss_g = adv + 2.0 * fm + 45.0 * loss_mel
         if args.stft_loss:
             loss_stft = spec_loss(fake, real)
@@ -340,7 +377,9 @@ def main(on_save=None) -> None:
             # The same frames again with fresh noise in the excitation. Real breath noise is different every
             # time; without this the decoder computes one fixed noise-like pattern from the features and
             # ignores the noise it is given. Penalise the per-frame correlation of the two outputs where unvoiced.
-            again = gen.generate(h[..., lo:hi], g, gen.source(f0[:, : h.shape[-1]])[..., lo * FRAME : hi * FRAME])
+            exc2 = gen.source(f0[:, : h.shape[-1]])[..., lo * FRAME : hi * FRAME]
+            with amp():
+                again = gen.generate(h[..., lo:hi], g, exc2).float()
             a, b = (y[:, 0].unflatten(1, (-1, FRAME)) for y in (fake, again))
             a, b = a - a.mean(-1, keepdim=True), b - b.mean(-1, keepdim=True)
             corr = (a * b).sum(-1) / (a.norm(dim=-1) * b.norm(dim=-1) + 1e-5)
@@ -354,6 +393,7 @@ def main(on_save=None) -> None:
             log["energy"] = log.get("energy", 0.0) + loss_en.item() / 100
         opt_g.zero_grad(set_to_none=True)
         loss_g.backward()
+        disc.requires_grad_(True)
         opt_g.step()
         sch_g.step(), sch_d.step()
         step += 1

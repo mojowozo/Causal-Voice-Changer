@@ -112,8 +112,12 @@ class Job:
         cmd = [sys.executable, "-u", "-m", "causalvc.build", "--name", name, "--audio", audio, "--batch", str(batch),
                "--steps", str(steps), "--save-every", str(save_every), "--base", base, "--device", device]
         cmd += ["--restart"] if restart else []
+        cmd += ["--bf16"]  # about 1.5x faster at the same quality; GPUs without native bfloat16 train in full precision
         # Natural breath noise, steadier tone, and less of the source voice leaking through; about a quarter slower.
         cmd += ["--perturb", "0.75", "--energy-loss", "20", "--decorr", "10"] if fixes else []
+        # Random microphone colour on half of the inputs: the voice depends less on the microphone, keeps bright or
+        # breathy voices clearer and sounds a little more natural for everyone (P89: MOS +0.08 over 40 sentences).
+        cmd += ["--colour-aug", "0.5"]
         # Trained to stay quiet through clicks, snaps, claps and background noise; costs a little on whispers and laughs.
         cmd += ["--noise-aug", "0.6"] if noise else []
         cmd += ["--app-models", app_models] if app_models else []
