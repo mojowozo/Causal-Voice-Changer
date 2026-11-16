@@ -20,6 +20,13 @@ gain settings inside. Building a voice with the training window, with **Add to
 the voice changer** on, puts every checkpoint here. Deleting a voice's last
 checkpoint removes its folder too.
 
+The **Merge** page blends voices into a new one: each voice's strength sets
+its share, and the result is written here as a voice of its own. Voices built
+in the training window can be merged with each other; one built from another
+base or with other settings cannot, and the page says so.
+[causalvc/merge.py](../../causalvc/merge.py) does the same from the command
+line.
+
 The app keeps each voice's pitch and gain settings in
 `configs/voice_settings.json`, by name, so the voice files are never changed.
 A voice with none saved there starts from the settings inside its file.

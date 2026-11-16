@@ -24,7 +24,7 @@ public sealed partial class MainWindow : Window, IHost
     const int MaxLogChars = 40_000;
     const int ToastSeconds = 6;
 
-    enum Pending { Start, Import, SaveLog }
+    enum Pending { Start, Import, Merge, SaveLog }
 
     readonly DispatcherQueue _ui;
     readonly EngineConnection _engine;
@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window, IHost
     readonly Dictionary<PageKind, UIElement> _pages = [];
     readonly ModelPage _modelPage;
     readonly LibraryPage _libraryPage;
+    readonly MergePage _mergePage;
     readonly AudioPage _audioPage;
     readonly PerformancePage _performancePage;
     readonly RecordingPage _recordingPage;
@@ -60,12 +61,15 @@ public sealed partial class MainWindow : Window, IHost
 
         _modelPage = new ModelPage(this);
         _libraryPage = new LibraryPage(this);
+        _mergePage = new MergePage(this);
+        _mergePage.MergeRequested += id => _pending[id] = Pending.Merge;
         _audioPage = new AudioPage(this);
         _performancePage = new PerformancePage(this);
         _recordingPage = new RecordingPage(this);
         _logPage = new LogPage(SaveLog, ClearLog);
         _pages[PageKind.Model] = _modelPage;
         _pages[PageKind.Library] = _libraryPage;
+        _pages[PageKind.Merge] = _mergePage;
         _pages[PageKind.Audio] = _audioPage;
         _pages[PageKind.Performance] = _performancePage;
         _pages[PageKind.Recording] = _recordingPage;
@@ -139,6 +143,7 @@ public sealed partial class MainWindow : Window, IHost
         {
             PageKind.Model => S.PageModel,
             PageKind.Library => S.PageLibrary,
+            PageKind.Merge => S.PageMerge,
             PageKind.Audio => S.PageAudio,
             PageKind.Performance => S.PagePerformance,
             PageKind.Recording => S.PageRecording,
@@ -323,6 +328,7 @@ public sealed partial class MainWindow : Window, IHost
             _starting = false;
             RenderControlBar();
         }
+        if (known && pending == Pending.Merge) _mergePage.MergeFinished(response.Failure is null);
         if (response.Failure is { } error)
         {
             var text = S.ErrorText(error);
@@ -338,6 +344,11 @@ public sealed partial class MainWindow : Window, IHost
                 var imported = S.ModelImported(string.Join(", ", names));
                 _controlBar.Status = imported;
                 Toast(imported);
+                break;
+            case Pending.Merge:
+                var merged = S.MergeDone(response.Result?["name"]?.GetValue<string>() ?? "");
+                _controlBar.Status = merged;
+                Toast(merged);
                 break;
             case Pending.SaveLog:
                 Toast(S.LogSaved(response.Result?["path"]?.GetValue<string>() ?? ""));

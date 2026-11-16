@@ -31,6 +31,7 @@ pub static RENAME_INPUT_ID: std::sync::LazyLock<widget::Id> =
 pub enum Page {
     Model,
     Library,
+    Merge,
     Audio,
     Performance,
     Recording,
@@ -188,6 +189,7 @@ pub enum Connection {
 enum Pending {
     Start,
     Import,
+    Merge,
     RecordStop,
     SaveLog,
 }
@@ -195,6 +197,14 @@ enum Pending {
 #[derive(Clone, Debug)]
 pub enum Message {
     Engine(engine::Event),
+    /// The Merge page: a slot's voice (index into merge_labels) and strength, more or fewer slots,
+    /// the new voice's name, and merging.
+    MergeVoice(usize, usize),
+    MergeStrength(usize, f32),
+    MergeAddSlot,
+    MergeRemoveSlot(usize),
+    MergeName(String),
+    Merge,
     Num(Num, f32),
     NumReleased(Num),
     /// Clicked a slider's value to type one instead.
@@ -307,6 +317,13 @@ pub struct App {
     pub confirm_delete: Option<String>,
     /// Model being renamed and the new name typed so far.
     pub renaming: Option<(String, String)>,
+    /// The Merge page: each slot's voice and strength (1-100), the new name, the voices that can
+    /// be merged (with their families), and whether a merge is running.
+    pub merge_slots: Vec<(Option<String>, f32)>,
+    pub merge_name: String,
+    pub merge_labels: Vec<String>,
+    pub merge_families: Vec<String>,
+    pub merging: bool,
     /// A typed value to apply once the unfocus is known not to be Escape.
     blur_pending: Option<(Num, String)>,
 }
@@ -333,6 +350,7 @@ impl cosmic::Application for App {
         for (page, title, icon) in [
             (Page::Model, fl!("page-model"), "avatar-default-symbolic"),
             (Page::Library, fl!("page-library"), "view-list-symbolic"),
+            (Page::Merge, fl!("page-merge"), "media-playlist-shuffle-symbolic"),
             (Page::Audio, fl!("page-audio"), "audio-card-symbolic"),
             (
                 Page::Performance,
@@ -395,6 +413,11 @@ impl cosmic::Application for App {
             confirm_delete: None,
             renaming: None,
             blur_pending: None,
+            merge_slots: vec![(None, 50.0), (None, 50.0)],
+            merge_name: String::new(),
+            merge_labels: Vec::new(),
+            merge_families: Vec::new(),
+            merging: false,
         };
         let task = app.update_title();
         (app, task)
@@ -718,6 +741,37 @@ impl cosmic::Application for App {
                     }
                 }
             }
+            Message::MergeVoice(slot, index) => {
+                if let (Some(entry), Some(name)) = (self.merge_slots.get_mut(slot), self.merge_labels.get(index)) {
+                    entry.0 = Some(name.clone());
+                }
+            }
+            Message::MergeStrength(slot, value) => {
+                if let Some(entry) = self.merge_slots.get_mut(slot) {
+                    entry.1 = value.round().clamp(1.0, 100.0);
+                }
+            }
+            Message::MergeAddSlot => self.merge_slots.push((None, 50.0)),
+            Message::MergeRemoveSlot(slot) => {
+                if self.merge_slots.len() > 2 && slot < self.merge_slots.len() {
+                    self.merge_slots.remove(slot);
+                }
+            }
+            Message::MergeName(text) => self.merge_name = text,
+            Message::Merge => {
+                if crate::pages::merge_problem(self).is_none() && !self.merging {
+                    let voices: Vec<Value> = self
+                        .merge_slots
+                        .iter()
+                        .filter_map(|(name, strength)| Some(json!({"name": name.clone()?, "strength": strength})))
+                        .collect();
+                    let name = self.merge_name.trim().to_string();
+                    if let Some(id) = self.send("merge_models", json!({"voices": voices, "name": name})) {
+                        self.pending.insert(id, Pending::Merge);
+                        self.merging = true;
+                    }
+                }
+            }
             Message::ConfirmDeleteModel => {
                 if let Some(name) = self.confirm_delete.take() {
                     self.send("delete_model", json!({"name": name}));
@@ -869,6 +923,18 @@ impl App {
             num.set(&mut state.settings, num.get(&old.settings));
         }
         self.model_names = state.models.iter().map(|m| m.name.clone()).collect();
+        let mergeable: Vec<_> = state
+            .models
+            .iter()
+            .filter_map(|m| Some((m.name.clone(), m.merge_family.clone()?)))
+            .collect();
+        self.merge_labels = mergeable.iter().map(|(name, _)| name.clone()).collect();
+        self.merge_families = mergeable.into_iter().map(|(_, family)| family).collect();
+        for slot in &mut self.merge_slots {
+            if slot.0.as_ref().is_some_and(|name| !self.merge_labels.contains(name)) {
+                slot.0 = None; // deleted or renamed meanwhile
+            }
+        }
         self.gpu_labels = state
             .gpus
             .iter()
@@ -979,6 +1045,9 @@ impl App {
         if matches!(pending, Some(Pending::Start)) {
             self.starting = false;
         }
+        if matches!(pending, Some(Pending::Merge)) {
+            self.merging = false;
+        }
         match (pending, result) {
             (_, Err(error)) => {
                 let text = error_text(&error);
@@ -991,6 +1060,13 @@ impl App {
                     .map(|names| names.iter().filter_map(Value::as_str).collect())
                     .unwrap_or_default();
                 let text = fl!("model-imported", names = names.join(", "));
+                self.status = text.clone();
+                self.toast(text)
+            }
+            (Some(Pending::Merge), Ok(value)) => {
+                let name = value["name"].as_str().unwrap_or_default().to_string();
+                self.merge_name.clear();
+                let text = fl!("merge-done", name = name);
                 self.status = text.clone();
                 self.toast(text)
             }
@@ -1061,6 +1137,9 @@ pub fn status_text(code: &str, data: &Value) -> String {
         "playback_stopped" => fl!("status-playback-stopped"),
         "recording_started" => fl!("status-recording-started"),
         "importing_model" => fl!("status-importing-model"),
+        "merging_models" => fl!("status-merging-models"),
+        // The toast from the merge response names the voice.
+        "model_merged" => String::new(),
         "model_deleted" => fl!("status-model-deleted", name = text("name")),
         "switching_model" => fl!("status-switching-model", name = text("name")),
         "model_switched" => fl!("status-model-switched", name = text("name")),
@@ -1137,6 +1216,8 @@ pub fn error_text(error: &ErrorInfo) -> String {
         "bad_model_name" => fl!("error-bad-model-name"),
         "rename_failed" => fl!("error-rename-failed", detail = error.message.clone()),
         "export_failed" => fl!("error-export-failed", detail = error.message.clone()),
+        "merge_incompatible" => fl!("error-merge-incompatible"),
+        "merge_failed" => fl!("error-merge-failed", detail = error.message.clone()),
         "hushwire_download_failed" => {
             fl!("error-hushwire-download-failed", detail = error.message.clone())
         }

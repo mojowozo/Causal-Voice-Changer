@@ -58,6 +58,7 @@ from tools.audio_routing import (
 )
 from tools.file_audio_source import FileAudioSource
 from tools.model_import import ModelImportError, import_models, voice_files
+from causalvc import merge as voice_merge
 from tools import asio as asio_driver
 from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
@@ -70,6 +71,7 @@ from tools.model_registry import (
     move_to_trash,
     remove_if_empty,
     rename_model,
+    voice_folder_name,
 )
 from tools.wav_recorder import WavRecorder
 
@@ -229,6 +231,8 @@ class RealtimeEngine:
                     "model_file": model.model_path.name,
                     "size_bytes": model.size_bytes,
                     "modified": int(model.modified),
+                    # Voices with the same value can be merged together (null: cannot be merged).
+                    "merge_family": self.merge_family(model),
                 }
                 for model in self.models
             ],
@@ -257,6 +261,64 @@ class RealtimeEngine:
     # ------------------------------------------------------------------
     # Models, GPUs, devices
     # ------------------------------------------------------------------
+    def merge_family(self, model):
+        """causalvc.merge.family, remembered per version of the file (state is sent often)."""
+        if not model.is_file:
+            return None
+        cache = self.__dict__.setdefault("merge_families", {})
+        key = (str(model.path), model.size_bytes, model.modified)
+        if key not in cache:
+            cache[key] = voice_merge.family(model.path)
+        return cache[key]
+
+    def merge_models(self, voices, new_name):
+        """Write a new voice that is a weighted average of ``voices`` ([{"name", "strength"}])
+        into models/NEW_NAME/, with the first voice's settings, and select it."""
+        if not isinstance(voices, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("name"), str)
+            and isinstance(item.get("strength"), (int, float)) and not isinstance(item.get("strength"), bool)
+            for item in voices
+        ):
+            raise EngineError("bad_request", "voices must be a list of {name, strength}")
+        problem = model_name_problem(new_name)
+        if problem is not None:
+            raise EngineError("bad_model_name", f"Invalid model name: {new_name!r}", reason=problem)
+        clash = next((other for other in self.models_by_name if other.casefold() == new_name.casefold()), None)
+        if clash is not None:
+            raise EngineError("model_name_taken", f"A model named {clash} already exists.")
+        chosen = [item for item in voices if item["strength"] > 0]
+        names = [item["name"] for item in chosen]
+        if len(chosen) < 2 or len(set(names)) < len(names):
+            raise EngineError("merge_failed", "Choose at least two different voices with a strength above zero.")
+        models = []
+        for name in names:
+            model = self.models_by_name.get(name)
+            if model is None:
+                raise EngineError("no_model", f"Unknown model: {name}")
+            models.append(model)
+        families = {self.merge_family(model) for model in models}
+        if None in families or len(families) != 1:
+            raise EngineError("merge_incompatible", "These voices cannot be merged: they were built differently.")
+        self.flush_model_settings_save(force=True)
+        settings = json.dumps(model_settings_to_save(self.model_settings_for(names[0])), indent=2).encode()
+        target = voice_files.voice_folder(MODELS_ROOT, voice_folder_name(new_name)) / f"{new_name}{voice_files.CVC_SUFFIX}"
+        if target.exists():
+            raise EngineError("model_name_taken", f"{target.name} already exists.")
+        self.status("merging_models")
+        try:
+            voice_merge.merge([(model.path, item["strength"]) for model, item in zip(models, chosen)],
+                              target, new_name, settings)
+        except voice_merge.MergeError as error:
+            raise EngineError("merge_incompatible", str(error)) from error
+        except (OSError, ValueError, KeyError, RuntimeError) as error:
+            raise EngineError("merge_failed", f"Could not merge: {error}") from error
+        printt("Merged %s into %s", ", ".join(f"{item['name']} ({item['strength']:g})" for item in chosen), new_name)
+        self.refresh_models()
+        self.update_settings({"model_name": new_name})
+        self.status("model_merged", name=new_name)
+        self.emit_state()
+        return new_name
+
     def refresh_models(self):
         self.models = discover_models(MODELS_ROOT)
         self.models_by_name = {model.name: model for model in self.models}

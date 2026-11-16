@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace CausalVC.Realtime.Ui.Pages;
 
-public enum PageKind { Model, Library, Audio, Performance, Recording, Log }
+public enum PageKind { Model, Library, Merge, Audio, Performance, Recording, Log }
 
 /// What pages need from the window: the engine and a few window services.
 public interface IHost

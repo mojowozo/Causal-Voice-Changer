@@ -238,6 +238,9 @@ class EngineServer:
                 require(args, "name", str), require(args, "new_name", str)
             ),
             "import_model": lambda args: {"models": engine.import_model(require(args, "paths", list))},
+            "merge_models": lambda args: {
+                "name": engine.merge_models(require(args, "voices", list), require(args, "name", str))
+            },
             "export_model": lambda args: {
                 "path": engine.export_model(require(args, "name", str), require(args, "path", str))
             },

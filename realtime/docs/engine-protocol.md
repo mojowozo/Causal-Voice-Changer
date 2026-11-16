@@ -58,6 +58,7 @@ translate by `code`.
 | `reload_models` | | `null` |
 | `import_model` | `{"paths": ["/abs/Voice-10000s.cvc", …]}` | `{"models": ["Voice-10000s"]}`; copies each `.cvc` into its voice's folder, `models/<voice>/<name>.cvc` (`Voice-10000s` goes into `Voice/`; an older `.causalvc.json` description is packed into one) and selects the first. A `.cvc` placed in `models/` or one folder down by hand is a voice as it is, listed on startup and `reload_models` |
 | `download_hushwire` | — | `null`; records that the user accepted Amazon's download notice (the client shows it first; `hushwire-notice-body`) and fetches Hushwire's model in the background into Hushwire's own folder (`~/.local/share/Hushwire/models`, `%APPDATA%\Hushwire\models`), shared with the Hushwire plugin. Ends with status `hushwire_downloaded` or error `hushwire_download_failed` |
+| `merge_models` | `{"voices": [{"name": "Kira-1000s", "strength": 60}, {"name": "Mika", "strength": 40}], "name": "Kira-Mika"}` | `{"name": …}`; writes a new voice, `models/<voice>/<name>.cvc`, whose decoder weights are the strength-weighted average of the voices' (strengths are shares; zero leaves a voice out), with the first voice's settings, and selects it. Refused with `merge_incompatible` unless every voice has the same `merge_family` (see `models`), `merge_failed` for fewer than two distinct voices |
 | `export_model` | `{"name": "Voice", "path": "/abs/Voice.cvc"}` | `{"path": …}`; writes the voice with its current settings as one `.cvc` file (`.cvc` is appended if missing) |
 | `delete_model` | `{"name": "Voice"}` | `null`; moves the voice (its `.cvc`, or an older voice's folder) to the desktop Trash, removing its voice's folder once that is empty, (`gio trash` on Linux, the Recycle Bin on Windows; recoverable) and selects another model if it was selected. Refused with `model_in_use` while converting with it |
 | `rename_model` | `{"name": "Voice", "new_name": "Voice v2"}` | `null`; renames the voice's file (or an older voice's folder; settings go with it; the selection follows). Names must be unique (ignoring case), not start with `.`, and avoid `/ \ : * ? " < > \|`. Refused with `model_in_use` while converting with it |
@@ -115,7 +116,8 @@ Front ends can re-render entirely from the latest state.
   "settings": { /* every key above */ },
   "models": [{"name": "MyVoice-10000s", "model_file": "MyVoice-10000s.cvc",
               "size_bytes": 48000000,       // of the .cvc (an older voice folder: its decoder)
-              "modified": 1791067045}],     // the file's modification time (Unix seconds)
+              "modified": 1791067045,       // the file's modification time (Unix seconds)
+              "merge_family": "fbb46583a204"}],  // equal for voices that can be merged together; null: cannot be merged
   "devices": {
     "inputs":  [{"label": "[JACK] Elgato Wave XLR Mono", "api": "JACK",
                  "name": "Elgato Wave XLR Mono", "channels": [1, 1]}],
@@ -155,7 +157,7 @@ WASAPI converts to the model's 48 kHz when the Windows mixer runs at another rat
 | `error` | `{"code", "message"}`: a problem not tied to a request (e.g. `monitor_failed`, `file_error`) |
 | `log` | `{"text": "…"}`: engine stdout/stderr as it is written |
 
-Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `preparing_inference`,
+Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `merging_models`, `model_merged` (`name`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `preparing_inference`,
 `starting_audio`, `conversion_started`, `passthrough_started`,
 `conversion_stopped`, `passthrough_stopped`, `settings_changed`,
 `stream_stopped` (the audio device went away), `file_selected` (`name`),
@@ -170,5 +172,5 @@ Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`
 `no_common_samplerate`, `audio_start_failed`, `record_requires_running`,
 `recording_failed`, `samplerate_unsupported`, `model_load_failed`, `import_no_model_file`, `import_failed`, `file_error`, `monitor_failed`, `log_save_failed`,
 `model_in_use`, `delete_failed`, `bad_model_name` (details: `reason`),
-`model_name_taken`, `rename_failed`, `export_failed`, `hushwire_unavailable`, `hushwire_download_failed`,
+`model_name_taken`, `rename_failed`, `export_failed`, `merge_incompatible`, `merge_failed`, `hushwire_unavailable`, `hushwire_download_failed`,
 `asio_one_device`, `asio_panel_busy`, `asio_panel_failed`.

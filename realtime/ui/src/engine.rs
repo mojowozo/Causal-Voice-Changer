@@ -88,6 +88,9 @@ pub struct Model {
     /// Modification time of the model file (Unix seconds).
     #[serde(default)]
     pub modified: i64,
+    /// Voices with the same value can be merged together; None: this one cannot be merged.
+    #[serde(default)]
+    pub merge_family: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

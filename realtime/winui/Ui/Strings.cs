@@ -19,6 +19,7 @@ static class S
     // Navigation
     public const string PageModel = "Model";
     public const string PageLibrary = "Library";
+    public const string PageMerge = "Merge";
     public const string PageAudio = "Audio";
     public const string PagePerformance = "Performance";
     public const string PageRecording = "Recording";
@@ -102,6 +103,28 @@ static class S
     public const string ErrorModelNameTaken = "Another model already has that name.";
     public const string ErrorBadModelName = "That name can't be used: it can't be empty, start with a dot, or contain / \\ : * ? \" < > |";
     public static string ErrorRenameFailed(string detail) => $"Could not rename the model: {detail}";
+
+    // Merge page
+    public const string MergeIntro = "Blend voices into a new one. Each voice's strength sets its share of the result; the new voice appears in the library with the first voice's pitch and gain settings.";
+    public const string MergeNotEnough = "There are fewer than two voices that can be merged. Voices built in the training window can be merged with each other.";
+    public const string MergeVoices = "Voices";
+    public static string MergeSlot(int number) => $"Voice {number}";
+    public const string MergeSlotEmpty = "Choose a voice";
+    public const string MergeSlotIncompatible = "Can't be merged with the first voice: it was built from another base or with other settings.";
+    public static string MergeShare(double percent) => $"{percent:0}% of the result";
+    public const string MergeAddSlot = "Add a voice";
+    public const string MergeRemoveSlot = "Remove this voice";
+    public const string MergeResult = "New voice";
+    public const string MergeName = "Name";
+    public const string MergeNameDetail = "The new voice's name in the library.";
+    public const string MergeNamePlaceholder = "e.g. Kira-Mika";
+    public const string MergeButton = "Merge";
+    public const string MergeRunning = "Merging…";
+    public const string MergeNeedTwo = "Choose at least two voices.";
+    public const string MergeDuplicate = "Each voice can only be chosen once.";
+    public const string MergeIncompatible = "Some of these voices can't be merged together.";
+    public const string MergeNeedName = "Give the new voice a name.";
+    public static string MergeDone(string name) => $"Merged into {name}; it is now the selected voice.";
 
     // Audio page
     public const string SectionInput = "Input";
@@ -232,6 +255,9 @@ static class S
             "playback_stopped" => "Playback stopped",
             "recording_started" => "Recording started",
             "importing_model" => StatusImportingModel,
+            "merging_models" => "Merging voices…",
+            // The toast from the merge response names the voice.
+            "model_merged" => "",
             "model_deleted" => StatusModelDeleted(Text("name")),
             "model_renamed" => StatusModelRenamed(Text("name"), Text("new_name")),
             "model_exported" => StatusModelExported(Text("name"), Text("path")),
@@ -262,6 +288,8 @@ static class S
         "not_ready" => "The engine is still starting.",
         "import_no_model_file" => "Drop a voice's .cvc file (written when a voice is built).",
         "export_failed" => $"Could not export the voice: {error.Message}",
+        "merge_incompatible" => "These voices can't be merged: they were built from different bases or with different settings.",
+        "merge_failed" => $"Could not merge the voices: {error.Message}",
         "hushwire_download_failed" => $"Could not download Hushwire's model: {error.Message}",
         "hushwire_unavailable" => "Hushwire needs the wasmtime package; run run-realtime.bat again to reinstall it.",
         "import_failed" => $"Could not add the model: {error.Message}",

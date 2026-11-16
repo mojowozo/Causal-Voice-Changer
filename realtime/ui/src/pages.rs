@@ -26,6 +26,7 @@ pub fn view(app: &App, page: Page) -> Element<'_, Message> {
     let content = match page {
         Page::Model => model_page(app, state),
         Page::Library => crate::library::page(app, state),
+        Page::Merge => merge_page(app),
         Page::Audio => audio_page(app, state),
         Page::Performance => performance_page(app, state),
         Page::Recording => recording_page(app, state),
@@ -789,4 +790,121 @@ mod tests {
         assert_eq!(mmss(75.9), "01:15");
         assert_eq!(mmss(-3.0), "00:00");
     }
+}
+
+/// Why the Merge page's voices and name cannot be merged yet, or None when they can.
+pub fn merge_problem(app: &App) -> Option<String> {
+    let chosen: Vec<&String> = app.merge_slots.iter().filter_map(|(name, _)| name.as_ref()).collect();
+    if chosen.len() < 2 {
+        return Some(fl!("merge-need-two"));
+    }
+    if (1..chosen.len()).any(|i| chosen[..i].contains(&chosen[i])) {
+        return Some(fl!("merge-duplicate"));
+    }
+    let family = |name: &String| {
+        app.merge_labels
+            .iter()
+            .position(|label| label == name)
+            .and_then(|index| app.merge_families.get(index))
+    };
+    if chosen.iter().any(|name| family(name) != family(chosen[0])) {
+        return Some(fl!("merge-incompatible"));
+    }
+    let name = app.merge_name.trim();
+    if name.is_empty() {
+        return Some(fl!("merge-need-name"));
+    }
+    if app.model_names.iter().any(|existing| existing.to_lowercase() == name.to_lowercase()) {
+        return Some(fl!("error-model-name-taken"));
+    }
+    None
+}
+
+fn merge_page(app: &App) -> Element<'_, Message> {
+    let space = cosmic::theme::spacing();
+    let total: f32 = app
+        .merge_slots
+        .iter()
+        .filter(|(name, _)| name.is_some())
+        .map(|(_, strength)| strength)
+        .sum();
+    let first_family = app
+        .merge_slots
+        .iter()
+        .find_map(|(name, _)| name.as_ref())
+        .and_then(|name| app.merge_labels.iter().position(|label| label == name))
+        .and_then(|index| app.merge_families.get(index));
+    let mut voices = settings::section().title(fl!("merge-voices"));
+    for (slot, (name, strength)) in app.merge_slots.iter().enumerate() {
+        let selected = name.as_ref().and_then(|name| app.merge_labels.iter().position(|label| label == name));
+        let fits = selected.and_then(|index| app.merge_families.get(index)) == first_family || selected.is_none();
+        let description = match (selected, fits) {
+            (Some(_), false) => fl!("merge-slot-incompatible"),
+            (Some(_), true) if total > 0.0 => fl!("merge-share", percent = format!("{:.0}", strength / total * 100.0)),
+            _ => fl!("merge-slot-empty"),
+        };
+        let mut control = widget::row::with_capacity(4)
+            .spacing(space.space_xs)
+            .align_y(Alignment::Center)
+            .push(
+                widget::dropdown(app.merge_labels.as_slice(), selected, move |index| Message::MergeVoice(slot, index))
+                    .width(Length::Fixed(220.0)),
+            )
+            .push(
+                widget::slider(1.0_f32..=100.0, *strength, move |value| Message::MergeStrength(slot, value))
+                    .step(1.0_f32)
+                    .width(Length::Fixed(160.0)),
+            )
+            .push(widget::text::body(format!("{strength:.0}")).width(Length::Fixed(32.0)));
+        if app.merge_slots.len() > 2 {
+            control = control.push(
+                widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
+                    .tooltip(fl!("merge-remove-slot"))
+                    .on_press(Message::MergeRemoveSlot(slot)),
+            );
+        }
+        let number = slot + 1;
+        voices = voices.add(
+            settings::item::builder(fl!("merge-slot", number = number))
+                .description(description)
+                .control(control),
+        );
+    }
+    voices = voices.add(settings::item_row(vec![
+        widget::button::standard(fl!("merge-add-slot"))
+            .leading_icon(widget::icon::from_name("list-add-symbolic"))
+            .on_press(Message::MergeAddSlot)
+            .into(),
+    ]));
+
+    let problem = merge_problem(app);
+    let can_merge = problem.is_none() && !app.merging;
+    let result = settings::section()
+        .title(fl!("merge-result"))
+        .add(
+            settings::item::builder(fl!("merge-name"))
+                .description(fl!("merge-name-detail"))
+                .control(
+                    widget::text_input(fl!("merge-name-placeholder"), app.merge_name.as_str())
+                        .on_input(Message::MergeName)
+                        .on_submit(|_| Message::Merge)
+                        .width(Length::Fixed(260.0)),
+                ),
+        )
+        .add(settings::item_row(vec![
+            widget::button::suggested(if app.merging { fl!("merge-running") } else { fl!("merge-button") })
+                .on_press_maybe(can_merge.then_some(Message::Merge))
+                .into(),
+            widget::text::caption(problem.unwrap_or_default()).into(),
+        ]));
+
+    let mut column = vec![
+        widget::text::body(fl!("merge-intro")).into(),
+        voices.into(),
+        result.into(),
+    ];
+    if app.merge_labels.len() < 2 {
+        column.insert(1, widget::text::body(fl!("merge-not-enough")).into());
+    }
+    settings::view_column(column).into()
 }

@@ -178,10 +178,12 @@ public sealed class Settings
     };
 }
 
-public sealed record Model(string Name, string ModelFile, long SizeBytes, long Modified)
+/// MergeFamily: voices with the same value can be merged together; null when this one cannot be.
+public sealed record Model(string Name, string ModelFile, long SizeBytes, long Modified, string? MergeFamily = null)
 {
     public static Model From(JsonObject json) => new(
-        json.Str("name"), json.Str("model_file"), json.LongOrNull("size_bytes") ?? 0, json.LongOrNull("modified") ?? 0);
+        json.Str("name"), json.Str("model_file"), json.LongOrNull("size_bytes") ?? 0, json.LongOrNull("modified") ?? 0,
+        json.StrOrNull("merge_family"));
 }
 
 public sealed record Gpu(string Id, string? Label);

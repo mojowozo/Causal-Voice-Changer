@@ -36,6 +36,9 @@
                 <NavigationViewItem Content="Library" Tag="Library">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8F1;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="Merge" Tag="Merge">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE8AB;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="Audio" Tag="Audio">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE7F5;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
