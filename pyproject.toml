@@ -1,6 +1,6 @@
 [project]
 name = "causalvc"
-version = "0.1.0"
+version = "0.1.1"
 description = "Causal streaming voice changer (causalvc) and its evaluation harness (vcbench)"
 requires-python = ">=3.12,<3.13"
 # What building and running a voice needs. The harness and its metric models are the "bench" extra.
