@@ -33,7 +33,22 @@ rem The Windows front end (training\winui, WinUI 3) is built once with the .NET 
 rem into .dotnet in this folder when missing (no admin rights). If that fails, the small window in
 rem causalvc\gui.py opens instead. Set CAUSALVC_REBUILD=1 to build it again (after updating).
 set "APP=training\winui\out\CausalVC.Training.exe"
-if defined CAUSALVC_REBUILD if exist "%APP%" del "%APP%"
+set "STAMP=training\winui\out\source-hash.txt"
+if defined CAUSALVC_REBUILD (
+    if exist "%APP%" del "%APP%"
+    if exist "%STAMP%" del "%STAMP%"
+)
+rem A window that came built in a release download holds a fingerprint of the sources it was built
+rem from (file times don't survive unpacking in a useful order): start it while those still match.
+if exist "%APP%" if exist "%STAMP%" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ui-source-hash.ps1" -Folder "training\winui" -Check "%STAMP%"
+    if errorlevel 1 (
+        echo The training window was updated; building it again...
+        del "%APP%" "%STAMP%"
+    ) else (
+        goto launch
+    )
+)
 rem After an update (git pull): rebuild when any of the window's source files is newer than the program.
 if exist "%APP%" (
     powershell -NoProfile -Command "$exe = (Get-Item '%APP%').LastWriteTime; $new = Get-ChildItem 'training\winui', 'nuget.config' -Recurse -File -Include *.cs,*.xaml,*.csproj,*.config | Where-Object { $_.FullName -notmatch '\\(out|bin|obj)\\' -and $_.LastWriteTime -gt $exe }; if ($new) { exit 1 }"

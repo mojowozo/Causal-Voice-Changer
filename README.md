@@ -16,6 +16,16 @@ The base model/pretrain was built using EARS, VCTK, and LibriTTS-R. Because of t
 
 ## Quick start
 
+Each [release](https://github.com/mojowozo/Causal-Voice-Changer/releases) has a download for each
+system with the app windows already built, so you need neither the .NET SDK nor Rust:
+`Causal-Voice-Changer-<version>-windows-x64.zip` and `Causal-Voice-Changer-<version>-linux-x86_64.tar.gz`
+(Linux with glibc 2.35 or newer: Ubuntu 22.04, Debian 12 and anything newer). Unpack it and
+carry on below. Python, PyTorch and the pretrained files are not in it: they depend on your
+graphics card, so `run-training` still installs them on first run. The windows are not signed, so
+Windows may ask whether to run them ("More info", then "Run anyway"). With the source code instead
+(a git clone, or the release's source download), the windows are built on first launch as described below,
+and they are built again whenever their source files change.
+
 Run `run-training.sh` (Linux) or `run-training.bat` (Windows). On first run, it installs the Python
 packages with [uv](https://astral.sh/uv), downloads the pretrained files (the base
 model and RMVPE, about 900 MB) into `weights/`, and opens the training window. This will also handle

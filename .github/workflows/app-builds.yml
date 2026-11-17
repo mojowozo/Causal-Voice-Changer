@@ -1,0 +1,208 @@
+name: App builds
+
+# Builds the app windows (the front ends), so people need neither the .NET 10 SDK nor Rust on first
+# launch. Each published release (tag v*) gets two downloads, each the whole project with its
+# windows already built:
+#   Causal-Voice-Changer-<tag>-windows-x64.zip   realtime\winui\out, training\winui\out (WinUI 3)
+#   Causal-Voice-Changer-<tag>-linux-x86_64.tar.gz   realtime/ui/target/release (COSMIC)
+# Python, PyTorch and the pretrained files are not included: run-training installs them on first
+# run, for the graphics card it finds. Each built window carries a fingerprint of the sources it was
+# built from (scripts/ui-source-hash.*), so the launchers start it as is while those still match.
+#
+# Pushes that touch the windows build them too (kept as workflow artifacts, nothing published), and
+# "Run workflow" builds any branch; give it a release tag to build that tag and attach the downloads
+# to its release.
+
+on:
+  release:
+    types: [published]
+  push:
+    paths:
+      - realtime/winui/**
+      - training/winui/**
+      - realtime/ui/**
+      - training/ui/**
+      - nuget.config
+      - scripts/ui-source-hash.*
+      - .github/workflows/app-builds.yml
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to build and attach the downloads to (empty = build only)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  # The release to attach the downloads to, if any.
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release }}
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  windows:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
+    runs-on: windows-latest
+    permissions:
+      contents: write # gh release upload
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release || github.ref }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Name the download
+        shell: bash
+        run: |
+          version=${RELEASE_TAG:-dev-${GITHUB_SHA::7}}
+          echo "NAME=Causal-Voice-Changer-$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=Causal-Voice-Changer-$version-windows-x64.zip" >> "$GITHUB_ENV"
+
+      # The same commands run-realtime.bat and run-training.bat run.
+      - name: Build the voice changer window
+        run: dotnet publish realtime\winui\CausalVC.Realtime.csproj -c Release -o realtime\winui\out
+
+      - name: Build the training window
+        run: dotnet publish training\winui\CausalVC.Training.csproj -c Release -o training\winui\out
+
+      - name: Check the builds
+        shell: pwsh
+        run: |
+          # An unpackaged WinUI app crashes on start without its .pri and compiled XAML beside the exe.
+          foreach ($app in 'realtime\winui\out\CausalVC.Realtime', 'training\winui\out\CausalVC.Training') {
+            foreach ($file in "$app.exe", "$app.pri", "$app.dll") {
+              if (-not (Test-Path $file)) { throw "$file is missing" }
+            }
+            if (-not (Get-ChildItem (Split-Path $app) -Filter *.xbf)) { throw "no compiled XAML beside $app.exe" }
+          }
+
+      - name: Put the project and the windows together
+        shell: bash
+        run: |
+          mkdir stage
+          git archive --format=tar --prefix="$NAME/" -o source.tar HEAD
+          tar -xf source.tar -C stage
+          cp -r realtime/winui/out "stage/$NAME/realtime/winui/out"
+          cp -r training/winui/out "stage/$NAME/training/winui/out"
+
+      # Windows PowerShell 5.1, as the launchers use. The fingerprint of the unpacked download must
+      # match the checkout's (whatever its line endings), or the launchers would rebuild.
+      - name: Fingerprint the sources each window was built from
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($folder in 'realtime\winui', 'training\winui') {
+            $built = & .\scripts\ui-source-hash.ps1 -Folder $folder
+            Push-Location "stage\$env:NAME"
+            try {
+              & .\scripts\ui-source-hash.ps1 -Folder $folder -Write "$folder\out\source-hash.txt"
+              & .\scripts\ui-source-hash.ps1 -Folder $folder -Check "$folder\out\source-hash.txt"
+              if ($LASTEXITCODE -ne 0) { throw "the fingerprint of $folder does not check" }
+              $packed = (Get-Content "$folder\out\source-hash.txt").Trim()
+            } finally { Pop-Location }
+            if ($packed -ne $built) { throw "$folder in the download ($packed) differs from the checkout ($built)" }
+            "$folder $packed"
+          }
+
+      - name: Pack
+        working-directory: stage
+        run: 7z a -tzip -mx=9 "..\$env:ARCHIVE" "$env:NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ env.ARCHIVE }}
+          compression-level: 0
+
+      - name: Attach to the release
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$ARCHIVE" --clobber --repo "$GITHUB_REPOSITORY"
+
+  linux:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
+    # The oldest supported Ubuntu, so the binaries need no newer glibc than 2.35 (they run on
+    # Ubuntu 22.04, Debian 12 and anything newer); a build on ubuntu-latest would need 2.39.
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # gh release upload
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release || github.ref }}
+
+      # libcosmic links libxkbcommon and loads Wayland's libraries at run time.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: realtime/ui -> target
+
+      - name: Name the download
+        run: |
+          version=${RELEASE_TAG:-dev-${GITHUB_SHA::7}}
+          echo "NAME=Causal-Voice-Changer-$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=Causal-Voice-Changer-$version-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+
+      # The same commands run-realtime.sh and run-training.sh run (both share realtime/ui/target).
+      - name: Build the voice changer window
+        run: cargo build --release --locked --manifest-path realtime/ui/Cargo.toml
+
+      - name: Build the training window
+        working-directory: training/ui
+        run: cargo build --release --locked
+
+      - name: Check the builds
+        run: |
+          for binary in causalvc-realtime causalvc-training; do
+            file=realtime/ui/target/release/$binary
+            test -x "$file"
+            echo "$binary needs glibc $(objdump -T "$file" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+            ldd "$file"
+          done
+
+      - name: Put the project and the windows together
+        run: |
+          mkdir stage
+          git archive --format=tar --prefix="$NAME/" HEAD | tar -x -C stage
+          release=stage/$NAME/realtime/ui/target/release
+          mkdir -p "$release"
+          strip -o "$release/causalvc-realtime" realtime/ui/target/release/causalvc-realtime
+          strip -o "$release/causalvc-training" realtime/ui/target/release/causalvc-training
+          cd "stage/$NAME"
+          bash scripts/ui-source-hash.sh realtime/ui > realtime/ui/target/release/causalvc-realtime.source-hash
+          bash scripts/ui-source-hash.sh training/ui > realtime/ui/target/release/causalvc-training.source-hash
+          for app in realtime training; do
+            packed=$(cat "realtime/ui/target/release/causalvc-$app.source-hash")
+            built=$(cd "$GITHUB_WORKSPACE" && bash scripts/ui-source-hash.sh "$app/ui")
+            echo "$app/ui $packed"
+            [[ $packed == "$built" ]] || { echo "::error::$app/ui in the download differs from the checkout"; exit 1; }
+          done
+
+      - name: Pack
+        working-directory: stage
+        run: tar -czf "../$ARCHIVE" "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: ${{ env.ARCHIVE }}
+          compression-level: 0
+
+      - name: Attach to the release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$ARCHIVE" --clobber --repo "$GITHUB_REPOSITORY"
