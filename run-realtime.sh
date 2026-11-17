@@ -7,9 +7,16 @@ if [[ ! -x .venv/bin/python ]]; then
     exit 1
 fi
 binary=ui/target/release/causalvc-realtime
+stamp=realtime/$binary.source-hash
+# A front end that came built in a release download holds a fingerprint of the sources it was
+# built from (cargo has no record of building it, so it would rebuild it all): start it as is
+# while those still match.
+if [[ -x realtime/$binary && -f $stamp ]] && [[ $(bash scripts/ui-source-hash.sh realtime/ui) == "$(<"$stamp")" ]]; then
+    :
 # Built on first run, and again after an update (git pull): cargo rebuilds only when a source
 # file changed, and otherwise finishes in well under a second.
-if command -v cargo >/dev/null 2>&1; then
+elif command -v cargo >/dev/null 2>&1; then
+    rm -f "$stamp"
     [[ -x realtime/$binary ]] || echo "Building the front end (first run only)…" >&2
     if ! cargo build --release --quiet --manifest-path realtime/ui/Cargo.toml; then
         if [[ -x realtime/$binary ]]; then
@@ -21,6 +28,8 @@ if command -v cargo >/dev/null 2>&1; then
 elif [[ ! -x realtime/$binary ]]; then
     echo "Rust (cargo) is needed to build the front end the first time: https://rustup.rs" >&2
     exit 1
+elif [[ -f $stamp ]]; then
+    echo "The front end's sources changed since it was built; starting it anyway (install Rust to rebuild it: https://rustup.rs)." >&2
 fi
 # Ask PipeWire for a 960-sample period (20 ms at 48 kHz) while this runs: blocks are whole
 # multiples of 20 ms, so the output buffer stays level (fewer gaps, slightly less delay).

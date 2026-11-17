@@ -31,7 +31,22 @@ rem .NET 10 SDK is installed, one is installed into .dotnet in this folder (no a
 rem the folder to remove it). If that fails, the small window in causalvc\live_gui.py opens instead.
 rem Set CAUSALVC_REBUILD=1 to build it again (after updating the project).
 set "APP=realtime\winui\out\CausalVC.Realtime.exe"
-if defined CAUSALVC_REBUILD if exist "%APP%" del "%APP%"
+set "STAMP=realtime\winui\out\source-hash.txt"
+if defined CAUSALVC_REBUILD (
+    if exist "%APP%" del "%APP%"
+    if exist "%STAMP%" del "%STAMP%"
+)
+rem A window that came built in a release download holds a fingerprint of the sources it was built
+rem from (file times don't survive unpacking in a useful order): start it while those still match.
+if exist "%APP%" if exist "%STAMP%" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ui-source-hash.ps1" -Folder "realtime\winui" -Check "%STAMP%"
+    if errorlevel 1 (
+        echo The voice changer window was updated; building it again...
+        del "%APP%" "%STAMP%"
+    ) else (
+        goto launch
+    )
+)
 rem After an update (git pull): rebuild when any of the window's source files is newer than the program.
 if exist "%APP%" (
     powershell -NoProfile -Command "$exe = (Get-Item '%APP%').LastWriteTime; $new = Get-ChildItem 'realtime\winui', 'nuget.config' -Recurse -File -Include *.cs,*.xaml,*.csproj,*.config | Where-Object { $_.FullName -notmatch '\\(out|bin|obj)\\' -and $_.LastWriteTime -gt $exe }; if ($new) { exit 1 }"
