@@ -10,6 +10,12 @@ of the work.
 
 Same interface as StreamingVC. Models with decoder lookahead or the diagnostic
 conditioning options are not handled here; `streaming()` falls back for those.
+
+With ``graphs``, `prepare()` records one block's work as a CUDA graph and every
+later block replays it: a block is a few hundred small kernels, and launching
+them one by one from Python costs more than running them. The stream then
+starts from the state four seconds of silence leave (instead of from nothing),
+which only changes its first three seconds.
 """
 
 from __future__ import annotations
@@ -19,10 +25,11 @@ import torch.nn.functional as F
 import torchaudio
 
 from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
+from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
-from causalvc.stream import DELAY
+from causalvc.stream import DELAY, F0_RANGE, map_f0
 
 TAIL = 3840  # 48 kHz samples of input kept between blocks (80 ms): covers every front end's history
 
@@ -31,8 +38,18 @@ def supported(dec: Decoder) -> bool:
     return dec.lookahead == 0 and not dec.smooth_in and dec.mel is None and dec.exc == "full"
 
 
+def map_f0_tensor(f0: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+    """`map_f0` with its settings in a tensor, p = [ratio, offset, ceiling, keep, bounded], so a recorded
+    graph follows changes to them. bounded is 1 when the offset or the ceiling is in use."""
+    y = (f0 * p[0] + p[1]).clamp(*F0_RANGE)
+    c = p[2]
+    y = torch.where((c > 0) & (y > c), c * (y / c.clamp_min(1e-6)) ** p[3], y)
+    return torch.where(p[4] > 0, torch.where(f0 > 0, y, torch.zeros_like(f0)), f0 * p[0])
+
+
 class FastStreamingVC:
-    def __init__(self, decoder: str, pitch: str, device: str = "cuda:0", encoder: str | None = None, level: float | None = None):
+    def __init__(self, decoder: str, pitch: str, device: str = "cuda:0", encoder: str | None = None, level: float | None = None,
+                 graphs: bool = False):
         assert level is None, "the automatic input gain lives in StreamingVC only"
         ckpt = torch.load(decoder, map_location="cpu")
         self.device, self.speakers = device, ckpt["speakers"]
@@ -52,17 +69,55 @@ class FastStreamingVC:
         freq = torch.exp(-torch.log(torch.tensor(10000.0)) * torch.arange(d, device=device) / d)
         ang = torch.arange(e.window + 64, device=device)[:, None].float() * freq[None]
         self.rot = (ang.cos(), ang.sin())
+        # The same filter as torchaudio.functional.resample, built once (and so recordable in a graph).
+        self.resample = torchaudio.transforms.Resample(SR, 16000).to(device)
         self.late = int(self.dec.source.glide == "next")
         self.delay = DELAY + self.late
         assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
-        self.ratio, self.spk = 1.0, None
+        self.ratio, self.offset, self.ceiling, self.keep = 1.0, 0.0, 0.0, 1.0
+        # Kept in place (a recorded graph reads them where they are): the speaker and the pitch settings.
+        self.spk = torch.zeros(1, dtype=torch.long, device=device)
+        self.pmap = torch.tensor([1.0, 0.0, 0.0, 1.0, 0.0], device=device)
+        # The voice's index (causalvc.index), if it has one, and how strongly it is blended in (0-1).
+        self.index = self.index_unit = None
+        self.index_rate, self.rate = torch.zeros((), device=device), 0.0
+        # A graph needs a CUDA device and fixed shapes; the tone input's band masks are not fixed.
+        self.graphs = bool(graphs) and str(device).startswith("cuda") and self.dec.tone is None
+        self.graph = None
         self.reset()
 
-    def set_voice(self, speaker: str, semitones: float = 0.0) -> None:
-        self.spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
-        self.ratio = 2.0 ** (semitones / 12.0)
+    def set_voice(self, speaker: str, semitones: float = 0.0, offset_hz: float = 0.0, ceiling_hz: float = 0.0,
+                  ceiling_keep: float = 1.0) -> None:
+        """The voice to convert to and its pitch: the tracked pitch times 2^(semitones/12), plus ``offset_hz``,
+        with only ``ceiling_keep`` of the rise above ``ceiling_hz`` (0 = no ceiling); see ``map_f0``."""
+        self.spk.fill_(self.speakers.index(speaker))
+        self.ratio, self.offset = 2.0 ** (semitones / 12.0), float(offset_hz)
+        self.ceiling, self.keep = float(ceiling_hz), float(ceiling_keep)
+        bounded = float(self.offset != 0.0 or self.ceiling > 0.0)
+        self.pmap.copy_(torch.tensor([self.ratio, self.offset, self.ceiling, max(0.0, min(1.0, self.keep)), bounded]))
 
+    def set_index(self, frames: torch.Tensor | None) -> None:
+        """The voice's index frames [N, C] (None: no index). Set before ``prepare``: a recorded graph
+        either looks up in the index or does not."""
+        self.graph = None
+        if frames is None:
+            self.index = self.index_unit = None
+        else:
+            self.index = frames.to(self.device, torch.float32)
+            self.index_unit = torch.nn.functional.normalize(self.index, dim=-1)
+
+    def set_index_rate(self, rate: float) -> None:
+        """How much of each content frame comes from the index (0 = none, 1 = all)."""
+        self.rate = max(0.0, min(1.0, float(rate)))
+        self.index_rate.fill_(self.rate)
+
+    @torch.inference_mode()  # the recorded state tensors were made in inference mode
     def reset(self) -> None:
+        if self.graph is not None:  # back to the recorded starting state, in place
+            for buf, start in zip(self.static, self.snapshot):
+                buf.copy_(start)
+            self.frames = self.snapshot_frames
+            return
         d = self.device
         self.tail = torch.zeros(TAIL, device=d)  # newest input, 48 kHz
         self.st: dict = {}  # per-layer history, created on first use
@@ -170,16 +225,92 @@ class FastStreamingVC:
 
     # ---- one block -------------------------------------------------------
 
+    # ---- recorded graph --------------------------------------------------
+
+    def _slots(self) -> list[torch.Tensor]:
+        """Every tensor the stream carries from one block to the next."""
+        late = [] if self.pending_h is None else [self.pending_h]
+        return [self.tail, self.phase, self.prev_f0, self.pending_f0, *late, *self.steps, *(self.st[k] for k in self.keys)]
+
+    def _put(self, slots: list[torch.Tensor]) -> None:
+        self.tail, self.phase, self.prev_f0, self.pending_f0 = slots[:4]
+        i = 4
+        if self.pending_h is not None:
+            self.pending_h, i = slots[4], 5
+        n = len(self.steps)
+        self.steps = list(slots[i : i + n])
+        for k, t in zip(self.keys, slots[i + n :]):
+            self.st[k] = t
+
+    def _step_in_place(self) -> torch.Tensor:
+        """One block from `self.inp`, leaving the new state in the same tensors as the old."""
+        out = self._process(self.inp)
+        for old, new in zip(self.static, self._slots()):
+            if new is not old:  # in slot order: a slot that moved (the encoder steps) is read before it is overwritten
+                old.copy_(new)
+        self._put(self.static)
+        return out
+
+    @torch.inference_mode()
+    def prepare(self, n: int) -> None:
+        """Get ready for blocks of n samples; with `graphs`, record one block as a CUDA graph."""
+        self.graph = None
+        self.reset()
+        if not self.graphs:
+            return
+        try:
+            with torch.cuda.device(self.device):  # record on the voice's own GPU, not the current one
+                self._record(n)
+        except Exception as error:  # a GPU or driver that cannot record: carry on without
+            print(f"CUDA graph not used: {error}", flush=True)
+            self.graph, self.graphs = None, False
+        self.reset()
+
+    def _record(self, n: int) -> None:
+        """Four seconds of silence, then one block of n samples recorded with every state tensor updated in place."""
+        silence = torch.zeros(32 * FRAME, device=self.device)  # blocks short enough for the rotary table
+        for _ in range(13):  # four seconds: every history (the encoder's three-second window above all) is full
+            self._process(silence)
+        for _ in range(3):  # and the encoder steps kept are those of this block length
+            self._process(torch.zeros(n, device=self.device))
+        self.keys = sorted(self.st, key=repr)
+        self.static = [t.clone() for t in self._slots()]
+        self._put(self.static)
+        self.snapshot, self.snapshot_frames = [t.clone() for t in self.static], self.frames
+        self.inp = torch.zeros(n, device=self.device)
+        side = torch.cuda.Stream(self.device)
+        side.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.cuda.stream(side):
+            for _ in range(2):
+                self._step_in_place()
+        torch.cuda.current_stream(self.device).wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.out = self._step_in_place()
+        self.graph, self.graph_n = graph, n
+
     @torch.inference_mode()
     def process(self, block: torch.Tensor) -> torch.Tensor:
         """[n] at 48 kHz (n a multiple of 960) -> [n], delayed by `delay` frames."""
+        if self.graph is not None and block.shape[0] == self.graph_n:
+            self.inp.copy_(block)
+            with torch.cuda.device(self.device):
+                self.graph.replay()
+            self.frames += self.graph_n // FRAME
+            return self.out.clone()
+        if self.graph is not None:  # a different block length: back to running block by block
+            self.graph = None
+            self.reset()
+        return self._process(block)
+
+    def _process(self, block: torch.Tensor) -> torch.Tensor:
         m = block.shape[0] // FRAME
         assert block.shape[0] == m * FRAME and m % 2 == 0
         buf = torch.cat([self.tail, block.to(self.device)])
         self.tail = buf[-TAIL:]
         self.frames += m
 
-        wav16 = torchaudio.functional.resample(buf[None], SR, 16000)[0]
+        wav16 = self.resample(buf[None])[0]
         for step in self._encode(wav16[-(240 + 160 * m) :], m // 2):
             self.steps.append(step)
         self.steps = self.steps[-(m // 2 + 2) :]
@@ -193,8 +324,11 @@ class FastStreamingVC:
             back = newest - (f // 2 + self.enc.lookahead)  # how many steps before the newest
             content.append(self.steps[-1 - back] if f >= 0 and back < len(self.steps) else zero)
         content = torch.stack(content)
+        if self.index is not None and (self.graphs or self.rate > 0):
+            content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.index_rate)
 
-        f0 = self._pitch(wav16[-(1120 + 160 * m) :], m) * self.ratio
+        f0 = self._pitch(wav16[-(1120 + 160 * m) :], m)
+        f0 = map_f0_tensor(f0, self.pmap) if self.graphs else map_f0(f0, self.ratio, self.offset, self.ceiling, self.keep)
         if first < 0:  # before any real frame is final the old runtime's history is silence too
             f0 = torch.where(torch.arange(first, first + m, device=f0.device) >= 0, f0, torch.zeros_like(f0))
         loud = loudness(buf[None, buf.shape[0] - (DELAY + m) * FRAME : buf.shape[0] - DELAY * FRAME])[0]
@@ -215,12 +349,13 @@ class FastStreamingVC:
         return self._generate(h, g, exc)
 
 
-def streaming(decoder: str, pitch: str, device: str = "cuda:0", encoder: str | None = None, level: float | None = None):
+def streaming(decoder: str, pitch: str, device: str = "cuda:0", encoder: str | None = None, level: float | None = None,
+              graphs: bool = False):
     """The fastest runtime that handles this decoder."""
     cfg = torch.load(decoder, map_location="cpu")["cfg"]
     plain = not cfg.get("lookahead") and not cfg.get("smooth_in") and not cfg.get("mel_cond") and cfg.get("exc", "full") == "full"
     if plain and level is None:
-        return FastStreamingVC(decoder, pitch, device, encoder)
+        return FastStreamingVC(decoder, pitch, device, encoder, graphs=graphs)
     from causalvc.stream import StreamingVC
 
     return StreamingVC(decoder, pitch, device, encoder, level=level)

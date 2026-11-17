@@ -88,7 +88,8 @@ class CausalVCBackendTest(unittest.TestCase):
         self.assertGreater(float(np.abs(output[RATE:]).max()), 1e-3)
         # Same blocks straight through a second backend: identical up to the
         # random noise in the model's excitation, so compare the envelopes.
-        direct = causalvc_backend.CausalVC(0, str(model.model_path), device)
+        direct = causalvc_backend.CausalVC(0, str(model.model_path), device, cuda_graphs=engine.settings.cuda_graphs)
+        direct.warm(block)  # as the engine does: with a CUDA graph the stream starts from recorded silence
         reference = torch.cat(
             [
                 direct.process(torch.from_numpy(signal[start : start + block]).to(device))
@@ -99,6 +100,66 @@ class CausalVCBackendTest(unittest.TestCase):
         envelope = lambda x: np.sqrt((x[: len(x) // frame * frame].reshape(-1, frame) ** 2).mean(1))  # noqa: E731
         got, want = envelope(output[RATE // 2 :]), envelope(reference[RATE // 2 :])
         self.assertGreater(float(np.corrcoef(got, want)[0, 1]), 0.98)
+
+    def test_a_checkpoint_swaps_in_while_another_thread_converts(self):
+        device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")
+        model = find_voice()
+        engine = causalvc_engine(model, block_time=0.04, device=device)
+        engine.delay_time = 0.1
+        block = engine.block_frame
+        noise = (0.05 * np.random.default_rng(0).standard_normal((block, 1))).astype(np.float32)
+        old = engine.voice
+        stop, failures, converted = threading.Event(), [], [0]
+
+        def audio():
+            while not stop.is_set():
+                try:
+                    output = engine.audio_callback(noise.copy(), block, None, None)
+                    if not np.isfinite(output).all():
+                        failures.append("not finite")
+                    converted[0] += 1
+                except Exception as error:  # noqa: BLE001 - the test reports it
+                    failures.append(repr(error))
+                    return
+
+        thread = threading.Thread(target=audio)
+        thread.start()
+        try:
+            engine.swap_voice(model)  # the same file stands in for another checkpoint
+            before = converted[0]
+            while converted[0] < before + 5 and thread.is_alive():
+                stop.wait(0.01)
+        finally:
+            stop.set()
+            thread.join(timeout=30)
+        self.assertEqual(failures, [])
+        self.assertIsNot(engine.voice, old)
+        self.assertEqual(engine.voice.uses_cuda_graph, old.uses_cuda_graph)
+
+
+class WarmTest(unittest.TestCase):
+    """warm(record=False) leaves the CUDA graph to record(): a voice swapped in while another converts."""
+
+    def voice(self):
+        voice = causalvc_backend.CausalVC.__new__(causalvc_backend.CausalVC)
+        calls = []
+        voice.vc = SimpleNamespace(
+            device="cpu",
+            process=lambda block: calls.append(("process", block.shape[0])),
+            reset=lambda: calls.append(("reset",)),
+            prepare=lambda n: calls.append(("prepare", n)),
+        )
+        return voice, calls
+
+    def test_warm_records_unless_told_not_to(self):
+        voice, calls = self.voice()
+        voice.warm(1920)
+        self.assertEqual(calls[-2:], [("reset",), ("prepare", 1920)])
+        voice, calls = self.voice()
+        voice.warm(1920, record=False)
+        self.assertNotIn(("prepare", 1920), calls)
+        voice.record(1920)
+        self.assertEqual(calls[-1], ("prepare", 1920))
 
 
 if __name__ == "__main__":

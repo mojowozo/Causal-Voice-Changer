@@ -1,9 +1,14 @@
 """Engine settings, defaults, and their JSON persistence.
 
 Global settings live in ``configs/engine.json``.  The per-voice settings
-(gains, noise gate, pitch) live in ``configs/voice_settings.json``, by voice
+(gains, noise gate, pitch and the advanced pitch settings) live in ``configs/voice_settings.json``, by voice
 name; a voice with none there starts from the ones it carries (the
 ``realtime_settings.json`` inside its .cvc, or in an older voice folder).
+
+Every checkpoint of a voice (``models/Kira/Kira-1000s.cvc`` ...) shares the voice's entry,
+which also remembers the checkpoint picked last when it is not the newest
+(``VOICE_CHECKPOINT_KEY``).  Entries saved by checkpoint name before checkpoints were
+grouped are left in the file; ``migrate_voice_settings`` copies one into the voice's entry.
 """
 
 import json
@@ -22,6 +27,11 @@ RECORDING_MODES = ("separate", "mix", "stereo")
 LOUDNESS_TARGETS = ("voice_chat", "streaming")
 #: Input noise reduction: Hushwire (Amazon Voice Focus, ~53 ms) or RNNoise (20 ms).
 INPUT_DENOISE_METHODS = ("hushwire", "rnnoise")
+#: The largest pitch offset, in Hz, either way, and the highest pitch ceiling (0 = no ceiling).
+PITCH_OFFSET_LIMIT = 300.0
+PITCH_CEILING_LIMIT = 1000.0
+#: The advanced pitch settings, applied together (CausalVC.change_pitch_map).
+PITCH_MAP_KEYS = ("pitch_offset_hz", "pitch_ceiling_hz", "pitch_ceiling_keep")
 #: ASIO buffer sizes (samples) the app can ask the driver for; 0 keeps the driver's own setting.
 ASIO_BUFFER_SIZES = (0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048)
 
@@ -32,6 +42,10 @@ MODEL_SETTING_FILE_KEYS = {
     "monitor_gain_db": "monitor_gain_db",
     "noise_gate_db": "threhold",
     "pitch": "pitch",
+    "pitch_offset_hz": "pitch_offset_hz",
+    "pitch_ceiling_hz": "pitch_ceiling_hz",
+    "pitch_ceiling_keep": "pitch_ceiling_keep",
+    "index_rate": "index_rate",
 }
 MODEL_SETTING_KEYS = tuple(MODEL_SETTING_FILE_KEYS)
 RESETTABLE_MODEL_SETTING_KEYS = MODEL_SETTING_KEYS
@@ -48,6 +62,7 @@ RESTART_SETTING_KEYS = frozenset(
         "monitor_device",
         "block_time",
         "asio_buffer",
+        "cuda_graphs",
     )
 )
 
@@ -67,6 +82,9 @@ class EngineSettings:
     asio_buffer: int = 0
     input_denoise: bool = False
     input_denoise_method: str = "hushwire"
+    #: Record each block's GPU work once and replay it (a CUDA graph): about half the time per block
+    #: and far steadier. Falls back on its own where recording fails; off runs block by block.
+    cuda_graphs: bool = True
     #: What the output-level indicator aims for: voice chat (-21 LUFS) or
     #: streaming (-16 LUFS).
     loudness_target: str = "voice_chat"
@@ -79,6 +97,14 @@ class EngineSettings:
     monitor_gain_db: float = 0.0
     noise_gate_db: float = -60.0
     pitch: float = 0.0
+    #: Hz added to the shifted pitch of voiced frames: output pitch = input * 2^(pitch/12) + this.
+    pitch_offset_hz: float = 0.0
+    #: Output pitch above which only ``pitch_ceiling_keep`` (0-1) of the rise is kept, in semitones;
+    #: 0 is no ceiling. Pulls down peaks while notes below it keep their intervals.
+    pitch_ceiling_hz: float = 0.0
+    pitch_ceiling_keep: float = 0.25
+    #: How much of what is said is drawn from the voice's own audio (its index), 0-1; 0 is off.
+    index_rate: float = 0.0
 
     @property
     def input_gain(self):
@@ -111,6 +137,7 @@ PERFORMANCE_DEFAULT_KEYS = (
     "block_time",
     "input_denoise",
     "input_denoise_method",
+    "cuda_graphs",
 )
 
 
@@ -148,6 +175,12 @@ def coerce_setting(key, value):
             raise SettingError(key, f"{key} must be finite")
         if key in ("block_time",):
             value = max(0.02, value)
+        if key == "pitch_offset_hz":
+            value = min(max(value, -PITCH_OFFSET_LIMIT), PITCH_OFFSET_LIMIT)
+        if key == "pitch_ceiling_hz":
+            value = min(max(value, 0.0), PITCH_CEILING_LIMIT)
+        if key in ("pitch_ceiling_keep", "index_rate"):
+            value = min(max(value, 0.0), 1.0)
         if key == "file_input_volume":
             value = min(max(value, 0.0), 1.0)
         return value
@@ -224,6 +257,40 @@ def load_voice_settings(path=VOICE_SETTINGS_PATH):
     if not isinstance(saved, dict):
         return {}
     return {name: values for name, values in saved.items() if isinstance(name, str) and isinstance(values, dict)}
+
+
+#: In a voice's entry: the checkpoint the user picked last, when it is not the newest one.
+VOICE_CHECKPOINT_KEY = "checkpoint"
+
+
+def has_model_settings(saved):
+    """Whether a saved entry holds any per-voice setting (it may hold only the picked checkpoint)."""
+    return isinstance(saved, dict) and any(file_key in saved for file_key in MODEL_SETTING_FILE_KEYS.values())
+
+
+def migrate_voice_settings(store, groups, selected=""):
+    """Give every voice with checkpoints (``tools.model_registry.VoiceGroup``) the settings that were
+    saved per checkpoint, when it has none of its own: the selected checkpoint's (``selected``, the one
+    in use last), else the newest checkpoint's that has any; a selected checkpoint that is not the
+    newest also becomes the voice's picked one.  The checkpoint entries are kept.  Returns whether
+    ``store`` changed."""
+    changed = False
+    for group in groups:
+        names = [entry.name for entry in group.checkpoints]
+        voice = store.get(group.name)
+        if not has_model_settings(voice):
+            candidates = [name for name in reversed(names) if name != group.name and has_model_settings(store.get(name))]
+            if selected in candidates:
+                candidates.insert(0, selected)
+            if candidates:
+                entry = dict(voice or {})
+                entry.update({key: value for key, value in store[candidates[0]].items()
+                              if key in MODEL_SETTING_FILE_KEYS.values()})
+                if len(names) > 1 and selected in names and selected != group.latest.name:
+                    entry.setdefault(VOICE_CHECKPOINT_KEY, selected)
+                store[group.name] = entry
+                changed = True
+    return changed
 
 
 def save_voice_settings(store, path=VOICE_SETTINGS_PATH):

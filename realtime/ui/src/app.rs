@@ -61,6 +61,10 @@ pub enum Num {
     MonitorGain,
     NoiseGate,
     Pitch,
+    PitchOffset,
+    PitchCeiling,
+    PitchCeilingKeep,
+    IndexRate,
     BlockTime,
     FileVolume,
 }
@@ -73,6 +77,10 @@ impl Num {
             Num::MonitorGain => "monitor_gain_db",
             Num::NoiseGate => "noise_gate_db",
             Num::Pitch => "pitch",
+            Num::PitchOffset => "pitch_offset_hz",
+            Num::PitchCeiling => "pitch_ceiling_hz",
+            Num::PitchCeilingKeep => "pitch_ceiling_keep",
+            Num::IndexRate => "index_rate",
             Num::BlockTime => "block_time",
             Num::FileVolume => "file_input_volume",
         }
@@ -85,15 +93,26 @@ impl Num {
             Num::NoiseGate => (-60.0, 0.0, 1.0),
             // 0.1-semitone steps allow fine tuning such as +11.5.
             Num::Pitch => (-24.0, 24.0, 0.1),
+            // Hz either way, as far as the engine allows (settings.py PITCH_OFFSET_LIMIT).
+            Num::PitchOffset => (-300.0, 300.0, 1.0),
+            // 0 is no ceiling (settings.py PITCH_CEILING_LIMIT is the top).
+            Num::PitchCeiling => (0.0, 1000.0, 5.0),
+            Num::PitchCeilingKeep => (0.0, 1.0, 0.01),
+            Num::IndexRate => (0.0, 1.0, 0.05),
             // Whole 20 ms frames; delay is the model's 60 ms plus one block.
             Num::BlockTime => (0.02, 0.2, 0.02),
             Num::FileVolume => (0.0, 1.0, 0.01),
         }
     }
 
+    /// Shown and typed in percent, stored as 0-1.
+    fn is_percent(self) -> bool {
+        matches!(self, Num::FileVolume | Num::PitchCeilingKeep | Num::IndexRate)
+    }
+
     /// The value as plain text for the edit field (no unit or sign padding).
     pub fn edit_text(self, value: f32) -> String {
-        let shown = if self == Num::FileVolume {
+        let shown = if self.is_percent() {
             value * 100.0
         } else {
             value
@@ -109,17 +128,18 @@ impl Num {
         let (min, max, _) = self.range();
         let text = text.trim().to_lowercase();
         let off = text == "off" || text == fl!("off").to_lowercase();
-        if self == Num::NoiseGate && off {
+        if matches!(self, Num::NoiseGate | Num::PitchCeiling | Num::IndexRate) && off {
             return Some(min);
         }
         let number = text
             .trim_end_matches(['%', 's'])
             .trim_end_matches("db")
+            .trim_end_matches("hz")
             .trim()
             .trim_start_matches('+')
             .replace(',', ".");
         let mut value: f32 = number.parse().ok().filter(|v: &f32| v.is_finite())?;
-        if self == Num::FileVolume {
+        if self.is_percent() {
             value /= 100.0;
         }
         Some(value.clamp(min, max))
@@ -137,6 +157,10 @@ impl Num {
             Num::MonitorGain => settings.monitor_gain_db,
             Num::NoiseGate => settings.noise_gate_db,
             Num::Pitch => settings.pitch,
+            Num::PitchOffset => settings.pitch_offset_hz,
+            Num::PitchCeiling => settings.pitch_ceiling_hz,
+            Num::PitchCeilingKeep => settings.pitch_ceiling_keep,
+            Num::IndexRate => settings.index_rate,
             Num::BlockTime => settings.block_time,
             Num::FileVolume => settings.file_input_volume,
         }
@@ -149,6 +173,10 @@ impl Num {
             Num::MonitorGain => &mut settings.monitor_gain_db,
             Num::NoiseGate => &mut settings.noise_gate_db,
             Num::Pitch => &mut settings.pitch,
+            Num::PitchOffset => &mut settings.pitch_offset_hz,
+            Num::PitchCeiling => &mut settings.pitch_ceiling_hz,
+            Num::PitchCeilingKeep => &mut settings.pitch_ceiling_keep,
+            Num::IndexRate => &mut settings.index_rate,
             Num::BlockTime => &mut settings.block_time,
             Num::FileVolume => &mut settings.file_input_volume,
         };
@@ -159,12 +187,14 @@ impl Num {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Toggle {
     InputDenoise,
+    CudaGraphs,
 }
 
 impl Toggle {
     fn key(self) -> &'static str {
         match self {
             Toggle::InputDenoise => "input_denoise",
+            Toggle::CudaGraphs => "cuda_graphs",
         }
     }
 }
@@ -207,6 +237,8 @@ pub enum Message {
     Merge,
     Num(Num, f32),
     NumReleased(Num),
+    /// Open or close the Model page's advanced pitch panel.
+    TogglePitchAdvanced,
     /// Clicked a slider's value to type one instead.
     EditValue(Num),
     EditInput(String),
@@ -217,7 +249,10 @@ pub enum Message {
     EditBlurApply,
     EscapePressed,
     Toggle(Toggle, bool),
+    /// A voice from the model selector (index into voice_names): loads its picked checkpoint.
     SelectModel(usize),
+    /// A checkpoint of the selected voice (index into checkpoint_names).
+    SelectCheckpoint(usize),
     SelectGpu(usize),
     SelectInputSource(usize),
     SelectInput(usize),
@@ -299,6 +334,12 @@ pub struct App {
     pub toasts: toaster::Toasts<Message>,
     // Dropdown labels, rebuilt when the state changes.
     pub model_names: Vec<String>,
+    /// Each voice once (the Model page's selector), and the checkpoint picking each one loads.
+    pub voice_names: Vec<String>,
+    voice_checkpoints: Vec<String>,
+    /// The selected voice's checkpoints: model names and their labels.
+    pub checkpoint_names: Vec<String>,
+    pub checkpoint_labels: Vec<String>,
     pub gpu_labels: Vec<String>,
     pub input_labels: Vec<String>,
     pub output_labels: Vec<String>,
@@ -326,6 +367,8 @@ pub struct App {
     pub merging: bool,
     /// A typed value to apply once the unfocus is known not to be Escape.
     blur_pending: Option<(Num, String)>,
+    /// The Model page's advanced pitch panel (the pitch offset) is open.
+    pub pitch_advanced_open: bool,
 }
 
 /// Library sort orders: by name, or newest first.
@@ -388,6 +431,10 @@ impl cosmic::Application for App {
             log_request: None,
             toasts: toaster::Toasts::new(Message::CloseToast),
             model_names: Vec::new(),
+            voice_names: Vec::new(),
+            voice_checkpoints: Vec::new(),
+            checkpoint_names: Vec::new(),
+            checkpoint_labels: Vec::new(),
             gpu_labels: Vec::new(),
             input_labels: Vec::new(),
             output_labels: Vec::new(),
@@ -415,6 +462,7 @@ impl cosmic::Application for App {
             blur_pending: None,
             merge_slots: vec![(None, 50.0), (None, 50.0)],
             merge_name: String::new(),
+            pitch_advanced_open: false,
             merge_labels: Vec::new(),
             merge_families: Vec::new(),
             merging: false,
@@ -459,6 +507,9 @@ impl cosmic::Application for App {
                 if !num.needs_restart() {
                     self.send_setting(num.key(), json!(value));
                 }
+            }
+            Message::TogglePitchAdvanced => {
+                self.pitch_advanced_open = !self.pitch_advanced_open;
             }
             Message::NumReleased(num) => {
                 self.dragging = None;
@@ -524,7 +575,12 @@ impl cosmic::Application for App {
             }
             Message::Toggle(toggle, value) => self.send_setting(toggle.key(), json!(value)),
             Message::SelectModel(index) => {
-                if let Some(name) = self.model_names.get(index).cloned() {
+                if let Some(name) = self.voice_checkpoints.get(index).cloned() {
+                    self.send_setting("model_name", json!(name));
+                }
+            }
+            Message::SelectCheckpoint(index) => {
+                if let Some(name) = self.checkpoint_names.get(index).cloned() {
                     self.send_setting("model_name", json!(name));
                 }
             }
@@ -923,6 +979,48 @@ impl App {
             num.set(&mut state.settings, num.get(&old.settings));
         }
         self.model_names = state.models.iter().map(|m| m.name.clone()).collect();
+        if state.voices.is_empty() {
+            // An older engine: every model is a voice of its own.
+            state.voices = state
+                .models
+                .iter()
+                .map(|m| crate::engine::Voice {
+                    name: m.name.clone(),
+                    checkpoints: vec![m.name.clone()],
+                    checkpoint: m.name.clone(),
+                })
+                .collect();
+        }
+        self.voice_names = state.voices.iter().map(|v| v.name.clone()).collect();
+        self.voice_checkpoints = state.voices.iter().map(|v| v.checkpoint.clone()).collect();
+        self.checkpoint_names = state
+            .selected_voice()
+            .map(|voice| voice.checkpoints.clone())
+            .unwrap_or_default();
+        let newest = self
+            .checkpoint_names
+            .iter()
+            .filter_map(|name| state.models.iter().find(|m| &m.name == name))
+            .filter(|m| m.step.is_some())
+            .max_by_key(|m| m.step)
+            .map(|m| m.name.clone());
+        self.checkpoint_labels = self
+            .checkpoint_names
+            .iter()
+            .map(|name| {
+                let label = state
+                    .models
+                    .iter()
+                    .find(|m| &m.name == name)
+                    .map(crate::library::checkpoint_label)
+                    .unwrap_or_else(|| name.clone());
+                if newest.as_ref() == Some(name) {
+                    fl!("checkpoint-newest", label = label)
+                } else {
+                    label
+                }
+            })
+            .collect();
         let mergeable: Vec<_> = state
             .models
             .iter()
@@ -1123,6 +1221,7 @@ pub fn status_text(code: &str, data: &Value) -> String {
     match code {
         "preparing" => fl!("status-preparing"),
         "loading_model" => fl!("status-loading-model"),
+        "checkpoint_switched" => fl!("status-checkpoint-switched", name = text("name")),
         "preparing_inference" => fl!("status-preparing-inference"),
         "starting_audio" => fl!("status-starting-audio"),
         "conversion_started" => fl!("status-conversion-started"),
@@ -1251,6 +1350,11 @@ mod tests {
         assert_eq!(Num::BlockTime.parse("0.04s"), Some(0.04));
         assert_eq!(Num::FileVolume.parse("50%"), Some(0.5));
         assert_eq!(Num::NoiseGate.parse("Off"), Some(-60.0));
+        assert_eq!(Num::PitchOffset.parse("+40 Hz"), Some(40.0));
+        assert_eq!(Num::PitchOffset.parse("-1000"), Some(-300.0));
+        assert_eq!(Num::PitchCeiling.parse("off"), Some(0.0));
+        assert_eq!(Num::PitchCeiling.parse("320 Hz"), Some(320.0));
+        assert_eq!(Num::PitchCeilingKeep.parse("25%"), Some(0.25));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! Model folders are usually named like `Sakura-shortstream-50m-1.6_200e_14200s`:
 //! the voice, a description of the training run, then the epochs and steps
 //! of the checkpoint.  Grouping by voice puts several checkpoints of one
-//! voice side by side.
+//! voice side by side: the engine names each model's voice (its folder,
+//! `models/Kira/Kira-1000s.cvc`); a name is parsed only for an older engine.
 
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
@@ -61,12 +62,48 @@ pub fn matches(name: &str, query: &str) -> bool {
         .all(|word| name.contains(word))
 }
 
-/// Models matching `query`, grouped by voice.  `newest` sorts groups and
-/// their models by date (newest first); otherwise by name and epochs.
+/// The voice a model belongs to: the engine's, else the first part of its name.
+pub fn voice_of(model: &Model) -> &str {
+    if model.voice.is_empty() {
+        parse_model_name(&model.name).voice
+    } else {
+        &model.voice
+    }
+}
+
+/// A short name for a checkpoint within its voice: `10000 steps` for `Kira-10000s`,
+/// else the part of its name after the voice.
+pub fn checkpoint_label(model: &Model) -> String {
+    let voice = voice_of(model);
+    let rest = model
+        .name
+        .get(..voice.len())
+        .filter(|start| start.eq_ignore_ascii_case(voice))
+        .map(|_| model.name[voice.len()..].trim_start_matches(['-', '_', ' ']))
+        .unwrap_or(&model.name);
+    match model.step {
+        Some(step) if rest == format!("{step}s") => fl!("checkpoint-step", step = step),
+        _ => {
+            let parsed = parse_model_name(&model.name);
+            match (parsed.detail.is_empty(), parsed.epochs) {
+                (false, Some(epochs)) => fl!("library-checkpoint", detail = parsed.detail, epochs = epochs),
+                (true, Some(epochs)) => fl!("library-epochs", epochs = epochs),
+                _ if !rest.is_empty() => rest.to_string(),
+                _ => model.name.clone(),
+            }
+        }
+    }
+}
+
+/// Models matching `query` (by name or voice), grouped by voice.  `newest` sorts groups and
+/// their models by date (newest first); otherwise by name, and checkpoints by step.
 pub fn grouped<'a>(models: &'a [Model], query: &str, newest: bool) -> Vec<(String, Vec<&'a Model>)> {
     let mut groups: Vec<(String, Vec<&Model>)> = Vec::new();
-    for model in models.iter().filter(|model| matches(&model.name, query)) {
-        let voice = parse_model_name(&model.name).voice;
+    for model in models
+        .iter()
+        .filter(|model| matches(&format!("{} {}", voice_of(model), model.name), query))
+    {
+        let voice = voice_of(model);
         match groups
             .iter_mut()
             .find(|(name, _)| name.eq_ignore_ascii_case(voice))
@@ -81,9 +118,9 @@ pub fn grouped<'a>(models: &'a [Model], query: &str, newest: bool) -> Vec<(Strin
         } else {
             members.sort_by(|a, b| {
                 let (left, right) = (parse_model_name(&a.name), parse_model_name(&b.name));
-                left.detail
-                    .to_lowercase()
-                    .cmp(&right.detail.to_lowercase())
+                (a.step.is_none(), a.step)
+                    .cmp(&(b.step.is_none(), b.step))
+                    .then(left.detail.to_lowercase().cmp(&right.detail.to_lowercase()))
                     .then(left.epochs.cmp(&right.epochs))
             });
         }
@@ -184,13 +221,7 @@ fn model_row<'a>(
     converting_with: Option<&str>,
 ) -> Element<'a, Message> {
     let space = cosmic::theme::spacing();
-    let parsed = parse_model_name(&model.name);
-    let title = match (parsed.detail.is_empty(), parsed.epochs) {
-        (false, Some(epochs)) => fl!("library-checkpoint", detail = parsed.detail, epochs = epochs),
-        (true, Some(epochs)) => fl!("library-epochs", epochs = epochs),
-        (false, None) => parsed.detail.to_string(),
-        (true, None) => model.name.clone(),
-    };
+    let title = checkpoint_label(model);
     let description = format!(
         "{} · {}",
         format_size(model.size_bytes),
@@ -268,7 +299,52 @@ mod tests {
             model_file: format!("{name}.causalvc.json"),
             size_bytes: 56_223_809,
             modified,
+            merge_family: None,
+            has_index: false,
+            voice: String::new(),
+            step: None,
         }
+    }
+
+    fn checkpoint(name: &str, voice: &str, step: Option<u64>) -> Model {
+        Model {
+            voice: voice.to_string(),
+            step,
+            ..model(name, 0)
+        }
+    }
+
+    #[test]
+    fn groups_by_the_engines_voice_and_orders_checkpoints_by_step() {
+        let models = vec![
+            checkpoint("Jett-10000s", "Jett", Some(10000)),
+            checkpoint("Jett-ema-4000s", "Jett-ema", Some(4000)),
+            checkpoint("Jett-best", "Jett", None),
+            checkpoint("Jett-2000s", "Jett", Some(2000)),
+        ];
+        let groups = grouped(&models, "", false);
+        let names: Vec<(&str, Vec<&str>)> = groups
+            .iter()
+            .map(|(voice, members)| (voice.as_str(), members.iter().map(|m| m.name.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("Jett", vec!["Jett-2000s", "Jett-10000s", "Jett-best"]),
+                ("Jett-ema", vec!["Jett-ema-4000s"]),
+            ]
+        );
+        // Searching for the voice finds all of its checkpoints.
+        assert_eq!(grouped(&models, "jett-ema", false)[0].1.len(), 1);
+        assert_eq!(grouped(&models, "jett", false).len(), 2);
+    }
+
+    #[test]
+    fn labels_checkpoints_within_their_voice() {
+        let plain = |text: String| text.replace(['\u{2068}', '\u{2069}'], "");
+        assert_eq!(plain(checkpoint_label(&checkpoint("Jett-10000s", "Jett", Some(10000)))), "10000 steps");
+        assert_eq!(checkpoint_label(&checkpoint("Jett-best", "Jett", None)), "best");
+        assert_eq!(checkpoint_label(&checkpoint("P89", "P89", None)), "P89");
     }
 
     #[test]

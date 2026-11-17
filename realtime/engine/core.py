@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import traceback
+import zipfile
 
 import librosa
 import numpy as np
@@ -33,13 +34,17 @@ from engine.settings import (
     DEFAULT_RECORDING_FOLDER,
     MODEL_SETTING_KEYS,
     PERFORMANCE_DEFAULT_KEYS,
+    PITCH_MAP_KEYS,
     PROJECT_ROOT,
     RESETTABLE_MODEL_SETTING_KEYS,
     RESTART_SETTING_KEYS,
+    VOICE_CHECKPOINT_KEY,
     EngineSettings,
     coerce_setting,
+    has_model_settings,
     load_settings,
     load_voice_settings,
+    migrate_voice_settings,
     model_settings_from,
     model_settings_to_save,
     save_settings,
@@ -66,7 +71,9 @@ from tools.loudness import TARGETS_LUFS, LoudnessMeter
 from tools.model_registry import (
     TrashError,
     discover_models,
+    VoiceGroup,
     embedded_settings,
+    group_voices,
     model_name_problem,
     move_to_trash,
     remove_if_empty,
@@ -213,6 +220,7 @@ class RealtimeEngine:
         self.devices.refresh()
         self.settings = load_settings()
         self.normalize_settings()
+        self.migrate_voice_settings()
         self.settings.__dict__.update(self.model_settings_for(self.settings.model_name))
         self.log_startup_diagnostics()
 
@@ -233,9 +241,15 @@ class RealtimeEngine:
                     "modified": int(model.modified),
                     # Voices with the same value can be merged together (null: cannot be merged).
                     "merge_family": self.merge_family(model),
+                    # The voice's file carries an index (its Index slider does something).
+                    "has_index": self.has_index(model),
+                    # The voice this checkpoint belongs to, and the training step in its name (or null).
+                    "voice": model.voice,
+                    "step": model.step,
                 }
                 for model in self.models
             ],
+            "voices": self.state_voices(),
             "devices": self.devices.to_dict(),
             "gpus": self.gpu_options,
             "samplerate": self.samplerate if self.running else None,
@@ -251,6 +265,17 @@ class RealtimeEngine:
             "hushwire": self.hushwire_status(),
             "asio": self.asio_state(),
         }
+
+    def state_voices(self):
+        """Each voice once, with its checkpoints (oldest step first) and the one picking the voice loads."""
+        return [
+            {
+                "name": group.name,
+                "checkpoints": [entry.name for entry in group.checkpoints],
+                "checkpoint": self.voice_checkpoint(group).name,
+            }
+            for group in self.voice_groups
+        ]
 
     def emit_state(self):
         self.emit("state", self.state())
@@ -269,6 +294,17 @@ class RealtimeEngine:
         key = (str(model.path), model.size_bytes, model.modified)
         if key not in cache:
             cache[key] = voice_merge.family(model.path)
+        return cache[key]
+
+    def has_index(self, model):
+        cache = self.__dict__.setdefault("index_flags", {})
+        key = (str(model.path), model.size_bytes, model.modified)
+        if key not in cache:
+            try:
+                with zipfile.ZipFile(model.path) as archive:
+                    cache[key] = "index.pt" in archive.namelist()
+            except (OSError, zipfile.BadZipFile):
+                cache[key] = False
         return cache[key]
 
     def merge_models(self, voices, new_name):
@@ -322,14 +358,59 @@ class RealtimeEngine:
     def refresh_models(self):
         self.models = discover_models(MODELS_ROOT)
         self.models_by_name = {model.name: model for model in self.models}
+        self.voice_groups = group_voices(self.models)
+        self.voice_groups_by_key = {group.name.casefold(): group for group in self.voice_groups}
+
+    def voice_group(self, model_name):
+        """The voice (``VoiceGroup``) a checkpoint belongs to, or None for an unknown model."""
+        model = self.models_by_name.get(model_name)
+        return self.voice_groups_by_key.get(model.voice.casefold()) if model else None
+
+    def voice_checkpoint(self, group):
+        """The checkpoint picking ``group`` loads: the one picked last, else the newest."""
+        picked = self.voice_settings.get(group.name, {}).get(VOICE_CHECKPOINT_KEY)
+        return next((entry for entry in group.checkpoints if entry.name == picked), group.latest)
+
+    def remember_checkpoint(self, model_name):
+        """Remember ``model_name`` as its voice's picked checkpoint (forgotten when it is the newest,
+        so a checkpoint saved later is picked instead)."""
+        group = self.voice_group(model_name)
+        if group is None or len(group.checkpoints) < 2:
+            return
+        entry = self.voice_settings.get(group.name, {})
+        if model_name == group.latest.name:
+            if VOICE_CHECKPOINT_KEY not in entry:
+                return
+            entry = {key: value for key, value in entry.items() if key != VOICE_CHECKPOINT_KEY}
+        elif entry.get(VOICE_CHECKPOINT_KEY) == model_name:
+            return
+        else:
+            entry = {**entry, VOICE_CHECKPOINT_KEY: model_name}
+        if entry:
+            self.voice_settings[group.name] = entry
+        else:
+            self.voice_settings.pop(group.name, None)
+        self.save_voice_settings()
+
+    def migrate_voice_settings(self):
+        """Settings saved per checkpoint (before checkpoints were grouped) become their voice's."""
+        if migrate_voice_settings(self.voice_settings, self.voice_groups, self.settings.model_name):
+            self.save_voice_settings()
 
     def model_settings_for(self, model_name):
-        """A voice's settings: the ones saved for it here, else the ones it came with."""
-        model = self.models_by_name.get(model_name)
-        if model is None:
+        """A voice's settings, shared by its checkpoints: the ones saved for the voice here, else the
+        ones its checkpoints came with (the newest that carries any)."""
+        group = self.voice_group(model_name)
+        if group is None:
             return model_settings_from(None)
-        saved = self.voice_settings.get(model_name)
-        return model_settings_from(saved if saved is not None else embedded_settings(model))
+        saved = self.voice_settings.get(group.name)
+        if has_model_settings(saved):
+            return model_settings_from(saved)
+        for entry in reversed(group.checkpoints):
+            carried = embedded_settings(entry)
+            if carried is not None:
+                return model_settings_from(carried)
+        return model_settings_from(None)
 
     def save_voice_settings(self):
         try:
@@ -373,6 +454,7 @@ class RealtimeEngine:
         previous = self.settings.model_name
         self.refresh_models()
         self.normalize_settings()
+        self.migrate_voice_settings()
         if self.settings.model_name != previous and self.running:
             self.stop()
             self.status("settings_changed")
@@ -434,8 +516,19 @@ class RealtimeEngine:
         printt("Moved model to the Trash: %s", model.path)
         if model.is_file:
             remove_if_empty(model.path.parent, MODELS_ROOT)
-        if self.voice_settings.pop(name, None) is not None:
+        group = self.voice_group(name)
+        rest = [entry for entry in group.checkpoints if entry.name != name]
+        forgot = self.voice_settings.pop(name, None) is not None  # its entry from before checkpoints were grouped
+        voice = self.voice_settings.get(group.name)
+        if not rest:  # the voice's last checkpoint: its settings go with it
+            forgot = self.voice_settings.pop(group.name, None) is not None or forgot
+        elif voice is not None and voice.get(VOICE_CHECKPOINT_KEY) == name:
+            self.voice_settings[group.name] = {key: value for key, value in voice.items() if key != VOICE_CHECKPOINT_KEY}
+            forgot = True
+        if forgot:
             self.save_voice_settings()
+        if self.settings.model_name == name and rest:  # the selection stays with the voice
+            self.settings.model_name = VoiceGroup(group.name, tuple(rest)).latest.name
         self.reload_models()
         save_settings(self.settings)
         self.status("model_deleted", name=name)
@@ -467,11 +560,27 @@ class RealtimeEngine:
         except OSError as error:
             raise EngineError("rename_failed", str(error), model=name) from error
         printt("Renamed model %s to %s", name, new_name)
-        if name in self.voice_settings:
+        old_group = self.voice_group(name)
+        if name in self.voice_settings and name != old_group.name:  # an entry from before checkpoints were grouped
             self.voice_settings[new_name] = self.voice_settings.pop(name)
-            self.save_voice_settings()
+        voice = dict(self.voice_settings.get(old_group.name, {}))
+        if voice.get(VOICE_CHECKPOINT_KEY) == name:
+            voice[VOICE_CHECKPOINT_KEY] = new_name
+            self.voice_settings[old_group.name] = voice
         if self.settings.model_name == name:
             self.settings.model_name = new_name
+        self.refresh_models()
+        new_group = self.voice_group(new_name)
+        if new_group is not None and new_group.name != old_group.name:
+            # It left its voice (a loose file renamed): the voice's settings go with it, and stay
+            # with the voice too when it has other checkpoints.
+            voice.pop(VOICE_CHECKPOINT_KEY, None)
+            still = self.voice_groups_by_key.get(old_group.name.casefold())
+            if still is None or still.name != old_group.name:
+                self.voice_settings.pop(old_group.name, None)
+            if voice and not has_model_settings(self.voice_settings.get(new_group.name)):
+                self.voice_settings[new_group.name] = {**self.voice_settings.get(new_group.name, {}), **voice}
+        self.save_voice_settings()
         self.reload_models()
         save_settings(self.settings)
         self.status("model_renamed", name=name, new_name=new_name)
@@ -517,17 +626,33 @@ class RealtimeEngine:
         if not changed:
             self.emit_state()
             return
+        previous_model = self.settings.model_name
+        # Another checkpoint of the same voice: the voice's settings stay, and a running stream
+        # carries on with the new checkpoint's decoder (swap_voice).
+        checkpoint_switch = "model_name" in changed and self.voice_group(previous_model) is not None \
+            and self.voice_group(previous_model) is self.voice_group(changed["model_name"])
+        hot_swap = checkpoint_switch and self.running and hasattr(self, "voice") and not any(
+            key in RESTART_SETTING_KEYS for key in changed if key != "model_name")
         if "model_name" in changed:
             self.flush_model_settings_save(force=True)
         for key, value in changed.items():
             setattr(self.settings, key, value)
-        if "model_name" in changed:
-            # Per-model settings follow the newly selected model.
+        if "model_name" in changed and not checkpoint_switch:
+            # Per-voice settings follow the newly selected voice.
             self.settings.__dict__.update(self.model_settings_for(changed["model_name"]))
         elif any(key in MODEL_SETTING_KEYS for key in changed):
             self.schedule_model_settings_save()
+        if hot_swap:
+            try:
+                self.swap_voice(self.models_by_name[changed["model_name"]])
+            except EngineError:
+                self.settings.model_name = previous_model
+                self.emit_state()
+                raise
+        if "model_name" in changed:
+            self.remember_checkpoint(changed["model_name"])
         self.apply_hot_settings(changed)
-        if self.running and any(key in RESTART_SETTING_KEYS for key in changed):
+        if self.running and not hot_swap and any(key in RESTART_SETTING_KEYS for key in changed):
             self.stop()
             self.status("settings_changed")
         if any(key not in MODEL_SETTING_KEYS for key in changed):
@@ -539,6 +664,10 @@ class RealtimeEngine:
             return
         if "pitch" in changed:
             self.voice.change_key(self.settings.pitch)
+        if set(PITCH_MAP_KEYS) & set(changed):
+            self.voice.change_pitch_map(*(getattr(self.settings, key) for key in PITCH_MAP_KEYS))
+        if "index_rate" in changed and hasattr(self.voice, "change_index_rate"):
+            self.voice.change_index_rate(self.settings.index_rate)
         if "input_gain_db" in changed and getattr(self, "loudness", None) is not None:
             # The model follows the input level: earlier readings no longer apply.
             self.loudness.reset()
@@ -569,8 +698,10 @@ class RealtimeEngine:
             return
         if not force and time.monotonic() < self.model_settings_save_due:
             return
-        if model_name in self.models_by_name:
-            self.voice_settings[model_name] = model_settings_to_save(self.settings)
+        group = self.voice_group(model_name)
+        if group is not None:  # into the voice's entry, keeping its picked checkpoint
+            self.voice_settings[group.name] = {**self.voice_settings.get(group.name, {}),
+                                               **model_settings_to_save(self.settings)}
             self.save_voice_settings()
         self.pending_model_settings_name = None
         self.model_settings_save_due = 0.0
@@ -853,9 +984,15 @@ class RealtimeEngine:
     def load_model(self, model):
         self.status("loading_model")
         torch.cuda.empty_cache()
+        self.voice = self.build_voice(model)
+
+    def build_voice(self, model):
         try:
-            self.voice = causalvc_backend.CausalVC(
-                self.settings.pitch, str(model.model_path), self.config.device
+            return causalvc_backend.CausalVC(
+                self.settings.pitch, str(model.model_path), self.config.device,
+                *(getattr(self.settings, key) for key in PITCH_MAP_KEYS),
+                cuda_graphs=self.settings.cuda_graphs,
+                index_rate=self.settings.index_rate,
             )
         except Exception as error:
             raise EngineError(
@@ -863,6 +1000,34 @@ class RealtimeEngine:
                 f"Could not load {model.model_path.name}: {error}",
                 model=model.name,
             ) from error
+
+    @property
+    def voice_lock(self):
+        """Held by the audio thread for each block, and while a new voice takes over."""
+        return self.__dict__.setdefault("_voice_lock", threading.Lock())
+
+    def swap_voice(self, model):
+        """Switch a running stream to another checkpoint: only the decoder is loaded; the audio
+        devices, recording and file playback carry on.  The new voice is loaded and warmed here
+        while the old one keeps converting; its CUDA graph is recorded with the audio thread
+        held, so the stream skips about one block."""
+        self.status("loading_model", model=model.name)
+        voice = self.build_voice(model)
+        block_frame = self.block_frame
+        try:
+            voice.warm(block_frame, record=False)
+            with self.voice_lock:
+                voice.record(block_frame)
+                old, self.voice = self.voice, voice
+        except Exception as error:
+            raise EngineError(
+                "model_load_failed", f"Could not load {model.model_path.name}: {error}", model=model.name
+            ) from error
+        if self.function == "vc":
+            self.delay_time += voice.delay_seconds - old.delay_seconds
+        del old
+        printt("Switched to checkpoint %s", model.name)
+        self.status("checkpoint_switched", name=model.name)
 
     def prepare_inference(self, samplerate):
         """Allocate the stream buffers for ``samplerate``; no audio devices."""
@@ -890,6 +1055,9 @@ class RealtimeEngine:
         self.voice.reset_stream_state()
         self.status("preparing_inference")
         self.voice.warm(self.block_frame)
+        graph = getattr(self.voice, "uses_cuda_graph", None)
+        if self.settings.cuda_graphs and graph is not None:
+            printt("CUDA graph: %s", "in use" if graph else "not available here; converting block by block")
 
     def start_stream(self):
         if self.running:
@@ -1283,6 +1451,11 @@ class RealtimeEngine:
     # Inference
     # ------------------------------------------------------------------
     def audio_callback(self, indata, frames, times, status):
+        """Process one input-audio callback block (waiting while a new voice takes over)."""
+        with self.voice_lock:
+            return self.convert_block(indata, frames, times, status)
+
+    def convert_block(self, indata, frames, times, status):
         """Process one input-audio callback block."""
         start_time = time.perf_counter()
         settings = self.settings

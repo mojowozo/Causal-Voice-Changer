@@ -22,6 +22,23 @@ from causalvc.pitch_causal import load_pitch
 DELAY = 5  # 100 Hz frames between the newest input and the newest output
 HIST = 128  # frames of features kept for the decoder
 GEN = 32  # frames of context the waveform generator is given
+F0_RANGE = (50.0, 1100.0)  # Hz: the span of the decoder's pitch buckets (Decoder.pitch_bucket)
+
+
+def map_f0(f0: torch.Tensor, ratio: float, offset: float = 0.0, ceiling: float = 0.0, keep: float = 1.0) -> torch.Tensor:
+    """The pitch the voice is given for the tracked pitch ``f0`` (Hz, 0 unvoiced).
+
+    ``f0 * ratio + offset``, then, with a ``ceiling`` (Hz, 0 = none), only ``keep`` (0-1) of the rise
+    above it: in semitones, so notes below the ceiling keep their intervals (singing stays in tune)
+    and only peaks above it are pulled down (keep 0 stops them at the ceiling). Both apply to voiced
+    frames only (unvoiced ones stay 0) and keep them within the decoder's pitch range; without
+    either this is the plain multiplication."""
+    if offset == 0.0 and ceiling <= 0.0:
+        return f0 * ratio
+    y = (f0 * ratio + offset).clamp(*F0_RANGE)
+    if ceiling > 0.0:
+        y = torch.where(y > ceiling, ceiling * (y / ceiling) ** max(0.0, min(1.0, keep)), y)
+    return torch.where(f0 > 0, y, torch.zeros_like(f0))
 
 
 class StreamingVC:
@@ -40,12 +57,26 @@ class StreamingVC:
         self.delay = DELAY + self.dec.lookahead + self.late  # frames between the newest input and the newest output
         assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
         self.n = int(window * SR)
-        self.ratio, self.spk = 1.0, None
+        self.ratio, self.offset, self.ceiling, self.keep, self.spk = 1.0, 0.0, 0.0, 1.0, None
+        self.index, self.rate = None, 0.0  # the voice's index (causalvc.index) and its strength
         self.reset()
 
-    def set_voice(self, speaker: str, semitones: float = 0.0) -> None:
+    def set_index(self, frames: torch.Tensor | None) -> None:
+        """The voice's index frames [N, C] (None: no index)."""
+        self.index = None if frames is None else frames.to(self.device, torch.float32)
+        self.index_unit = None if frames is None else torch.nn.functional.normalize(self.index, dim=-1)
+
+    def set_index_rate(self, rate: float) -> None:
+        """How much of each content frame comes from the index (0 = none, 1 = all)."""
+        self.rate = max(0.0, min(1.0, float(rate)))
+
+    def set_voice(self, speaker: str, semitones: float = 0.0, offset_hz: float = 0.0, ceiling_hz: float = 0.0,
+                  ceiling_keep: float = 1.0) -> None:
+        """The voice to convert to and its pitch: the tracked pitch times 2^(semitones/12), plus ``offset_hz``,
+        with only ``ceiling_keep`` of the rise above ``ceiling_hz`` (0 = no ceiling); see ``map_f0``."""
         self.spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
-        self.ratio = 2.0 ** (semitones / 12.0)
+        self.ratio, self.offset = 2.0 ** (semitones / 12.0), float(offset_hz)
+        self.ceiling, self.keep = float(ceiling_hz), float(ceiling_keep)
 
     def reset(self) -> None:
         d = self.device
@@ -104,8 +135,12 @@ class StreamingVC:
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.buf.is_cuda):
             steps = self.enc.forward(wav16).float()[0]  # step t is content frame t - lookahead
         content = steps[frames // 2 + self.enc.lookahead]
+        if self.index is not None and self.rate > 0:
+            from causalvc.index import lookup
+
+            content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
         sal = torch.sigmoid(self.pitch.forward(wav16).float())  # step t is pitch frame t - lookahead
-        f0 = self.pitch.decode(sal)[0, frames + self.pitch.lookahead] * self.ratio
+        f0 = map_f0(self.pitch.decode(sal)[0, frames + self.pitch.lookahead], self.ratio, self.offset, self.ceiling, self.keep)
         loud = loudness(self.buf[None])[0, frames]
 
         if self.late:  # excitation for the frame before each new one, now that its following pitch is known

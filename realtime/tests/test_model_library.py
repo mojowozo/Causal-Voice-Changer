@@ -294,6 +294,185 @@ class VoiceFolderTest(ModelFolders):
         self.assertIn("Kira-best", [model.name for model in engine.models])
 
 
+class CheckpointVoiceTest(ModelFolders):
+    """models/Kira/ with three checkpoints, beside the loose Alto, Bass and Tenor."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "Kira").mkdir()
+        for name in ("Kira-1000s", "Kira-2000s", "Kira-10000s"):
+            voice_files.write_cvc(self.root / "Kira" / f"{name}.cvc", name, "Kira", b"decoder")
+
+    def voice(self, engine, name):
+        (voice,) = [voice for voice in engine.state_voices() if voice["name"] == name]
+        return voice
+
+    def test_checkpoints_group_into_one_voice_by_step(self):
+        voice_files.write_cvc(self.root / "Solo-500s.cvc", "Solo-500s", "Solo", b"decoder")
+        voice_files.write_cvc(self.root / "Solo-1500s.cvc", "Solo-1500s", "Solo", b"decoder")
+        groups = model_registry.group_voices(discover_models(self.root))
+        self.assertEqual([group.name for group in groups], ["Alto", "Bass", "Kira", "Solo", "Tenor"])
+        kira = groups[2]
+        self.assertEqual([entry.name for entry in kira.checkpoints], ["Kira-1000s", "Kira-2000s", "Kira-10000s"])
+        self.assertEqual([entry.step for entry in kira.checkpoints], [1000, 2000, 10000])
+        self.assertEqual(kira.latest.name, "Kira-10000s")
+        self.assertEqual([entry.name for entry in groups[3].checkpoints], ["Solo-500s", "Solo-1500s"])
+        self.assertEqual(groups[0].latest.name, "Alto")
+        self.assertIsNone(groups[0].checkpoints[0].step)
+
+    def test_a_voices_folder_groups_any_name_and_steps_need_a_separator(self):
+        voice_files.write_cvc(self.root / "Kira" / "Kira-best.cvc", "Kira-best", "Kira", b"decoder")
+        (kira,) = [g for g in model_registry.group_voices(discover_models(self.root)) if g.name == "Kira"]
+        self.assertEqual(kira.checkpoints[-1].name, "Kira-best")  # no step: after the steps
+        self.assertEqual(kira.latest.name, "Kira-10000s")
+        self.assertEqual(model_registry.checkpoint_step("Kye_40e_7600s"), 7600)
+        self.assertIsNone(model_registry.checkpoint_step("Mika2s"))
+
+    def test_state_lists_each_voice_once(self):
+        engine = self.engine(selected="Bass")
+        state = core.RealtimeEngine.state_voices(engine)
+        self.assertEqual([voice["name"] for voice in state], ["Alto", "Bass", "Kira", "Tenor"])
+        kira = self.voice(engine, "Kira")
+        self.assertEqual(kira["checkpoints"], ["Kira-1000s", "Kira-2000s", "Kira-10000s"])
+        self.assertEqual(kira["checkpoint"], "Kira-10000s")
+
+    def test_checkpoints_share_the_voices_settings(self):
+        engine = self.engine(selected="Kira-10000s")
+        engine.update_settings({"pitch": 5.0, "output_gain_db": 3.0})
+        engine.update_settings({"model_name": "Kira-2000s"})
+        self.assertEqual((engine.settings.pitch, engine.settings.output_gain_db), (5.0, 3.0))
+        self.assertEqual(self.saved_voice_settings()["Kira"]["pitch"], 5.0)
+        self.assertNotIn("Kira-10000s", self.saved_voice_settings())
+        engine.update_settings({"model_name": "Bass"})
+        self.assertEqual(engine.settings.pitch, 0.0)
+        engine.update_settings({"model_name": "Kira-1000s"})
+        self.assertEqual(engine.settings.pitch, 5.0)
+
+    def test_the_picked_checkpoint_is_remembered_until_the_newest_is_picked(self):
+        engine = self.engine(selected="Bass")
+        engine.update_settings({"model_name": "Kira-2000s"})
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-2000s")
+        self.assertEqual(self.saved_voice_settings()["Kira"]["checkpoint"], "Kira-2000s")
+        engine.update_settings({"model_name": "Bass"})
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-2000s")
+        engine.update_settings({"model_name": "Kira-10000s"})
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-10000s")
+        self.assertNotIn("Kira", self.saved_voice_settings())  # nothing else saved for it yet
+        # A newer checkpoint arriving later is then the one picked.
+        voice_files.write_cvc(self.root / "Kira" / "Kira-20000s.cvc", "Kira-20000s", "Kira", b"decoder")
+        engine.reload_models()
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-20000s")
+
+    def test_settings_saved_per_checkpoint_move_to_the_voice(self):
+        engine = self.engine(selected="Kira-2000s")
+        engine.voice_settings = {
+            "Kira-1000s": {"pitch": 1.0},
+            "Kira-2000s": {"pitch": 2.0, "threhold": -40.0},
+            "Kira-10000s": {"pitch": 10.0},
+            "Bass": {"pitch": -2.0},
+        }
+        engine.migrate_voice_settings()
+        saved = self.saved_voice_settings()
+        # The one in use last wins, and is remembered as the picked checkpoint; nothing is dropped.
+        self.assertEqual(saved["Kira"], {"pitch": 2.0, "threhold": -40.0, "checkpoint": "Kira-2000s"})
+        self.assertEqual(saved["Kira-1000s"], {"pitch": 1.0})
+        self.assertEqual(saved["Bass"], {"pitch": -2.0})
+        self.assertEqual(engine.model_settings_for("Kira-10000s")["pitch"], 2.0)
+        self.assertEqual(engine.model_settings_for("Kira-1000s")["noise_gate_db"], -40.0)
+        # Run again: the voice's own entry now wins.
+        engine.voice_settings["Kira-10000s"] = {"pitch": 12.0}
+        self.voice_settings_file.clear()
+        engine.migrate_voice_settings()
+        self.assertEqual(self.saved_voice_settings(), {})
+
+    def test_without_the_selection_the_newest_checkpoints_settings_move(self):
+        engine = self.engine(selected="Bass")
+        engine.voice_settings = {"Kira-1000s": {"pitch": 1.0}, "Kira-2000s": {"pitch": 2.0}}
+        engine.migrate_voice_settings()
+        self.assertEqual(self.saved_voice_settings()["Kira"], {"pitch": 2.0})
+
+    def test_settings_a_checkpoint_carries_are_the_voices(self):
+        voice_files.write_cvc(self.root / "Kira" / "Kira-10000s.cvc", "Kira-10000s", "Kira", b"decoder",
+                              json.dumps({"pitch": 8.0}).encode())
+        engine = self.engine()
+        self.assertEqual(engine.model_settings_for("Kira-1000s")["pitch"], 8.0)
+
+    def test_deleting_a_checkpoint_keeps_the_voice_and_its_settings(self):
+        engine = self.engine(selected="Kira-10000s")
+        engine.update_settings({"pitch": 3.0})
+        engine.flush_model_settings_save(force=True)
+        with mock.patch.object(core, "move_to_trash", side_effect=self.trash):
+            engine.delete_model("Kira-10000s")
+        self.assertEqual(engine.settings.model_name, "Kira-2000s")  # the voice stays selected
+        self.assertEqual(engine.settings.pitch, 3.0)
+        self.assertEqual(self.saved_voice_settings()["Kira"]["pitch"], 3.0)
+        with mock.patch.object(core, "move_to_trash", side_effect=self.trash):
+            engine.delete_model("Kira-2000s")
+            engine.delete_model("Kira-1000s")
+        self.assertNotIn("Kira", engine.voice_settings)
+
+    def test_deleting_or_renaming_the_picked_checkpoint(self):
+        engine = self.engine(selected="Kira-1000s")
+        engine.remember_checkpoint("Kira-1000s")
+        engine.update_settings({"model_name": "Bass"})
+        engine.rename_model("Kira-1000s", "Kira-early")
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-early")
+        with mock.patch.object(core, "move_to_trash", side_effect=self.trash):
+            engine.delete_model("Kira-early")
+        self.assertEqual(self.voice(engine, "Kira")["checkpoint"], "Kira-10000s")
+
+    def test_switching_checkpoints_while_converting_swaps_only_the_voice(self):
+        engine = self.engine(selected="Kira-10000s")
+        engine.settings.pitch = 4.0
+        engine.config = SimpleNamespace(device="cpu")
+        old = mock.Mock(delay_seconds=0.06)
+        engine.voice, engine.running, engine.block_frame, engine.delay_time = old, True, 1920, 0.2
+        built = mock.Mock(delay_seconds=0.08)
+        engine.stop = mock.Mock()
+        with mock.patch.object(core.causalvc_backend, "CausalVC", return_value=built) as make:
+            engine.update_settings({"model_name": "Kira-2000s"})
+        engine.stop.assert_not_called()
+        self.assertIs(engine.voice, built)
+        self.assertEqual(make.call_args.args[:2], (4.0, str((self.root / "Kira" / "Kira-2000s.cvc").resolve())))
+        built.warm.assert_called_once_with(1920, record=False)
+        built.record.assert_called_once_with(1920)
+        self.assertAlmostEqual(engine.delay_time, 0.22)
+        self.assertIn(("status", {"code": "checkpoint_switched", "name": "Kira-2000s"}), engine.events)
+        self.assertEqual(engine.settings.pitch, 4.0)
+
+    def test_a_checkpoint_that_fails_to_load_keeps_the_old_one(self):
+        engine = self.engine(selected="Kira-10000s")
+        engine.config = SimpleNamespace(device="cpu")
+        old = mock.Mock(delay_seconds=0.06)
+        engine.voice, engine.running, engine.block_frame, engine.delay_time = old, True, 1920, 0.2
+        engine.stop = mock.Mock()
+        with mock.patch.object(core.causalvc_backend, "CausalVC", side_effect=RuntimeError("bad file")):
+            with self.assertRaises(core.EngineError) as raised:
+                engine.update_settings({"model_name": "Kira-2000s"})
+        self.assertEqual(raised.exception.code, "model_load_failed")
+        self.assertIs(engine.voice, old)
+        self.assertEqual(engine.settings.model_name, "Kira-10000s")
+        engine.stop.assert_not_called()
+
+    def test_another_voice_while_converting_still_stops(self):
+        engine = self.engine(selected="Kira-10000s")
+        engine.voice, engine.running = mock.Mock(), True
+        engine.stop = mock.Mock()
+        with mock.patch.object(core.causalvc_backend, "CausalVC") as make:
+            engine.update_settings({"model_name": "Bass"})
+        engine.stop.assert_called_once()
+        make.assert_not_called()
+
+    def test_a_loose_checkpoint_renamed_out_of_its_voice_takes_the_settings(self):
+        voice_files.write_cvc(self.root / "Solo-500s.cvc", "Solo-500s", "Solo", b"decoder")
+        voice_files.write_cvc(self.root / "Solo-1500s.cvc", "Solo-1500s", "Solo", b"decoder")
+        engine = self.engine(selected="Solo-1500s")
+        engine.voice_settings = {"Solo": {"pitch": 6.0}}
+        engine.rename_model("Solo-1500s", "Duet")
+        self.assertEqual(engine.model_settings_for("Duet")["pitch"], 6.0)
+        self.assertEqual(engine.model_settings_for("Solo-500s")["pitch"], 6.0)
+
+
 class RegistryMetadataTest(unittest.TestCase):
     def test_size_of_the_decoder_and_date_of_the_voice_file(self):
         with tempfile.TemporaryDirectory() as temp:

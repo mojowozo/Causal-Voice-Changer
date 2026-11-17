@@ -135,6 +135,10 @@ fn slider_item<'a>(
 fn num_description(num: Num) -> Option<String> {
     Some(match num {
         Num::Pitch => fl!("pitch-detail"),
+        Num::PitchOffset => fl!("pitch-offset-detail"),
+        Num::PitchCeiling => fl!("pitch-ceiling-detail"),
+        Num::PitchCeilingKeep => fl!("pitch-ceiling-keep-detail"),
+        Num::IndexRate => fl!("index-rate-detail"),
         Num::InputGain => fl!("input-gain-detail"),
         Num::OutputGain => fl!("output-gain-detail"),
         Num::MonitorGain => fl!("monitor-gain-detail"),
@@ -202,11 +206,22 @@ fn model_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
                 dropdown_item(
                     fl!("model"),
                     None,
-                    &app.model_names,
-                    position_of(&app.model_names, selected),
+                    &app.voice_names,
+                    state
+                        .selected_voice()
+                        .and_then(|voice| position_of(&app.voice_names, &voice.name)),
                     Message::SelectModel,
                 )
             })
+            .add_maybe((app.checkpoint_names.len() > 1).then(|| {
+                dropdown_item(
+                    fl!("checkpoint"),
+                    Some(fl!("checkpoint-description")),
+                    &app.checkpoint_labels,
+                    position_of(&app.checkpoint_names, selected),
+                    Message::SelectCheckpoint,
+                )
+            }))
             .add(
                 widget::row::with_capacity(4)
                     .push(widget::text::caption(files).width(Length::Fill))
@@ -224,10 +239,7 @@ fn model_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
                     .align_y(Alignment::Center),
             )
             .into(),
-        settings::section()
-            .title(fl!("section-voice"))
-            .add(slider_item(app, fl!("pitch"), Num::Pitch, state, signed(1)))
-            .into(),
+        voice_section(app, state),
         settings::section()
             .title(fl!("section-levels"))
             .add(slider_item(
@@ -269,6 +281,78 @@ fn model_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
         reset_row(fl!("reset-model-settings"), "general"),
     ]);
     page_column(sections)
+}
+
+/// The pitch, and behind a disclosure row the pitch offset and ceiling, which few voices need.
+fn voice_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
+    let offset = state.settings.pitch_offset_hz;
+    let ceiling = state.settings.pitch_ceiling_hz;
+    let open = app.pitch_advanced_open;
+    let toggle = widget::button::icon(widget::icon::from_name(if open {
+        "go-up-symbolic"
+    } else {
+        "go-down-symbolic"
+    }))
+    .tooltip(if open { fl!("pitch-advanced-hide") } else { fl!("pitch-advanced-show") })
+    .on_press(Message::TogglePitchAdvanced);
+    let advanced = settings::item::builder(fl!("pitch-advanced"))
+        .description(fl!(
+            "pitch-advanced-detail",
+            offset = hertz(offset),
+            ceiling = ceiling_text(ceiling)
+        ))
+        .control(toggle);
+    let mut section = settings::section()
+        .title(fl!("section-voice"))
+        .add(slider_item(app, fl!("pitch"), Num::Pitch, state, signed(1)))
+        .add(index_item(app, state))
+        .add(advanced);
+    if open {
+        section = section
+            .add(slider_item(app, fl!("pitch-offset"), Num::PitchOffset, state, hertz))
+            .add(slider_item(app, fl!("pitch-ceiling"), Num::PitchCeiling, state, ceiling_text))
+            .add(slider_item(
+                app,
+                fl!("pitch-ceiling-keep"),
+                Num::PitchCeilingKeep,
+                state,
+                |value| format!("{:.0}%", value * 100.0),
+            ));
+    }
+    section.into()
+}
+
+/// The Index slider, for a voice whose file carries an index; otherwise a note saying why there is none.
+fn index_item<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
+    let has_index = state
+        .models
+        .iter()
+        .any(|model| model.name == state.settings.model_name && model.has_index);
+    if !has_index {
+        return settings::item::builder(fl!("index-rate"))
+            .description(fl!("index-rate-none"))
+            .control(widget::text::body(fl!("off")))
+            .into();
+    }
+    slider_item(app, fl!("index-rate"), Num::IndexRate, state, |value| {
+        if value <= 0.0 {
+            fl!("off")
+        } else {
+            format!("{:.0}%", value * 100.0)
+        }
+    })
+}
+
+fn hertz(value: f32) -> String {
+    format!("{value:+.0} Hz")
+}
+
+fn ceiling_text(value: f32) -> String {
+    if value <= 0.0 {
+        fl!("off")
+    } else {
+        format!("{value:.0} Hz")
+    }
 }
 
 /// How loud the output sounds to others, with a one-click gain fix.
@@ -510,6 +594,13 @@ fn performance_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> 
                 gpu_index,
                 Message::SelectGpu,
             ))
+            .add(
+                settings::item::builder(fl!("cuda-graphs"))
+                    .description(fl!("cuda-graphs-detail"))
+                    .toggler(settings_.cuda_graphs, |value| {
+                        Message::Toggle(Toggle::CudaGraphs, value)
+                    }),
+            )
             .into(),
         settings::section()
             .title(fl!("section-noise"))

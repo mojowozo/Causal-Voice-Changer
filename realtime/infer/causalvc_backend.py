@@ -37,7 +37,8 @@ class CausalVC:
     is_causalvc = True
     tgt_sr = SAMPLE_RATE
 
-    def __init__(self, key, model_path, device):
+    def __init__(self, key, model_path, device, pitch_offset=0.0, pitch_ceiling=0.0, pitch_ceiling_keep=1.0,
+                 cuda_graphs=False, index_rate=0.0):
         if REPOSITORY not in sys.path:  # the causalvc package, when it is not installed in this environment
             sys.path.insert(0, REPOSITORY)
         from causalvc.stream import DELAY
@@ -45,20 +46,47 @@ class CausalVC:
 
         # Paths in the description are looked for beside it first, so a voice folder works wherever it is copied.
         spec = load(model_path)
-        if spec["runtime"] == "classic":  # the original runtime, which recomputes its whole window every block
-            from causalvc.stream import StreamingVC as make
-        else:  # the cached runtime: same model, computes only what is new each block
-            from causalvc.fast import streaming as make
-
         self.speaker = spec["speaker"]
-        self.vc = make(spec["decoder"], spec["pitch"], str(device), spec["encoder"])
+        if spec["runtime"] == "classic":  # the original runtime, which recomputes its whole window every block
+            from causalvc.stream import StreamingVC
+
+            self.vc = StreamingVC(spec["decoder"], spec["pitch"], str(device), spec["encoder"])
+        else:  # the cached runtime: same model, computes only what is new each block
+            from causalvc.fast import streaming
+
+            # cuda_graphs: replay each block's recorded kernels instead of launching them one by one.
+            self.vc = streaming(spec["decoder"], spec["pitch"], str(device), spec["encoder"], graphs=cuda_graphs)
         if self.speaker not in self.vc.speakers:
             raise ValueError(f"{self.speaker} is not a voice of {spec['decoder']}")
         self.delay_seconds = getattr(self.vc, "delay", DELAY) / 100.0
-        self.change_key(key)
+        # The voice's index (content frames of its own audio), when its file carries one.
+        self.has_index = bool(spec.get("index"))
+        if self.has_index:
+            self.vc.set_index(torch.load(spec["index"], map_location="cpu")["frames"])
+        self.key = float(key)
+        self.change_pitch_map(pitch_offset, pitch_ceiling, pitch_ceiling_keep)
+        self.change_index_rate(index_rate)
 
     def change_key(self, key):
-        self.vc.set_voice(self.speaker, float(key))
+        """Pitch shift in semitones; the stream carries on."""
+        self.key = float(key)
+        self._set_voice()
+
+    def change_pitch_map(self, offset, ceiling, keep):
+        """The advanced pitch settings; the stream carries on. ``offset``: Hz added to every voiced
+        frame's pitch after the shift (y = x * 2^(key/12) + offset). ``ceiling``: Hz above which only
+        ``keep`` (0-1) of the rise is kept, in semitones (0 = no ceiling)."""
+        self.pitch_offset, self.pitch_ceiling, self.pitch_ceiling_keep = float(offset), float(ceiling), float(keep)
+        self._set_voice()
+
+    def change_index_rate(self, rate):
+        """How much of what is said is drawn from the voice's own audio (0-1); the stream carries on.
+        Does nothing for a voice without an index."""
+        self.index_rate = float(rate)
+        self.vc.set_index_rate(self.index_rate)
+
+    def _set_voice(self):
+        self.vc.set_voice(self.speaker, self.key, self.pitch_offset, self.pitch_ceiling, self.pitch_ceiling_keep)
 
     def reset_stream_state(self):
         self.vc.reset()
@@ -67,7 +95,21 @@ class CausalVC:
         """One block of 48 kHz mono samples (a torch tensor) -> the same length."""
         return self.vc.process(block)
 
-    def warm(self, block_frame):
+    @property
+    def uses_cuda_graph(self):
+        return getattr(self.vc, "graph", None) is not None
+
+    def warm(self, block_frame, record=True):
+        """Run a few silent blocks of this length (and, with cuda_graphs, record one), then start afresh.
+        With ``record`` False the recording is left to ``record()`` (a voice warmed while another
+        voice is converting: recording needs the GPU to itself)."""
         for _ in range(4):
             self.vc.process(torch.zeros(block_frame, device=self.vc.device))
         self.vc.reset()
+        if record:
+            self.record(block_frame)
+
+    def record(self, block_frame):
+        """Get ready for blocks of this length; with cuda_graphs, record one as a CUDA graph."""
+        if hasattr(self.vc, "prepare"):
+            self.vc.prepare(block_frame)

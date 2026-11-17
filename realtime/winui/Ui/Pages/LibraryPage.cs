@@ -44,7 +44,7 @@ public sealed class LibraryPage : PageBase
         string query = _search.Text ?? "";
         string? convertingWith = state.Running && state.Function == "vc" ? state.Settings.ModelName : null;
         // Rebuilding the rows resets focus and hover, so only when something shown changed.
-        string key = string.Join("\n", state.Models.Select(m => $"{m.Name}\t{m.SizeBytes}\t{m.Modified}"))
+        string key = string.Join("\n", state.Models.Select(m => $"{m.Name}\t{m.Voice}\t{m.SizeBytes}\t{m.Modified}"))
             + $"\n{query}\n{newest}\n{state.Settings.ModelName}\n{convertingWith}";
         if (key == _rendered) return;
         _rendered = key;
@@ -64,14 +64,7 @@ public sealed class LibraryPage : PageBase
 
     SettingRow ModelRow(Model model, EngineState state, string? convertingWith)
     {
-        var parsed = Library.Parse(model.Name);
-        string title = (parsed.Detail.Length > 0, parsed.Epochs) switch
-        {
-            (true, uint epochs) => S.LibraryCheckpoint(parsed.Detail, epochs),
-            (false, uint epochs) => S.LibraryEpochs(epochs),
-            (true, null) => parsed.Detail,
-            _ => model.Name,
-        };
+        string title = Library.CheckpointLabel(model);
         bool selected = model.Name == state.Settings.ModelName;
         bool inUse = convertingWith == model.Name;
 

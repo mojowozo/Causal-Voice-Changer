@@ -7,9 +7,20 @@ if [[ ! -x .venv/bin/python ]]; then
     exit 1
 fi
 binary=ui/target/release/causalvc-realtime
-if [[ ! -x realtime/$binary ]]; then
-    echo "Building the front end (first run only)…" >&2
-    cargo build --release --manifest-path realtime/ui/Cargo.toml
+# Built on first run, and again after an update (git pull): cargo rebuilds only when a source
+# file changed, and otherwise finishes in well under a second.
+if command -v cargo >/dev/null 2>&1; then
+    [[ -x realtime/$binary ]] || echo "Building the front end (first run only)…" >&2
+    if ! cargo build --release --quiet --manifest-path realtime/ui/Cargo.toml; then
+        if [[ -x realtime/$binary ]]; then
+            echo "The front end could not be rebuilt; starting the copy built before." >&2
+        else
+            exit 1
+        fi
+    fi
+elif [[ ! -x realtime/$binary ]]; then
+    echo "Rust (cargo) is needed to build the front end the first time: https://rustup.rs" >&2
+    exit 1
 fi
 # Ask PipeWire for a 960-sample period (20 ms at 48 kHz) while this runs: blocks are whole
 # multiples of 20 ms, so the output buffer stays level (fewer gaps, slightly less delay).

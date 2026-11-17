@@ -27,9 +27,24 @@ base or with other settings cannot, and the page says so.
 [causalvc/merge.py](../../causalvc/merge.py) does the same from the command
 line.
 
+A voice built now also carries its **index** (content frames of its own
+training audio, for the Index slider on the Model page); a merge carries the
+indexes of the voices in it, each in proportion to its voice's strength. To
+give an older voice one, from the project folder:
+
+```bash
+.venv/bin/python -m causalvc.index realtime/models/MyVoice/*.cvc --audio /path/to/MyVoice/audio
+```
+
+The Model page lists each voice once; when a voice has several checkpoints, a
+**Checkpoint** list beside it picks which one is loaded (the newest, until you
+pick another). Switching checkpoints while converting swaps only the voice, so
+audio, recording and file playback carry on.
+
 The app keeps each voice's pitch and gain settings in
-`configs/voice_settings.json`, by name, so the voice files are never changed.
-A voice with none saved there starts from the settings inside its file.
+`configs/voice_settings.json`, by voice name, so the voice files are never
+changed. All checkpoints of a voice share them. A voice with none saved there
+starts from the settings inside its newest file that has any.
 
 The app reads a voice through an unpacked copy in your cache folder
 (`~/.cache/causalvc/voices`, or `%LOCALAPPDATA%\causalvc\voices` on Windows),

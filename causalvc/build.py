@@ -70,6 +70,30 @@ def checkpoint_step(run_dir: Path) -> int | None:
         return None
 
 
+def make_index(run_dir: Path, encoder: str, audio: str, device: str) -> None:
+    """The voice's index (causalvc.index) in run_dir/index.pt, made once; every checkpoint's .cvc
+    carries it. A voice without one still works (its Index slider just does nothing)."""
+    target = run_dir / "index.pt"
+    if target.is_file():
+        return
+    try:
+        import torch
+
+        from causalvc.index import build
+        from causalvc.infer import load_encoder
+
+        print("making the voice's index", flush=True)
+        enc = load_encoder(str(ROOT / encoder) if not Path(encoder).is_absolute() else encoder, device)
+        data = build(enc, audio, device)
+        del enc
+        torch.cuda.empty_cache()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        target.with_suffix(".part").write_bytes(data)
+        target.with_suffix(".part").replace(target)
+    except Exception as error:  # noqa: BLE001 - the voice itself matters more than its index
+        print(f"no index for this voice ({error})", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
@@ -113,7 +137,9 @@ def main() -> None:
         from causalvc.voice import export_cvc, install, voice_folder
 
         label = f"{a.name}-{step}s"
-        made = export_cvc(decoder, a.name, run_dir / "voices" / f"{label}.cvc", label)
+        index = run_dir / "index.pt"
+        made = export_cvc(decoder, a.name, run_dir / "voices" / f"{label}.cvc", label,
+                          index.read_bytes() if index.is_file() else None)
         decoder.unlink(missing_ok=True)  # the voice's own copy (this voice only) replaces the checkpoint's
         if a.app_models:
             install(made, voice_folder(Path(a.app_models), a.name) / made.name)  # the same file, in the voice changer's folder for this voice
@@ -139,6 +165,7 @@ def main() -> None:
     argv += ["--bf16"] if a.bf16 else []
     argv += ["--colour-aug", str(a.colour_aug)] if a.colour_aug else []
     argv += ["--ema", str(a.ema)] if a.ema else []
+    make_index(run_dir, encoder, a.audio, a.device)
     from causalvc.decoder import train
 
     sys.argv = [sys.argv[0], *argv]

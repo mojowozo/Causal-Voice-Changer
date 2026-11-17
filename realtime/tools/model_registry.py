@@ -29,6 +29,10 @@ class ModelEntry:
     #: Size of the voice (its .cvc, or the folder's decoder) in bytes, and its modification time (Unix).
     size_bytes: int = 0
     modified: float = 0.0
+    #: The voice this checkpoint belongs to (see ``voice_of``); checkpoints of one voice share its settings.
+    voice: str = ""
+    #: The training step in its name (``Kira-1000s``: 1000), or None.
+    step: int | None = None
 
     @property
     def is_file(self):
@@ -58,7 +62,7 @@ def discover_models(models_root: str | Path) -> list[ModelEntry]:
     def visible(path):
         return not path.name.startswith(".")
 
-    def add_file(path):
+    def add_file(path, folder=None):
         name = path.name[: -len(CVC_SUFFIX)]
         if name.casefold() in seen:
             return
@@ -69,7 +73,8 @@ def discover_models(models_root: str | Path) -> list[ModelEntry]:
         seen.add(name.casefold())
         entries.append(
             ModelEntry(name=name, path=path.resolve(), model_path=path.resolve(),
-                       size_bytes=stat.st_size, modified=stat.st_mtime)
+                       size_bytes=stat.st_size, modified=stat.st_mtime,
+                       voice=folder or voice_folder_name(name), step=checkpoint_step(name))
         )
 
     def cvc_files(folder):
@@ -91,7 +96,7 @@ def discover_models(models_root: str | Path) -> list[ModelEntry]:
         )
         if not descriptions:
             for path in cvc_files(directory):
-                add_file(path)
+                add_file(path, directory.name)
             continue
         if directory.name.casefold() in seen:
             continue
@@ -107,6 +112,8 @@ def discover_models(models_root: str | Path) -> list[ModelEntry]:
                 model_path=descriptions[0].resolve(),
                 size_bytes=decoder_size(descriptions[0]),
                 modified=modified,
+                voice=directory.name,
+                step=checkpoint_step(directory.name),
             )
         )
     return sorted(entries, key=lambda entry: entry.name.casefold())
@@ -117,6 +124,48 @@ def voice_folder_name(name):
     without a step count is its own voice."""
     match = re.fullmatch(r"(.+?)-\d+s", name)
     return match.group(1) if match else name
+
+
+def checkpoint_step(name):
+    """The training step a checkpoint's name ends with (``Kira-1000s``, ``Kira_40e_7600s``), or None."""
+    match = re.search(r"[-_](\d+)s$", name)
+    return int(match.group(1)) if match else None
+
+
+@dataclass(frozen=True)
+class VoiceGroup:
+    """One voice and its checkpoints, oldest step first (checkpoints without a step last, by name)."""
+    name: str
+    checkpoints: tuple
+
+    @property
+    def latest(self):
+        """The checkpoint picked when nothing else was: the highest step, else the newest file."""
+        stepped = [entry for entry in self.checkpoints if entry.step is not None]
+        if stepped:
+            return stepped[-1]
+        return max(self.checkpoints, key=lambda entry: entry.modified)
+
+
+def group_voices(entries):
+    """Checkpoints grouped into voices (``ModelEntry.voice``, ignoring case), by voice name.
+
+    A voice's checkpoints are the files in its folder (``models/Kira/Kira-1000s.cvc``), or
+    loose files named ``Kira-<step>s``; anything else is a voice of its own."""
+    groups = {}
+    for entry in entries:
+        groups.setdefault(entry.voice.casefold(), []).append(entry)
+    return sorted(
+        (
+            VoiceGroup(
+                name=members[0].voice,
+                checkpoints=tuple(sorted(members, key=lambda entry: (
+                    entry.step is None, entry.step or 0, entry.name.casefold()))),
+            )
+            for members in groups.values()
+        ),
+        key=lambda group: group.name.casefold(),
+    )
 
 
 def embedded_settings(model: ModelEntry):

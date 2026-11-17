@@ -36,10 +36,27 @@ static class S
     public const string Model = "Model";
     public const string ModelsEmpty = "No voices yet. Build one with the training window, or drag a voice's .cvc file onto this window to add it.";
     public static string ModelFiles(string model) => $"Voice file: {model}";
+    public const string Checkpoint = "Checkpoint";
+    public const string CheckpointDescription = "Saved while the voice trained; all of them share the voice's settings";
+    public static string CheckpointStep(long step) => $"{step} steps";
+    public static string CheckpointNewest(string label) => $"{label} (newest)";
     public const string Reload = "Reload";
     public const string SectionVoice = "Voice";
     public const string Pitch = "Pitch (semitones)";
     public const string PitchDetail = "How far to shift your voice: +12 is one octave up.";
+    public const string PitchAdvanced = "Advanced pitch";
+    public static string PitchAdvancedDetail(string offset, string ceiling) => $"Output pitch = your pitch × the shift above + an offset in Hz, with an optional ceiling for peaks. Most voices don't need these. Offset: {offset}; ceiling: {ceiling}.";
+    public const string PitchAdvancedShow = "Show";
+    public const string PitchAdvancedHide = "Hide";
+    public const string PitchOffset = "Pitch offset (Hz)";
+    public const string PitchCeiling = "Pitch ceiling";
+    public const string PitchCeilingDetail = "Output pitch above this is pulled down, so squeaky peaks stay in the voice's range. Below it, notes keep their intervals, so singing stays in tune. Off by default.";
+    public const string PitchCeilingKeep = "Above the ceiling";
+    public const string PitchCeilingKeepDetail = "How much of the rise above the ceiling is kept, in semitones. 0% stops at the ceiling; 100% is no ceiling.";
+    public const string IndexRate = "Index";
+    public const string IndexRateDetail = "How much of what you say is redrawn from this voice's own recordings. Higher sounds more like the voice; too high can blur words. Off by default.";
+    public const string IndexRateNone = "This voice has no index. Voices built from now on carry one; an older voice can be given one from its audio (python -m causalvc.index).";
+    public const string PitchOffsetDetail = "Hz added to your shifted pitch. A positive offset raises low notes more than high ones, so it narrows your range; a negative one widens it. 0 is off.";
     public const string OutputLevel = "Output level";
     public const string OutputLevelIdle = "While converting, shows how loud you sound to others. Voice chat aims for -21 LUFS; streaming for -16 LUFS, the usual level of streamed voice.";
     public const string OutputLevelListening = "Talk to measure your level.";
@@ -175,6 +192,8 @@ static class S
     public const string SectionInference = "Inference";
     public const string Gpu = "GPU";
     public const string GpuDetail = "The graphics card that runs the model. Changing it restarts conversion.";
+    public const string CudaGraphs = "Fast GPU replay";
+    public const string CudaGraphsDetail = "Records the model's GPU work once and replays it for every chunk: about twice as fast and much steadier, so short chunks drop out less. Turn off if conversion sounds wrong or fails to start on your graphics card. Changing it restarts conversion.";
     public const string GpuAutomatic = "Automatic (recommended)";
     public const string SectionNoise = "Noise reduction";
     public const string InputDenoise = "Input noise reduction";
@@ -241,6 +260,7 @@ static class S
         {
             "preparing" => StatusPreparing,
             "loading_model" => "Loading model…",
+            "checkpoint_switched" => $"Now converting with {Text("name")}",
             "preparing_inference" => "Preparing inference…",
             "starting_audio" => "Starting audio devices…",
             "conversion_started" => "Conversion started",

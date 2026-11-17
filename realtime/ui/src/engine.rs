@@ -29,6 +29,9 @@ pub struct State {
     pub function: String,
     pub settings: Settings,
     pub models: Vec<Model>,
+    /// Each voice once, with its checkpoints (models).
+    #[serde(default)]
+    pub voices: Vec<Voice>,
     pub devices: Devices,
     pub gpus: Vec<Gpu>,
     pub samplerate: Option<u32>,
@@ -54,6 +57,9 @@ pub struct Settings {
     pub monitor_device: Option<String>,
     pub block_time: f32,
     pub input_denoise: bool,
+    /// Replay each block's recorded GPU work (a CUDA graph) instead of launching it piece by piece.
+    #[serde(default = "default_true")]
+    pub cuda_graphs: bool,
     /// `"hushwire"` (Amazon Voice Focus) or `"rnnoise"`.
     #[serde(default = "default_denoise_method")]
     pub input_denoise_method: String,
@@ -68,6 +74,25 @@ pub struct Settings {
     pub monitor_gain_db: f32,
     pub noise_gate_db: f32,
     pub pitch: f32,
+    /// Hz added to the shifted pitch of voiced frames (0 = off).
+    #[serde(default)]
+    pub pitch_offset_hz: f32,
+    /// Output pitch above which only `pitch_ceiling_keep` (0-1) of the rise is kept (0 = no ceiling).
+    #[serde(default)]
+    pub pitch_ceiling_hz: f32,
+    #[serde(default = "default_ceiling_keep")]
+    pub pitch_ceiling_keep: f32,
+    /// How much of what is said is drawn from the voice's own audio (its index), 0-1; 0 is off.
+    #[serde(default)]
+    pub index_rate: f32,
+}
+
+fn default_ceiling_keep() -> f32 {
+    0.25
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_denoise_method() -> String {
@@ -91,6 +116,35 @@ pub struct Model {
     /// Voices with the same value can be merged together; None: this one cannot be merged.
     #[serde(default)]
     pub merge_family: Option<String>,
+    /// The voice's file carries an index, for the Index slider.
+    #[serde(default)]
+    pub has_index: bool,
+    /// The voice this model is a checkpoint of (see `State::voices`); empty from an older engine.
+    #[serde(default)]
+    pub voice: String,
+    /// The training step in its name (`Kira-1000s`: 1000).
+    #[serde(default)]
+    pub step: Option<u64>,
+}
+
+/// A voice and its checkpoints, which share its settings.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Voice {
+    pub name: String,
+    /// Model names, oldest step first.
+    pub checkpoints: Vec<String>,
+    /// The checkpoint picking this voice loads: the one picked last, else the newest.
+    pub checkpoint: String,
+}
+
+impl State {
+    /// The voice the selected model belongs to.
+    pub fn selected_voice(&self) -> Option<&Voice> {
+        let selected = &self.settings.model_name;
+        self.voices
+            .iter()
+            .find(|voice| voice.checkpoints.iter().any(|name| name == selected))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

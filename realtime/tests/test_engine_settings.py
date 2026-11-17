@@ -21,6 +21,10 @@ class CoerceSettingTest(unittest.TestCase):
         self.assertEqual(coerce_setting("pitch", 12), 12.0)
         self.assertEqual(coerce_setting("block_time", 0.001), 0.02)
         self.assertEqual(coerce_setting("file_input_volume", -1), 0.0)
+        self.assertEqual(coerce_setting("pitch_offset_hz", 40), 40.0)
+        self.assertEqual(coerce_setting("pitch_offset_hz", -5000), -300.0)
+        self.assertEqual(coerce_setting("pitch_ceiling_hz", -10), 0.0)
+        self.assertEqual(coerce_setting("pitch_ceiling_keep", 2), 1.0)
 
     def test_rejects_wrong_types_and_unknown_keys(self):
         for key, value in (

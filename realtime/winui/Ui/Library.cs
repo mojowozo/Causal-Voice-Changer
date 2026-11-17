@@ -51,14 +51,37 @@ public static class Library
             .All(name.Contains);
     }
 
-    /// Models matching the query, grouped by voice; newest sorts groups and their models by
-    /// date (newest first), otherwise by name and epochs.
+    /// The voice a model belongs to: the engine's (its folder, models/Kira/Kira-1000s.cvc),
+    /// else the first part of its name (an older engine).
+    public static string VoiceOf(Model model) => model.Voice.Length > 0 ? model.Voice : Parse(model.Name).Voice;
+
+    /// A short name for a checkpoint within its voice: "10000 steps" for Kira-10000s, else
+    /// the part of its name after the voice.
+    public static string CheckpointLabel(Model model)
+    {
+        string voice = VoiceOf(model);
+        string rest = model.Name.StartsWith(voice, StringComparison.OrdinalIgnoreCase)
+            ? model.Name[voice.Length..].TrimStart('-', '_', ' ')
+            : model.Name;
+        if (model.Step is long step && rest == $"{step}s") return S.CheckpointStep(step);
+        var parsed = Parse(model.Name);
+        return (parsed.Detail.Length > 0, parsed.Epochs) switch
+        {
+            (true, uint epochs) => S.LibraryCheckpoint(parsed.Detail, epochs),
+            (false, uint epochs) => S.LibraryEpochs(epochs),
+            _ when rest.Length > 0 => rest,
+            _ => model.Name,
+        };
+    }
+
+    /// Models matching the query (by name or voice), grouped by voice; newest sorts groups and
+    /// their models by date (newest first), otherwise by name, and checkpoints by step.
     public static List<(string Voice, List<Model> Models)> Grouped(IEnumerable<Model> models, string query, bool newest)
     {
         var groups = new List<(string Voice, List<Model> Models)>();
-        foreach (var model in models.Where(model => Matches(model.Name, query)))
+        foreach (var model in models.Where(model => Matches($"{VoiceOf(model)} {model.Name}", query)))
         {
-            var voice = Parse(model.Name).Voice;
+            var voice = VoiceOf(model);
             int at = groups.FindIndex(group => string.Equals(group.Voice, voice, StringComparison.OrdinalIgnoreCase));
             if (at >= 0) groups[at].Models.Add(model);
             else groups.Add((voice, [model]));
@@ -67,7 +90,9 @@ public static class Library
         var sorted = groups.Select(group => (group.Voice, newest
             ? group.Models.OrderByDescending(model => model.Modified).ToList()
             : group.Models
-                .OrderBy(model => Parse(model.Name).Detail.ToLowerInvariant(), StringComparer.Ordinal)
+                .OrderBy(model => model.Step is null)
+                .ThenBy(model => model.Step)
+                .ThenBy(model => Parse(model.Name).Detail.ToLowerInvariant(), StringComparer.Ordinal)
                 .ThenBy(model => Parse(model.Name).Epochs)
                 .ToList()));
         return newest

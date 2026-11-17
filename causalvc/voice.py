@@ -9,6 +9,8 @@ A voice is shared as one file, NAME-10000s.cvc: a zip holding
     encoder.pt, pitch.pt        optional: only for a voice built on its own content encoder or
                                 pitch tracker instead of the shared ones (voice.json then
                                 names them: "encoder": "encoder.pt")
+    index.pt                    optional: content frames of the voice's own audio, for the
+                                Index slider (see causalvc.index)
 
 The realtime app uses the file as it is: its voices folder holds one .cvc per
 voice, loaded through a cache outside the project (cached()). Older installs
@@ -48,6 +50,8 @@ CVC_DECODER = "decoder.pt"
 CVC_SETTINGS = "realtime_settings.json"
 #: A voice's own encoder or pitch tracker, carried only when it doesn't use the shared one.
 CVC_PARTS = {"encoder": "encoder.pt", "pitch": "pitch.pt"}
+#: The voice's index (causalvc.index): its own content frames. Not part of what makes voices mergeable.
+CVC_INDEX = "index.pt"
 #: Far above any real decoder (tens of MB); a bigger member is not a voice.
 CVC_MAX_MEMBER_BYTES = 2_000_000_000
 
@@ -99,7 +103,8 @@ def is_cvc(path) -> bool:
 
 
 def load(description) -> dict:
-    """A voice (.cvc file or description file) -> {"decoder", "pitch", "encoder", "speaker", "runtime"} with real paths.
+    """A voice (.cvc file or description file) -> {"decoder", "pitch", "encoder", "speaker", "runtime", "index"}
+    with real paths ("encoder" and "index" are None when the voice has none of its own).
 
     A .cvc is unpacked once into a cache folder. Relative paths are looked for
     beside the description first, then under the project folder the file names
@@ -114,6 +119,7 @@ def load(description) -> dict:
         "encoder": str(existing(spec.get("encoder"), *bases)) if existing(spec.get("encoder"), *bases) else None,
         "speaker": spec["speaker"],
         "runtime": spec.get("runtime"),
+        "index": str(existing(spec.get("index"), *bases)) if existing(spec.get("index"), *bases) else None,
     }
 
 
@@ -160,10 +166,11 @@ def export(decoder, speaker: str, folder, name: str | None = None) -> Path:
 
 
 def write_cvc(target, name: str, speaker: str, decoder_bytes: bytes, settings: bytes | None = None,
-              runtime: str | None = None, parts: dict | None = None) -> Path:
+              runtime: str | None = None, parts: dict | None = None, index: bytes | None = None) -> Path:
     """Write a .cvc file atomically (a half-written file never has the final name).
 
-    `parts` maps "encoder"/"pitch" to a voice's own network file, for one that doesn't use the shared ones."""
+    `parts` maps "encoder"/"pitch" to a voice's own network file, for one that doesn't use the shared ones;
+    `index` is the voice's index.pt (causalvc.index)."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     meta = {"format": CVC_FORMAT, "version": CVC_VERSION, "name": name, "decoder": CVC_DECODER, "speaker": speaker}
@@ -181,18 +188,20 @@ def write_cvc(target, name: str, speaker: str, decoder_bytes: bytes, settings: b
             archive.writestr(CVC_SETTINGS, settings, zipfile.ZIP_DEFLATED)
         for key, path in parts.items():
             archive.write(path, CVC_PARTS[key], zipfile.ZIP_STORED)
+        if index is not None:
+            archive.writestr(CVC_INDEX, index, zipfile.ZIP_STORED)
     partial.replace(target)
     return target
 
 
-def export_cvc(decoder, speaker: str, target, name: str | None = None) -> Path:
-    """Write a .cvc voice from a decoder checkpoint; returns its path."""
+def export_cvc(decoder, speaker: str, target, name: str | None = None, index: bytes | None = None) -> Path:
+    """Write a .cvc voice from a decoder checkpoint (with `index`, its index.pt); returns its path."""
     import torch
 
     target = Path(target)
     buffer = io.BytesIO()
     torch.save(slim_decoder(decoder, speaker), buffer)
-    return write_cvc(target, name or voice_name(target), speaker, buffer.getvalue())
+    return write_cvc(target, name or voice_name(target), speaker, buffer.getvalue(), index=index)
 
 
 def folder_to_cvc(path, target, settings: bool = True, name: str | None = None) -> Path:
@@ -211,6 +220,7 @@ def folder_to_cvc(path, target, settings: bool = True, name: str | None = None) 
         extra.read_bytes() if settings and extra.is_file() else None,
         spec.get("runtime"),
         own_parts(spec, bases, decoder),
+        index.read_bytes() if (index := existing(spec.get("index"), *bases)) else None,
     )
 
 
@@ -308,7 +318,7 @@ def unpack(path, folder, name: str | None = None) -> Path:
     staging.mkdir(parents=True)
     try:
         with zipfile.ZipFile(path) as archive:
-            for member in (CVC_DECODER, CVC_SETTINGS, *CVC_PARTS.values()):
+            for member in (CVC_DECODER, CVC_SETTINGS, *CVC_PARTS.values(), CVC_INDEX):
                 try:
                     info = archive.getinfo(member)
                 except KeyError:
@@ -323,6 +333,8 @@ def unpack(path, folder, name: str | None = None) -> Path:
                 description[key] = member
         if meta.get("runtime"):
             description["runtime"] = meta["runtime"]
+        if (staging / CVC_INDEX).is_file():
+            description["index"] = CVC_INDEX
         (staging / f"{name}.causalvc.json").write_text(json.dumps(description, indent=1), encoding="utf-8")
         os.rename(staging, folder)
     except BaseException:
@@ -374,19 +386,28 @@ def settings_in(path) -> bytes | None:
 
 def copy_with_settings(path, target, settings: bytes | None) -> Path:
     """Copy a .cvc to `target` with `settings` as its realtime_settings.json (none: without one)."""
+    return _copy_replacing(path, target, CVC_SETTINGS, settings, zipfile.ZIP_DEFLATED)
+
+
+def replace_member(path, member: str, data: bytes | None) -> Path:
+    """Give the .cvc at `path` a new `member` (None: remove it), in place and atomically."""
+    return _copy_replacing(path, path, member, data, zipfile.ZIP_STORED)
+
+
+def _copy_replacing(path, target, member: str, data: bytes | None, compression: int) -> Path:
     path, target = Path(path), Path(target)
     read_cvc(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_name(target.name + ".part")
+    partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
     try:
         with zipfile.ZipFile(path) as source, zipfile.ZipFile(partial, "w") as archive:
             for info in source.infolist():
-                if info.filename == CVC_SETTINGS:
+                if info.filename == member:
                     continue
-                with source.open(info) as data, archive.open(info, "w") as out:
-                    shutil.copyfileobj(data, out, 1 << 20)
-            if settings is not None:
-                archive.writestr(CVC_SETTINGS, settings, zipfile.ZIP_DEFLATED)
+                with source.open(info) as old, archive.open(info, "w") as out:
+                    shutil.copyfileobj(old, out, 1 << 20)
+            if data is not None:
+                archive.writestr(member, data, compression)
         partial.replace(target)
     except BaseException:
         partial.unlink(missing_ok=True)

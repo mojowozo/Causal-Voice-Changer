@@ -84,22 +84,32 @@ translate by `code`.
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `model_name` | string | restart; must be a voice name from state. Its per-voice settings are loaded with it |
+| `model_name` | string | restart; must be a model (checkpoint) name from state. Its voice's settings are loaded with it. Another checkpoint of the same voice (state `voices`) keeps the voice's settings and, while running, does not restart: only the decoder is loaded and swapped in (status `loading_model` with `model`, then `checkpoint_switched` with `name`; a failed load keeps the old checkpoint and reports `model_load_failed`). Picking a checkpoint other than the voice's newest is remembered as the voice's `checkpoint` |
 | `gpu` | string | restart; `"auto"` or a GPU `id` from state |
 | `input_source` | `"microphone"` \| `"file"` | restart |
 | `input_device` / `output_device` | string | restart; a device `label` from state |
 | `monitor_device` | string \| null | restart; `null` disables the monitor |
 | `block_time` | number (s) | restart; min 0.02 |
 | `asio_buffer` | 0, 32, 64, 96, 128, 192, 256, 512, 1024 or 2048 | restart; the ASIO buffer to ask the driver for, in samples. 0 (default) uses the driver's current size, read at start. PortAudio rounds to a size the driver accepts (state `asio.sizes`) |
+| `cuda_graphs` | bool (default true) | restart: replay each block's recorded GPU work (a CUDA graph), about twice as fast and steadier; the stream then starts from four seconds of recorded silence. Where recording fails the voice converts block by block, and the log says so |
 | `input_denoise` | bool | live: noise reduction on the input, with `input_denoise_method` |
 | `input_denoise_method` | `"hushwire"` (default) or `"rnnoise"` | live: Hushwire (Amazon Voice Focus, adds ~53–55 ms; needs its model, state `hushwire`) or RNNoise (adds 20 ms, state `rnnoise`). A denoiser that can't run leaves the input alone |
 | `loudness_target` | `"voice_chat"` \| `"streaming"` | live (default `"voice_chat"`): the output-level target, -21 or -16 LUFS (see [Output level](#output-level)) |
 | `recording_folder` | string | live |
 | `recording_mode` | `"separate"` \| `"mix"` \| `"stereo"` | live (next recording) |
 | `file_input_volume` | number 0–1 | live |
-| `input_gain_db` / `output_gain_db` / `monitor_gain_db` | number | live, per model |
-| `noise_gate_db` | number | live, per model (−60 = off) |
-| `pitch` | number (semitones) | live, per model |
+| `input_gain_db` / `output_gain_db` / `monitor_gain_db` | number | live, per voice |
+| `noise_gate_db` | number | live, per voice (−60 = off) |
+| `pitch` | number (semitones) | live, per voice |
+| `pitch_offset_hz` | number (Hz, −300 to 300) added to the shifted pitch of voiced frames | live, per voice |
+| `pitch_ceiling_hz` | number (Hz, 0–1000; 0 = none): output pitch above it keeps only `pitch_ceiling_keep` of its rise | live, per voice |
+| `pitch_ceiling_keep` | number 0–1 (default 0.25): share of the rise above the ceiling kept, in semitones | live, per voice |
+| `index_rate` | number 0–1 (default 0 = off): how much of each content frame is drawn from the voice's index; does nothing for a voice without one (`has_index`) | live, per voice |
+
+Per-voice settings are shared by every checkpoint of a voice and saved under the voice's
+name in `configs/voice_settings.json` (with `"checkpoint"`, the picked checkpoint when it is
+not the newest). Entries saved per checkpoint by earlier versions stay in the file; a voice
+without its own entry takes the selected checkpoint's, else its newest checkpoint's that has one.
 
 A block is converted as it arrives and the output is continuous from block to
 block, so there is no crossfade or context setting. Delay is the model's fixed
@@ -117,7 +127,15 @@ Front ends can re-render entirely from the latest state.
   "models": [{"name": "MyVoice-10000s", "model_file": "MyVoice-10000s.cvc",
               "size_bytes": 48000000,       // of the .cvc (an older voice folder: its decoder)
               "modified": 1791067045,       // the file's modification time (Unix seconds)
-              "merge_family": "fbb46583a204"}],  // equal for voices that can be merged together; null: cannot be merged
+              "merge_family": "fbb46583a204",  // equal for voices that can be merged together; null: cannot be merged
+              "has_index": true,            // the file carries an index (index_rate does something)
+              "voice": "MyVoice",           // the voice it is a checkpoint of (see voices)
+              "step": 10000}],              // the training step in its name, or null
+  // Each voice once. A voice's checkpoints are the .cvc files in its folder (models/MyVoice/),
+  // or loose files named MyVoice-<step>s; any other model is a voice with one checkpoint.
+  "voices": [{"name": "MyVoice",
+              "checkpoints": ["MyVoice-1000s", "MyVoice-10000s"],  // by step, then those without one
+              "checkpoint": "MyVoice-10000s"}],  // what picking the voice loads: the picked one, else the newest
   "devices": {
     "inputs":  [{"label": "[JACK] Elgato Wave XLR Mono", "api": "JACK",
                  "name": "Elgato Wave XLR Mono", "channels": [1, 1]}],
@@ -157,7 +175,7 @@ WASAPI converts to the model's 48 kHz when the Windows mixer runs at another rat
 | `error` | `{"code", "message"}`: a problem not tied to a request (e.g. `monitor_failed`, `file_error`) |
 | `log` | `{"text": "…"}`: engine stdout/stderr as it is written |
 
-Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `merging_models`, `model_merged` (`name`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `preparing_inference`,
+Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `merging_models`, `model_merged` (`name`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `checkpoint_switched` (`name`), `preparing_inference`,
 `starting_audio`, `conversion_started`, `passthrough_started`,
 `conversion_stopped`, `passthrough_stopped`, `settings_changed`,
 `stream_stopped` (the audio device went away), `file_selected` (`name`),

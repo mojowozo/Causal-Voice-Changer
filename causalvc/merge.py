@@ -95,6 +95,43 @@ def _decoder(path: Path) -> tuple[dict, dict]:
     return meta, checkpoint
 
 
+def merged_index(voices) -> bytes | None:
+    """The index for a merge of `voices` ((path, strength) pairs): each different index among them
+    contributes frames in proportion to its voices' strengths (checkpoints of one voice share theirs,
+    so their strengths add up), as many in all as the largest index has. Voices without an index
+    leave the shares to the others. None when none of them has one."""
+    import torch
+
+    indexes, shares = {}, {}
+    for path, strength in voices:
+        with zipfile.ZipFile(path) as archive:
+            try:
+                info = archive.getinfo(voice_files.CVC_INDEX)
+            except KeyError:
+                continue
+            key = f"{info.CRC:08x}-{info.file_size}"
+            indexes.setdefault(key, archive.read(info))
+            shares[key] = shares.get(key, 0.0) + float(strength)
+    if len(indexes) <= 1:
+        return next(iter(indexes.values()), None)
+    frames = {key: torch.load(io.BytesIO(data), map_location="cpu")["frames"] for key, data in indexes.items()}
+    size, total = max(len(f) for f in frames.values()), sum(shares.values())
+    # Whole frames per index that add up to `size`: the largest remainders get the leftovers.
+    exact = {key: size * shares[key] / total for key in frames}
+    counts = {key: int(value) for key, value in exact.items()}
+    for key in sorted(exact, key=lambda k: exact[k] - counts[k], reverse=True)[: size - sum(counts.values())]:
+        counts[key] += 1
+    picked = []
+    for key, f in frames.items():
+        count = min(len(f), max(1, counts[key]))
+        # An even random subset: index frames are k-means centres, so a subset still spans the voice, more coarsely.
+        order = torch.randperm(len(f), generator=torch.Generator().manual_seed(0))[:count]
+        picked.append(f[order.sort().values])
+    buffer = io.BytesIO()
+    torch.save({"frames": torch.cat(picked)}, buffer)
+    return buffer.getvalue()
+
+
 def merge(voices: list[tuple[Path, float]], target, name: str, settings: bytes | None = None) -> Path:
     """Write the weighted average of ``voices`` ((path, strength) pairs; the strengths are
     shares, so 60 and 40 is the same as 3 and 2) to ``target`` as a .cvc named ``name``.
@@ -137,7 +174,8 @@ def merge(voices: list[tuple[Path, float]], target, name: str, settings: bytes |
                 parts[key] = staged / member
                 parts[key].write_bytes(archive.read(member))
     try:
-        return voice_files.write_cvc(target, name, name, buffer.getvalue(), settings, first_meta.get("runtime"), parts)
+        return voice_files.write_cvc(target, name, name, buffer.getvalue(), settings, first_meta.get("runtime"), parts,
+                                     merged_index(voices))
     finally:
         for path in parts.values():
             path.unlink(missing_ok=True)

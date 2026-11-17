@@ -15,6 +15,14 @@ public sealed class ModelPage : PageBase
     readonly SettingRow _modelRow;
     readonly ComboBox _model;
     readonly Action<IReadOnlyList<string>, int> _setModels;
+    // The selected voice's checkpoints, shown only when it has more than one.
+    readonly SettingsSection _models = new(S.SectionModels);
+    readonly SettingRow _checkpointRow;
+    readonly Action<IReadOnlyList<string>, int> _setCheckpoints;
+    readonly UIElement _modelBar;
+    List<string> _voiceCheckpoints = [];
+    List<string> _checkpointNames = [];
+    bool? _checkpointShown;
     readonly TextBlock _modelsEmpty = Build.Text(S.ModelsEmpty);
     readonly TextBlock _files = Build.Caption("");
     readonly List<SliderSetting> _sliders = [];
@@ -23,19 +31,45 @@ public sealed class ModelPage : PageBase
     readonly Button _apply;
     readonly Action<IReadOnlyList<string>, int> _setTarget;
     List<string> _modelNames = [];
+    // The Voice section: the pitch, and behind a disclosure row the pitch offset and ceiling, which few voices need.
+    readonly SettingsSection _voice = new(S.SectionVoice);
+    readonly SettingRow _pitchRow;
+    readonly SettingRow _advancedRow;
+    readonly SettingRow _offsetRow;
+    readonly SettingRow _ceilingRow;
+    readonly SettingRow _keepRow;
+    // The Index slider, or for a voice without an index a note saying so.
+    readonly SettingRow _indexRow;
+    readonly SettingRow _noIndexRow = new(S.IndexRate, S.IndexRateNone, Build.Text(S.Off));
+    bool _hasIndex;
+    readonly Button _advancedToggle;
+    bool _advancedOpen;
 
     public ModelPage(IHost host) : base(host)
     {
-        _model = Choice(index => Host.SendSetting("model_name", _modelNames[index]), out _setModels);
+        // The selector lists each voice once; picking one loads its picked (else newest) checkpoint.
+        _model = Choice(index => Host.SendSetting("model_name", _voiceCheckpoints[index]), out _setModels);
         _modelRow = new SettingRow(S.Model, control: _model);
-        var models = new SettingsSection(S.SectionModels)
-            .Add(_modelRow)
-            .Add(Build.Bar(
-                _files,
-                Build.Button(S.PageLibrary, (_, _) => Host.ShowPage(PageKind.Library), "\uE8F1"),
-                Build.Button(S.Reload, (_, _) => Host.Send("reload_models"), "\uE72C")));
+        var checkpoint = Choice(index => Host.SendSetting("model_name", _checkpointNames[index]), out _setCheckpoints);
+        _checkpointRow = new SettingRow(S.Checkpoint, S.CheckpointDescription, checkpoint);
+        _modelBar = Build.Bar(
+            _files,
+            Build.Button(S.PageLibrary, (_, _) => Host.ShowPage(PageKind.Library), "\uE8F1"),
+            Build.Button(S.Reload, (_, _) => Host.Send("reload_models"), "\uE72C"));
+        RenderModels(false);
 
-        var voice = new SettingsSection(S.SectionVoice).Add(Slider(S.Pitch, Num.Pitch));
+        _pitchRow = Slider(S.Pitch, Num.Pitch);
+        _offsetRow = Slider(S.PitchOffset, Num.PitchOffset);
+        _ceilingRow = Slider(S.PitchCeiling, Num.PitchCeiling);
+        _keepRow = Slider(S.PitchCeilingKeep, Num.PitchCeilingKeep);
+        _indexRow = Slider(S.IndexRate, Num.IndexRate);
+        _advancedToggle = Build.IconButton("\uE70D", S.PitchAdvancedShow, (_, _) =>
+        {
+            _advancedOpen = !_advancedOpen;
+            RenderVoice();
+        });
+        _advancedRow = new SettingRow(S.PitchAdvanced, S.PitchAdvancedDetail(NumInfo.Hertz(0), NumInfo.Ceiling(0)), _advancedToggle);
+        RenderVoice();
 
         _apply = Build.Button(S.OutputLevelApply, (_, _) => Host.ApplyLoudness(), style: "AccentButtonStyle");
         var target = Choice(
@@ -53,10 +87,29 @@ public sealed class ModelPage : PageBase
             .Add(Slider(S.MonitorGain, Num.MonitorGain))
             .Add(Slider(S.NoiseGate, Num.NoiseGate));
 
-        Column.Children.Add(models);
-        Column.Children.Add(voice);
+        Column.Children.Add(_models);
+        Column.Children.Add(_voice);
         Column.Children.Add(levels);
         Column.Children.Add(ResetRow(S.ResetModelSettings, "general"));
+    }
+
+    void RenderModels(bool showCheckpoint)
+    {
+        if (_checkpointShown == showCheckpoint) return;
+        _checkpointShown = showCheckpoint;
+        _models.Clear();
+        _models.Add(_modelRow);
+        if (showCheckpoint) _models.Add(_checkpointRow);
+        _models.Add(_modelBar);
+    }
+
+    void RenderVoice()
+    {
+        _voice.Clear();
+        _voice.Add(_pitchRow).Add(_hasIndex ? _indexRow : _noIndexRow).Add(_advancedRow);
+        if (_advancedOpen) _voice.Add(_offsetRow).Add(_ceilingRow).Add(_keepRow);
+        ((FontIcon)_advancedToggle.Content).Glyph = _advancedOpen ? "\uE70E" : "\uE70D";  // chevron up / down
+        ToolTipService.SetToolTip(_advancedToggle, _advancedOpen ? S.PitchAdvancedHide : S.PitchAdvancedShow);
     }
 
     SettingRow Slider(string title, Num num)
@@ -69,14 +122,39 @@ public sealed class ModelPage : PageBase
     public override void Update(EngineState state)
     {
         var settings = state.Settings;
-        _modelNames = state.Models.Select(model => model.Name).ToList();
-        bool empty = _modelNames.Count == 0;
+        // An older engine sends no voices: every model is a voice of its own.
+        var voices = state.Voices.Count > 0 || state.Models.Count == 0
+            ? state.Voices
+            : state.Models.Select(model => new Voice(model.Name, [model.Name], model.Name)).ToList();
+        var selectedVoice = voices.FirstOrDefault(voice => voice.Checkpoints.Contains(settings.ModelName));
+        _modelNames = voices.Select(voice => voice.Name).ToList();
+        _voiceCheckpoints = voices.Select(voice => voice.Checkpoint).ToList();
+        bool empty = state.Models.Count == 0;
         _modelRow.Control = empty ? _modelsEmpty : _model;
-        _setModels(_modelNames, _modelNames.IndexOf(settings.ModelName));
+        _setModels(_modelNames, selectedVoice is null ? -1 : _modelNames.IndexOf(selectedVoice.Name));
+        _checkpointNames = selectedVoice?.Checkpoints ?? [];
+        var checkpoints = _checkpointNames
+            .Select(name => state.Models.FirstOrDefault(model => model.Name == name))
+            .ToList();
+        string? newest = checkpoints.Where(model => model?.Step is not null).MaxBy(model => model!.Step)?.Name;
+        _setCheckpoints(
+            _checkpointNames.Zip(checkpoints, (name, model) =>
+            {
+                string label = model is null ? name : Library.CheckpointLabel(model);
+                return name == newest ? S.CheckpointNewest(label) : label;
+            }).ToList(),
+            _checkpointNames.IndexOf(settings.ModelName));
+        RenderModels(_checkpointNames.Count > 1);
         var selected = state.Models.FirstOrDefault(model => model.Name == settings.ModelName);
         _files.Text = selected is null ? "" : S.ModelFiles(selected.ModelFile);
+        if ((selected?.HasIndex ?? false) != _hasIndex)
+        {
+            _hasIndex = selected?.HasIndex ?? false;
+            RenderVoice();
+        }
 
         foreach (var slider in _sliders) slider.Update(slider.Num.Get(settings));
+        _advancedRow.Description = S.PitchAdvancedDetail(NumInfo.Hertz(settings.PitchOffsetHz), NumInfo.Ceiling(settings.PitchCeilingHz));
         _setTarget([S.LoudnessTargetVoiceChat, S.LoudnessTargetStreaming], Array.IndexOf(LoudnessTargets, settings.LoudnessTarget));
         UpdateMeters(state, Host.Meters);
     }

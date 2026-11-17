@@ -66,6 +66,8 @@ public sealed class EngineState
     public string Function = "vc";
     public Settings Settings = new();
     public List<Model> Models = [];
+    /// Each voice once, with its checkpoints (models); empty from an older engine.
+    public List<Voice> Voices = [];
     public List<string> Inputs = [];
     public List<string> Outputs = [];
     public List<Gpu> Gpus = [];
@@ -92,6 +94,7 @@ public sealed class EngineState
             Function = json.Str("function", "vc"),
             Settings = Settings.From(json["settings"] as JsonObject ?? new JsonObject()),
             Models = (json["models"] as JsonArray ?? []).OfType<JsonObject>().Select(Model.From).ToList(),
+            Voices = (json["voices"] as JsonArray ?? []).OfType<JsonObject>().Select(Voice.From).ToList(),
             Inputs = Labels(devices?["inputs"]),
             Outputs = Labels(devices?["outputs"]),
             Gpus = (json["gpus"] as JsonArray ?? []).OfType<JsonObject>()
@@ -108,6 +111,9 @@ public sealed class EngineState
             Asio = json["asio"] is JsonObject asio ? AsioInfo.From(asio) : null,
         };
     }
+
+    /// The voice the selected model belongs to.
+    public Voice? SelectedVoice => Voices.FirstOrDefault(voice => voice.Checkpoints.Contains(Settings.ModelName));
 
     static List<string> Labels(JsonNode? list) =>
         (list as JsonArray ?? []).OfType<JsonObject>().Select(device => device.Str("label")).ToList();
@@ -144,6 +150,8 @@ public sealed class Settings
     public int AsioBuffer;
     public bool InputDenoise;
     public string InputDenoiseMethod = "hushwire";
+    /// Replay each block's recorded GPU work (a CUDA graph) instead of launching it piece by piece.
+    public bool CudaGraphs = true;
     public string LoudnessTarget = "voice_chat";
     public string RecordingFolder = "";
     public string RecordingMode = "separate";
@@ -153,6 +161,10 @@ public sealed class Settings
     public double MonitorGainDb;
     public double NoiseGateDb = -60;
     public double Pitch;
+    public double PitchOffsetHz;
+    public double PitchCeilingHz;
+    public double PitchCeilingKeep = 0.25;
+    public double IndexRate;
 
     public static Settings From(JsonObject json) => new()
     {
@@ -166,6 +178,7 @@ public sealed class Settings
         AsioBuffer = json.IntOrNull("asio_buffer") ?? 0,
         InputDenoise = json.Bool("input_denoise"),
         InputDenoiseMethod = json.Str("input_denoise_method", "hushwire"),
+        CudaGraphs = json.BoolOr("cuda_graphs", true),
         LoudnessTarget = json.Str("loudness_target", "voice_chat"),
         RecordingFolder = json.Str("recording_folder"),
         RecordingMode = json.Str("recording_mode", "separate"),
@@ -175,15 +188,34 @@ public sealed class Settings
         MonitorGainDb = json.DoubleOrNull("monitor_gain_db") ?? 0,
         NoiseGateDb = json.DoubleOrNull("noise_gate_db") ?? -60,
         Pitch = json.DoubleOrNull("pitch") ?? 0,
+        PitchOffsetHz = json.DoubleOrNull("pitch_offset_hz") ?? 0,
+        PitchCeilingHz = json.DoubleOrNull("pitch_ceiling_hz") ?? 0,
+        PitchCeilingKeep = json.DoubleOrNull("pitch_ceiling_keep") ?? 0.25,
+        IndexRate = json.DoubleOrNull("index_rate") ?? 0,
     };
 }
 
 /// MergeFamily: voices with the same value can be merged together; null when this one cannot be.
-public sealed record Model(string Name, string ModelFile, long SizeBytes, long Modified, string? MergeFamily = null)
+/// Voice: the voice this model is a checkpoint of (empty from an older engine); Step: the
+/// training step in its name (Kira-1000s: 1000), or null. HasIndex: the voice's file carries an
+/// index, for the Index slider.
+public sealed record Model(string Name, string ModelFile, long SizeBytes, long Modified, string? MergeFamily = null,
+    string Voice = "", long? Step = null, bool HasIndex = false)
 {
     public static Model From(JsonObject json) => new(
         json.Str("name"), json.Str("model_file"), json.LongOrNull("size_bytes") ?? 0, json.LongOrNull("modified") ?? 0,
-        json.StrOrNull("merge_family"));
+        json.StrOrNull("merge_family"), json.Str("voice"), json.LongOrNull("step"), json.Bool("has_index"));
+}
+
+/// A voice and its checkpoints (model names, oldest step first), which share its settings;
+/// Checkpoint is the one picking the voice loads: the one picked last, else the newest.
+public sealed record Voice(string Name, List<string> Checkpoints, string Checkpoint)
+{
+    public static Voice From(JsonObject json) => new(
+        json.Str("name"),
+        (json["checkpoints"] as JsonArray ?? []).OfType<JsonValue>()
+            .Select(value => value.TryGetValue(out string? name) ? name : null).OfType<string>().ToList(),
+        json.Str("checkpoint"));
 }
 
 public sealed record Gpu(string Id, string? Label);
@@ -227,6 +259,9 @@ static class JsonAccess
 
     public static bool Bool(this JsonObject json, string key) =>
         json[key] is JsonValue value && value.TryGetValue(out bool flag) && flag;
+
+    public static bool BoolOr(this JsonObject json, string key, bool fallback) =>
+        json[key] is JsonValue value && value.TryGetValue(out bool flag) ? flag : fallback;
 
     public static double? DoubleOrNull(this JsonObject json, string key) =>
         json[key] is JsonValue value && value.TryGetValue(out double number) ? number : null;
