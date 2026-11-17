@@ -194,15 +194,21 @@ public sealed class EngineConnection : IAsyncDisposable
             "Could not find the project folder (engine\\server.py). Set CAUSALVC_REALTIME_DIR.");
         var repository = Path.GetFullPath(Path.Combine(root, ".."));
         // run-realtime.bat keeps the Windows environment in .venv-win (the folder may be shared
-        // with Linux, whose environment is .venv); an environment of the app's own wins.
+        // with Linux, whose environment is .venv). That is the environment the launchers install
+        // and check PyTorch in, so it comes first: an environment of the app's own (realtime\.venv)
+        // is only for a copy of the app outside the repository, and one left behind by an older
+        // setup must not win (it may hold a PyTorch build that can't start on this graphics card).
         string[] candidates =
         [
-            Path.Combine(root, ".venv", "Scripts", "python.exe"),
             Path.Combine(repository, ".venv-win", "Scripts", "python.exe"),
+            Path.Combine(root, ".venv", "Scripts", "python.exe"),
             Path.Combine(repository, ".venv", "Scripts", "python.exe"),
         ];
-        var python = candidates.FirstOrDefault(File.Exists) ?? throw new InvalidOperationException(
-            $"Python environment not found ({candidates[1]}). Run run-realtime.bat once: it installs everything.");
+        // run-realtime.bat names the environment it installed and checked PyTorch in.
+        var launcher = Environment.GetEnvironmentVariable("CAUSALVC_PYTHON");
+        var python = (!string.IsNullOrEmpty(launcher) && File.Exists(launcher) ? launcher : null)
+            ?? candidates.FirstOrDefault(File.Exists) ?? throw new InvalidOperationException(
+            $"Python environment not found ({candidates[0]}). Run run-realtime.bat once: it installs everything.");
 
         var start = new ProcessStartInfo(python)
         {

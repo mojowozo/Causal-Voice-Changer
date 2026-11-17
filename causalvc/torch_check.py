@@ -35,6 +35,16 @@ def is_rocm_failure(text: str) -> bool:
     return "rocm" in text and ("winerror 1114" in text or "dll" in text)
 
 
+def installed_torch() -> str:
+    """The installed PyTorch's version, read without importing it."""
+    from importlib import metadata
+
+    try:
+        return metadata.version("torch")
+    except metadata.PackageNotFoundError:
+        return "none"
+
+
 def main() -> int:
     try:
         import torch  # noqa: F401
@@ -47,6 +57,7 @@ def main() -> int:
             print(rocm_advice(), file=sys.stderr)
         else:
             print(f"PyTorch could not load: {error}", file=sys.stderr)
+        print(f"PyTorch build installed: {installed_torch()} (in {sys.prefix})", file=sys.stderr)
         return 1
     return 0
 

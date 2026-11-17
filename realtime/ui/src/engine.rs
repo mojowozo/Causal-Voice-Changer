@@ -297,9 +297,10 @@ fn spawn_engine(socket: &Path) -> Result<(), String> {
     let root = project_dir().ok_or_else(|| {
         "Could not find the project folder (engine/server.py). Set CAUSALVC_REALTIME_DIR.".to_string()
     })?;
-    // The app shares the Python environment of the repository it lives in (../.venv);
-    // an environment of its own (./.venv) takes precedence when there is one.
-    let python = [root.clone(), root.join("..")]
+    // The app shares the Python environment of the repository it lives in (../.venv), the one
+    // run-training.sh installs; an environment of its own (./.venv) is only for a copy of the
+    // app outside the repository, so one left behind by an older setup can't take over.
+    let python = [root.join(".."), root.clone()]
         .into_iter()
         .map(|dir| dir.join(".venv").join("bin").join("python"))
         .find(|python| python.is_file())

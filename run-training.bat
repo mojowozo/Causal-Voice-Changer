@@ -13,6 +13,8 @@ if errorlevel 1 (
 )
 
 rem The Windows GPU build of PyTorch: "cuda" for NVIDIA, "rocm" for AMD (see scripts\gpu-extra.ps1).
+rem A CAUSALVC_GPU set beforehand (here or in Windows settings) skips detecting the graphics card.
+if defined CAUSALVC_GPU echo Using CAUSALVC_GPU=%CAUSALVC_GPU%, set before this launcher started ^(the graphics card was not checked^).
 if not defined CAUSALVC_GPU (
     for /f "usebackq delims=" %%g in (`powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\gpu-extra.ps1"`) do set "CAUSALVC_GPU=%%g"
 )

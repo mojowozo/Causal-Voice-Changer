@@ -39,6 +39,18 @@ SHUTDOWN_TIMEOUT_SECONDS = 5.0
 AUTH_TIMEOUT_SECONDS = 5.0
 
 
+def runtime_description() -> str:
+    """Which Python and PyTorch build the engine ran with: shown with a start-up error, since
+    the wrong environment (an older PyTorch build) is a common cause."""
+    from importlib import metadata
+
+    try:
+        torch_version = metadata.version("torch")
+    except metadata.PackageNotFoundError:
+        torch_version = "not installed"
+    return f"Python: {sys.executable}\nPyTorch: {torch_version}"
+
+
 class CommandError(Exception):
     def __init__(self, code, message, **details):
         super().__init__(message)
@@ -182,16 +194,18 @@ class EngineServer:
         try:
             self.engine = self.engine_factory(self.emit)
         except BaseException as error:
-            self.init_error = f"{error}\n{traceback.format_exc()}"
+            message = f"{error}\n{traceback.format_exc()}\n{runtime_description()}"
             print(traceback.format_exc())
             try:  # a failure to load AMD's GPU runtime: say what to do above the details
                 from causalvc.torch_check import is_rocm_failure, rocm_advice
 
-                if is_rocm_failure(self.init_error):
-                    self.init_error = f"{rocm_advice()}\n\n{self.init_error}"
+                if is_rocm_failure(message):
+                    message = f"{rocm_advice()}\n\n{message}"
             except ImportError:
                 pass
-            self.emit("fatal", {"code": "init_failed", "message": self.init_error})
+            # set once, complete: clients may read it from another thread at any moment
+            self.init_error = message
+            self.emit("fatal", {"code": "init_failed", "message": message})
             return
         self.emit("ready", self.engine.state())
 
@@ -491,4 +505,12 @@ if __name__ == "__main__":
     os.environ["OMP_NUM_THREADS"] = "4"
     if PROJECT_ROOT not in sys.path:
         sys.path.insert(0, PROJECT_ROOT)
+    # Load PyTorch first, on the main thread. On Windows, AMD's ROCm build can fail to initialise
+    # (error 1114) when other libraries' DLLs are loaded before it (NumPy, sounddevice's ASIO
+    # build) or when it is loaded from a worker thread, as the engine otherwise does. A failure
+    # here is reported by init_engine, which loads it again and explains what to do.
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pass
     main()
