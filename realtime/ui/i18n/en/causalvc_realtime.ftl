@@ -204,7 +204,7 @@ hold-detector-level = Loudness
 hold-detector-voice = Voice detection (experimental)
 hold-detector-level-detail = Silence is anything below -50 dBFS (or the noise gate). Best in quiet rooms.
 hold-detector-voice-detail = RNNoise judges whether you are speaking, so fans and hum don't count as speech. Best in noisy rooms.
-section-noise = Noise reduction
+section-cleanup = Sound cleanup
 input-denoise = Input noise reduction
 input-denoise-detail = Removes background noise like keyboards, fans and traffic from your mic before conversion.
 denoise-method = Noise reduction model
@@ -226,6 +226,7 @@ error-hushwire-unavailable = Hushwire needs the wasmtime package; reinstall the 
 output-denoise = Output noise reduction
 output-denoise-detail = Cleans hiss from the converted voice with spectral gating. Can make the voice slightly duller; leave off unless you hear hiss.
 reset-performance = Reset performance settings
+reset-cleanup = Reset sound cleanup
 
 ## Recording page
 section-recording = Recording

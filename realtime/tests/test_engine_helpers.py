@@ -2,8 +2,9 @@ import io
 import queue
 import unittest
 
+from engine.core import EngineError, RealtimeEngine
 from engine.server import LogWriter
-from engine.settings import EngineSettings, db_to_linear
+from engine.settings import CLEANUP_DEFAULT_KEYS, PERFORMANCE_DEFAULT_KEYS, EngineSettings, db_to_linear
 from tools.audio_fifo import enqueue_latest
 
 
@@ -38,6 +39,18 @@ class SettingsDefaultsTest(unittest.TestCase):
         settings = EngineSettings()
         self.assertGreater(settings.block_time, 0)
         self.assertEqual(round(settings.block_time / 0.02), settings.block_time / 0.02)
+
+    def test_each_reset_button_restores_only_its_own_page(self):
+        engine = RealtimeEngine.__new__(RealtimeEngine)
+        restored = []
+        engine.update_settings = restored.append
+        engine.reset_settings("performance")
+        engine.reset_settings("cleanup")
+        self.assertEqual([set(changes) for changes in restored], [set(PERFORMANCE_DEFAULT_KEYS), set(CLEANUP_DEFAULT_KEYS)])
+        self.assertFalse(set(PERFORMANCE_DEFAULT_KEYS) & set(CLEANUP_DEFAULT_KEYS))
+        self.assertEqual(restored[1]["soften_treble"], EngineSettings().soften_treble)
+        with self.assertRaises(EngineError):
+            engine.reset_settings("audio")
 
 
 class LogWriterTest(unittest.TestCase):

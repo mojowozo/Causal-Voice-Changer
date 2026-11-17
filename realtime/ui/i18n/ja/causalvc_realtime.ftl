@@ -204,7 +204,7 @@ hold-detector-level = 音量
 hold-detector-voice = 音声検出（実験的）
 hold-detector-level-detail = -50 dBFS（またはノイズゲート）未満を無音とみなします。静かな部屋向けです。
 hold-detector-voice-detail = RNNoise が発話かどうかを判定するため、ファンやハムノイズを発話とみなしません。騒がしい部屋向けです。
-section-noise = ノイズ低減
+section-cleanup = 音のクリーンアップ
 input-denoise = 入力ノイズの低減
 input-denoise-detail = 変換前にマイクのキーボード音、ファン、車の音などの雑音を除去します。
 denoise-method = ノイズ除去モデル
@@ -226,6 +226,7 @@ error-hushwire-unavailable = Hushwire には wasmtime パッケージが必要�
 output-denoise = 出力ノイズの低減
 output-denoise-detail = 変換後の声のヒスノイズをスペクトルゲートで除去します。声が少しこもることがあるため、ヒスが聞こえる場合だけオンにしてください。
 reset-performance = パフォーマンス設定をリセット
+reset-cleanup = 音のクリーンアップをリセット
 
 ## Recording page
 section-recording = 録音

@@ -34,6 +34,7 @@ from engine.settings import (
     DEFAULT_RECORDING_FOLDER,
     MODEL_SETTING_KEYS,
     PERFORMANCE_DEFAULT_KEYS,
+    CLEANUP_DEFAULT_KEYS,
     PITCH_MAP_KEYS,
     PROJECT_ROOT,
     RESETTABLE_MODEL_SETTING_KEYS,
@@ -685,8 +686,10 @@ class RealtimeEngine:
             keys = RESETTABLE_MODEL_SETTING_KEYS
         elif group == "performance":
             keys = PERFORMANCE_DEFAULT_KEYS
+        elif group == "cleanup":
+            keys = CLEANUP_DEFAULT_KEYS
         else:
-            raise EngineError("bad_request", "group must be general or performance")
+            raise EngineError("bad_request", "group must be general, performance or cleanup")
         self.update_settings({key: getattr(defaults, key) for key in keys})
         if group == "general":
             self.flush_model_settings_save(force=True)

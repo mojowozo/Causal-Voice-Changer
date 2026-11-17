@@ -136,11 +136,14 @@ class EngineSettings:
 
 
 SETTING_TYPES = {field.name: field.type for field in fields(EngineSettings)}
+# What each page's Reset button restores: the Performance page, and the Audio page's sound cleanup.
 PERFORMANCE_DEFAULT_KEYS = (
     "block_time",
+    "cuda_graphs",
+)
+CLEANUP_DEFAULT_KEYS = (
     "input_denoise",
     "input_denoise_method",
-    "cuda_graphs",
     "soften_treble",
 )
 

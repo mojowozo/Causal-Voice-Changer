@@ -197,7 +197,7 @@ static class S
     public const string GpuAutomatic = "Automatic (recommended)";
     public const string SoftenTreble = "Soften sudden treble";
     public const string SoftenTrebleDetail = "Smooths the brief click some voices make when their treble switches on mid-word, as when an “m” opens into an “o”. Acts only on those moments (about 3% of speech). Adds 5 ms of delay.";
-    public const string SectionNoise = "Noise reduction";
+    public const string SectionCleanup = "Sound cleanup";
     public const string InputDenoise = "Input noise reduction";
     public const string InputDenoiseDetail = "Removes background noise like keyboards, fans and traffic from your mic before conversion.";
     public const string DenoiseMethod = "Noise reduction model";
@@ -216,6 +216,7 @@ static class S
     // Windows: RNNoise comes with the pyrnnoise package, so it is only missing after a broken install.
     public const string InputDenoiseMissing = "Removes background noise from your mic before conversion. RNNoise is not installed, so this has no effect; run run-realtime.bat again to reinstall it.";
     public const string ResetPerformance = "Reset performance settings";
+    public const string ResetCleanup = "Reset sound cleanup";
 
     // Recording page
     public const string SectionRecording = "Recording";

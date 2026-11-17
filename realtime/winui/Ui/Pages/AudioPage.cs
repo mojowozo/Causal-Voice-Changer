@@ -8,12 +8,13 @@ using Windows.Storage.Pickers;
 
 namespace CausalVC.Realtime.Ui.Pages;
 
-/// Input source, devices and file playback (pages.rs: audio_page).
+/// Input source, devices, file playback and sound cleanup (pages.rs: audio_page).
 public sealed class AudioPage : PageBase
 {
     public static readonly string[] InputSources = ["microphone", "file"];
     /// engine/settings.py ASIO_BUFFER_SIZES; 0 keeps the driver's own setting.
     public static readonly int[] AsioBuffers = [0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048];
+    public static readonly string[] DenoiseMethods = ["hushwire", "rnnoise"];
 
     readonly SettingsSection _input = new(S.SectionInput);
     readonly SettingRow _sourceRow;
@@ -36,6 +37,12 @@ public sealed class AudioPage : PageBase
     readonly Action<IReadOnlyList<string>, int> _setAsioBuffer;
     readonly TextBlock _asioInfo = Build.Caption("");
     readonly Button _asioPanel;
+    readonly ToggleSwitch _denoise = new() { OnContent = "", OffContent = "", MinWidth = 0 };
+    readonly ToggleSwitch _treble = new() { OnContent = "", OffContent = "", MinWidth = 0 };
+    readonly SettingRow _methodRow;
+    readonly Action<IReadOnlyList<string>, int> _setMethod;
+    readonly Button _download;
+    bool _updatingCleanup;
     List<int> _asioBuffers = [];
     List<string> _inputs = [];
     List<string> _outputs = [];
@@ -91,6 +98,25 @@ public sealed class AudioPage : PageBase
         Column.Children.Add(output);
         Column.Children.Add(_asio);
         Column.Children.Add(Build.Bar(_rate, Build.Button(S.ReloadDevices, (_, _) => Host.Send("reload_devices"), "\uE72C")));
+
+        // Sound cleanup: noise reduction on the mic, treble softening on the voice.
+        _denoise.Toggled += (_, _) =>
+        {
+            if (!_updatingCleanup) Host.SendSetting("input_denoise", _denoise.IsOn);
+        };
+        _treble.Toggled += (_, _) =>
+        {
+            if (!_updatingCleanup) Host.SendSetting("soften_treble", _treble.IsOn);
+        };
+        var method = Choice(index => Host.SendSetting("input_denoise_method", DenoiseMethods[index]), out _setMethod);
+        method.MinWidth = 220;
+        _download = Build.Button(S.DenoiseHushwireDownload, async (_, _) => await ConfirmHushwireDownload(), "", "AccentButtonStyle");
+        _methodRow = new SettingRow(S.DenoiseMethod, S.DenoiseHushwireReady, Build.Row(_download, method));
+        Column.Children.Add(new SettingsSection(S.SectionCleanup)
+            .Add(new SettingRow(S.InputDenoise, S.InputDenoiseDetail, _denoise))
+            .Add(_methodRow)
+            .Add(new SettingRow(S.SoftenTreble, S.SoftenTrebleDetail, _treble)));
+        Column.Children.Add(ResetRow(S.ResetCleanup, "cleanup"));
     }
 
     public override void Update(EngineState state)
@@ -134,8 +160,47 @@ public sealed class AudioPage : PageBase
             settings.MonitorDevice is null ? 0 : monitor >= 0 ? monitor + 1 : -1);
 
         UpdateAsio(state);
+        UpdateCleanup(state);
         _rate.Text = (state.SampleRate is int rate ? S.SampleRateValue(rate) : S.SampleRateIdle) + "\n" + S.DeviceHint;
         UpdateMeters(state, Host.Meters);
+    }
+
+    void UpdateCleanup(EngineState state)
+    {
+        var settings = state.Settings;
+        _setMethod([S.DenoiseMethodHushwire, S.DenoiseMethodRnnoise], Array.IndexOf(DenoiseMethods, settings.InputDenoiseMethod));
+        var (description, download) = (settings.InputDenoiseMethod, state.Hushwire) switch
+        {
+            ("rnnoise", _) when state.RnNoise => (S.DenoiseRnnoiseReady, false),
+            ("rnnoise", _) => (S.InputDenoiseMissing, false),
+            (_, "ready") => (S.DenoiseHushwireReady, false),
+            (_, "downloading") => (S.DenoiseHushwireDownloading, false),
+            (_, "failed") => (S.DenoiseHushwireFailed, true),
+            (_, "unavailable") => (S.DenoiseHushwireUnavailable, false),
+            _ => (S.DenoiseHushwireNeedsDownload, true),
+        };
+        _methodRow.Description = description;
+        _download.Visibility = download ? Visibility.Visible : Visibility.Collapsed;
+        _updatingCleanup = true;
+        _denoise.IsOn = settings.InputDenoise;
+        _treble.IsOn = settings.SoftenTreble;
+        _updatingCleanup = false;
+    }
+
+    /// Hushwire's model is Amazon's: nothing downloads until the user accepts this notice.
+    async Task ConfirmHushwireDownload()
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Host.XamlRoot,
+            Title = S.HushwireNoticeTitle,
+            Content = Build.Text(S.HushwireNoticeBody),
+            PrimaryButtonText = S.HushwireNoticeAccept,
+            CloseButtonText = S.Cancel,
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            Host.Send("download_hushwire");
     }
 
     void UpdateAsio(EngineState state)

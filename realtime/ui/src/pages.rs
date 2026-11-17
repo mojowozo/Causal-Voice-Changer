@@ -529,7 +529,32 @@ fn audio_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
             .spacing(space.space_s)
             .align_y(Alignment::Center)
             .into(),
+        cleanup_section(app, state),
+        reset_row(fl!("reset-cleanup"), "cleanup"),
     ])
+}
+
+/// What is done to the sound on its way through: noise reduction on the mic, treble softening on the voice.
+fn cleanup_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
+    let settings_ = &state.settings;
+    settings::section()
+        .title(fl!("section-cleanup"))
+        .add(
+            settings::item::builder(fl!("input-denoise"))
+                .description(fl!("input-denoise-detail"))
+                .toggler(settings_.input_denoise, |value| {
+                    Message::Toggle(Toggle::InputDenoise, value)
+                }),
+        )
+        .add(denoise_method_item(app, state))
+        .add(
+            settings::item::builder(fl!("soften-treble"))
+                .description(fl!("soften-treble-detail"))
+                .toggler(settings_.soften_treble, |value| {
+                    Message::Toggle(Toggle::SoftenTreble, value)
+                }),
+        )
+        .into()
 }
 
 fn file_player<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
@@ -601,24 +626,6 @@ fn performance_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> 
                         Message::Toggle(Toggle::CudaGraphs, value)
                     }),
             )
-            .add(
-                settings::item::builder(fl!("soften-treble"))
-                    .description(fl!("soften-treble-detail"))
-                    .toggler(settings_.soften_treble, |value| {
-                        Message::Toggle(Toggle::SoftenTreble, value)
-                    }),
-            )
-            .into(),
-        settings::section()
-            .title(fl!("section-noise"))
-            .add(
-                settings::item::builder(fl!("input-denoise"))
-                    .description(fl!("input-denoise-detail"))
-                    .toggler(settings_.input_denoise, |value| {
-                        Message::Toggle(Toggle::InputDenoise, value)
-                    }),
-            )
-            .add(denoise_method_item(app, state))
             .into(),
         reset_row(fl!("reset-performance"), "performance"),
     ])
