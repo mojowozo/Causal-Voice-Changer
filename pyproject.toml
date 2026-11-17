@@ -32,6 +32,26 @@ rocm = [
     "rocm-sdk-core==7.2.1; sys_platform == 'win32'",
     "rocm-sdk-libraries-custom==7.2.1; sys_platform == 'win32'",
 ]
+# AMD's newer nightly build (TheRock) for the Radeon RX 6000 series, which the build above does not
+# support: one GPU package per chip, all four included so any RX 6000 works (gfx1030: 6800/6900,
+# gfx1031: 6700/6750, gfx1032: 6600/6650, gfx1034: 6500/6400; about 110 MB each).
+rocm-rdna2 = [
+    "torch[device-gfx1030,device-gfx1031,device-gfx1032,device-gfx1034]>=2.16.0a0; sys_platform == 'win32'",
+    "torchaudio>=2.11.1; sys_platform == 'win32'",
+    # The ROCm runtime and GPU packages torch pins; listed so they are taken from AMD's nightly index too.
+    "rocm[libraries]; sys_platform == 'win32'",
+    "rocm-sdk-core; sys_platform == 'win32'",
+    "rocm-sdk-libraries; sys_platform == 'win32'",
+    "rocm-bootstrap; sys_platform == 'win32'",
+    "amd-torch-device-gfx1030; sys_platform == 'win32'",
+    "amd-torch-device-gfx1031; sys_platform == 'win32'",
+    "amd-torch-device-gfx1032; sys_platform == 'win32'",
+    "amd-torch-device-gfx1034; sys_platform == 'win32'",
+    "rocm-sdk-device-gfx1030; sys_platform == 'win32'",
+    "rocm-sdk-device-gfx1031; sys_platform == 'win32'",
+    "rocm-sdk-device-gfx1032; sys_platform == 'win32'",
+    "rocm-sdk-device-gfx1034; sys_platform == 'win32'",
+]
 bench = [
     "transformers",
     "scipy",
@@ -55,7 +75,7 @@ build-backend = "hatchling.build"
 packages = ["vcbench", "causalvc"]
 
 [tool.uv]
-conflicts = [[{ extra = "cuda" }, { extra = "rocm" }]]
+conflicts = [[{ extra = "cuda" }, { extra = "rocm" }, { extra = "rocm-rdna2" }]]
 
 # On Windows the PyPI build of torch has no GPU support: the CUDA build comes from PyTorch's own
 # index, the ROCm build (and the ROCm runtime packages it pulls in) from AMD's.
@@ -63,13 +83,32 @@ conflicts = [[{ extra = "cuda" }, { extra = "rocm" }]]
 torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32'", extra = "cuda" },
     { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+    { index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" },
 ]
 torchaudio = [
     { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+    { index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" },
 ]
-rocm = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
-rocm-sdk-core = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
+rocm = [
+    { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+    { index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" },
+]
+rocm-sdk-core = [
+    { index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" },
+    { index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" },
+]
 rocm-sdk-libraries-custom = [{ index = "rocm-windows", marker = "sys_platform == 'win32'", extra = "rocm" }]
+# The nightly build's own packages, found only on AMD's nightly index.
+rocm-sdk-libraries = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+rocm-bootstrap = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+amd-torch-device-gfx1030 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+amd-torch-device-gfx1031 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+amd-torch-device-gfx1032 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+amd-torch-device-gfx1034 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+rocm-sdk-device-gfx1030 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+rocm-sdk-device-gfx1031 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+rocm-sdk-device-gfx1032 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
+rocm-sdk-device-gfx1034 = [{ index = "rocm-nightly", marker = "sys_platform == 'win32'", extra = "rocm-rdna2" }]
 
 [[tool.uv.index]]
 name = "pytorch-cuda"
@@ -80,6 +119,12 @@ explicit = true
 name = "rocm-windows"
 url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
 format = "flat"
+explicit = true
+
+# AMD's nightly index (TheRock), for the rocm-rdna2 extra.
+[[tool.uv.index]]
+name = "rocm-nightly"
+url = "https://nightly.repo.amd.com/rocm/whl-next/"
 explicit = true
 
 # pyrnnoise is used only for the RNNoise library it ships (realtime/tools/rnnoise.py loads it

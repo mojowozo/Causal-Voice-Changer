@@ -9,10 +9,59 @@ resolution-markers = [
 conflicts = [[
     { package = "causalvc", extra = "cuda" },
     { package = "causalvc", extra = "rocm" },
+    { package = "causalvc", extra = "rocm-rdna2" },
 ]]
 
 [[manifest.dependency-metadata]]
 name = "pyrnnoise"
+
+[[package]]
+name = "amd-torch-device-gfx1030"
+version = "2.16.0a0+rocm10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1030" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" } },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx1030/amd_torch_device_gfx1030-2.16.0a0%2Brocm10.3.0a20261114-cp312-cp312-win_amd64.whl" },
+]
+
+[[package]]
+name = "amd-torch-device-gfx1031"
+version = "2.16.0a0+rocm10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1031" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" } },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx1031/amd_torch_device_gfx1031-2.16.0a0%2Brocm10.3.0a20261114-cp312-cp312-win_amd64.whl" },
+]
+
+[[package]]
+name = "amd-torch-device-gfx1032"
+version = "2.16.0a0+rocm10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1032" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" } },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx1032/amd_torch_device_gfx1032-2.16.0a0%2Brocm10.3.0a20261114-cp312-cp312-win_amd64.whl" },
+]
+
+[[package]]
+name = "amd-torch-device-gfx1034"
+version = "2.16.0a0+rocm10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1034" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" } },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx1034/amd_torch_device_gfx1034-2.16.0a0%2Brocm10.3.0a20261114-cp312-cp312-win_amd64.whl" },
+]
 
 [[package]]
 name = "annotated-doc"
@@ -37,8 +86,8 @@ name = "anyio"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "idna", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "idna", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "typing-extensions", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
@@ -55,8 +104,13 @@ dependencies = [
     { name = "pyrnnoise" },
     { name = "sounddevice" },
     { name = "soundfile" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'win32' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda') or (sys_platform != 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.11.1+rocm10.3.0a20261116", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "wasmtime" },
 ]
 
@@ -77,15 +131,35 @@ cuda = [
     { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
 ]
 rocm = [
-    { name = "rocm", extra = ["libraries"], marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "rocm-sdk-core", marker = "sys_platform == 'win32'" },
+    { name = "rocm", version = "7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, extra = ["libraries"], marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "rocm-sdk-core", version = "7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "sys_platform == 'win32'" },
     { name = "rocm-sdk-libraries-custom", marker = "sys_platform == 'win32'" },
     { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "sys_platform == 'win32'" },
     { name = "torchaudio", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "sys_platform == 'win32'" },
 ]
+rocm-rdna2 = [
+    { name = "amd-torch-device-gfx1030", marker = "sys_platform == 'win32'" },
+    { name = "amd-torch-device-gfx1031", marker = "sys_platform == 'win32'" },
+    { name = "amd-torch-device-gfx1032", marker = "sys_platform == 'win32'" },
+    { name = "amd-torch-device-gfx1034", marker = "sys_platform == 'win32'" },
+    { name = "rocm", version = "10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, extra = ["libraries"], marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "rocm-bootstrap", marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-core", version = "10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-device-gfx1030", marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-device-gfx1031", marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-device-gfx1032", marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-device-gfx1034", marker = "sys_platform == 'win32'" },
+    { name = "rocm-sdk-libraries", marker = "sys_platform == 'win32'" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, extra = ["device-gfx1030", "device-gfx1031", "device-gfx1032", "device-gfx1034"], marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.11.1+rocm10.3.0a20261116", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "sys_platform == 'win32'" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "amd-torch-device-gfx1030", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "amd-torch-device-gfx1031", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "amd-torch-device-gfx1032", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "amd-torch-device-gfx1034", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
     { name = "jiwer", marker = "extra == 'bench'" },
     { name = "librosa" },
     { name = "numpy" },
@@ -93,7 +167,15 @@ requires-dist = [
     { name = "pyrnnoise" },
     { name = "pyyaml", marker = "extra == 'bench'" },
     { name = "rocm", extras = ["libraries"], marker = "sys_platform == 'win32' and extra == 'rocm'", specifier = "==7.2.1", index = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/", conflict = { package = "causalvc", extra = "rocm" } },
+    { name = "rocm", extras = ["libraries"], marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-bootstrap", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
     { name = "rocm-sdk-core", marker = "sys_platform == 'win32' and extra == 'rocm'", specifier = "==7.2.1", index = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/", conflict = { package = "causalvc", extra = "rocm" } },
+    { name = "rocm-sdk-core", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-sdk-device-gfx1030", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-sdk-device-gfx1031", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-sdk-device-gfx1032", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-sdk-device-gfx1034", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
+    { name = "rocm-sdk-libraries", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
     { name = "rocm-sdk-libraries-custom", marker = "sys_platform == 'win32' and extra == 'rocm'", specifier = "==7.2.1", index = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/", conflict = { package = "causalvc", extra = "rocm" } },
     { name = "scipy", marker = "extra == 'bench'" },
     { name = "sounddevice" },
@@ -103,15 +185,17 @@ requires-dist = [
     { name = "torch", marker = "sys_platform != 'win32'" },
     { name = "torch", marker = "sys_platform == 'win32' and extra == 'cuda'", index = "https://download.pytorch.org/whl/cu132", conflict = { package = "causalvc", extra = "cuda" } },
     { name = "torch", marker = "sys_platform == 'win32' and extra == 'rocm'", specifier = "==2.9.1+rocm7.2.1", index = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/", conflict = { package = "causalvc", extra = "rocm" } },
+    { name = "torch", extras = ["device-gfx1030", "device-gfx1031", "device-gfx1032", "device-gfx1034"], marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", specifier = ">=2.16.0a0", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
     { name = "torchaudio", marker = "sys_platform != 'win32'" },
     { name = "torchaudio", marker = "sys_platform == 'win32' and extra == 'cuda'" },
     { name = "torchaudio", marker = "sys_platform == 'win32' and extra == 'rocm'", specifier = "==2.9.1+rocm7.2.1", index = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/", conflict = { package = "causalvc", extra = "rocm" } },
+    { name = "torchaudio", marker = "sys_platform == 'win32' and extra == 'rocm-rdna2'", specifier = ">=2.11.1", index = "https://nightly.repo.amd.com/rocm/whl-next/", conflict = { package = "causalvc", extra = "rocm-rdna2" } },
     { name = "torchcrepe", marker = "extra == 'bench'" },
     { name = "tqdm", marker = "extra == 'bench'" },
     { name = "transformers", marker = "extra == 'bench'" },
     { name = "wasmtime" },
 ]
-provides-extras = ["cuda", "rocm", "bench"]
+provides-extras = ["cuda", "rocm", "rocm-rdna2", "bench"]
 
 [[package]]
 name = "certifi"
@@ -127,7 +211,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -218,7 +302,7 @@ name = "cuda-bindings"
 version = "13.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "cuda-pathfinder" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/a6/13d14600381bdbfe55dfc35564e4bf4a208f169ee9f6cbeb356564268aff/cuda_bindings-13.5.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:40eadfad6ae1554f8c1aa456620a85a49a275fc902f2c6dd93ee8c488b2c5e9f", size = 7354398, upload-time = "2026-11-05T12:06:03.542Z" },
@@ -245,40 +329,40 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cufile", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'aarch64' and extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cusolver", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cusparse", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'linux' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 
 [[package]]
@@ -338,8 +422,8 @@ name = "httpcore2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "h11", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
 wheels = [
@@ -351,11 +435,11 @@ name = "httpx2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/73/5ca2cedf5e4e50423d1c258877865a6b62793633b561c58499f8aeb33b7e/httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f", size = 103116, upload-time = "2026-10-21T07:09:46.348Z" }
@@ -380,7 +464,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "httpx2" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -616,7 +700,7 @@ name = "nvidia-cublas"
 version = "13.4.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/a0/5cd9d4b08a8320f7ca150ee0d66c97e98092922e338336cb4b62da7500c3/nvidia_cublas-13.4.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:4eb1472bf92b741e7cf24da7978dde251b58ddec2092d9f6a04f3623eb4e9a15", size = 513048232, upload-time = "2026-07-16T09:45:07.751Z" },
@@ -670,7 +754,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.26.0.51"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cublas" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/1c/01e1dd3dec6ffe0baaff7e722b8946d867353d05a01301f128f1730fde0b/nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8e5b4f5eccff721416f70ecf4353172fc4d5cdd8ca869fe6f983a4a5b0147b20", size = 595329497, upload-time = "2026-09-10T16:45:39.945Z" },
@@ -683,7 +767,7 @@ name = "nvidia-cufft"
 version = "12.2.0.57"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/8d/f650e6d527f9d22b5ded906c000eaebb037721c06d4ecd906df62f300979/nvidia_cufft-12.2.0.57-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1ed438568ae1088ba2c25789d10205d4104b8b140b7bd942e39a787947a0fb74", size = 218244742, upload-time = "2026-07-16T09:47:08.76Z" },
@@ -705,9 +789,9 @@ name = "nvidia-cusolver"
 version = "12.2.0.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cusparse", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cublas" },
+    { name = "nvidia-cusparse" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/df/9e6b603f1d64040ce3e076e9bce1b78e2d588d0aabc9783f351cecd861ab/nvidia_cusolver-12.2.0.11-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8be097fca28de6be0990ab216ee9b804dd51077e1d1d83acf6c9850650bdc64d", size = 250383075, upload-time = "2026-07-16T09:50:16.355Z" },
@@ -720,7 +804,7 @@ name = "nvidia-cusparse"
 version = "12.7.10.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/35/abbd278fb6d039fcfb5175efa10a21007a11878bec59920d84854b47d766/nvidia_cusparse-12.7.10.12-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:597eff2cd83e3ab1d1e3a0dce9c9c879d77cf64ec2659bfdb5af6a5d02e7aaa9", size = 169043093, upload-time = "2026-07-16T09:51:37.058Z" },
@@ -763,7 +847,7 @@ name = "nvidia-nvshmem-cu13"
 version = "3.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-cccl", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "nvidia-cuda-cccl" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/11/1767ef120299972822a43aceffbc81ac813aad2089d817e36e4e12aa4c9c/nvidia_nvshmem_cu13-3.7.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0e748308b9e0a8a8d81859353f3e6c98fbe85a85f652a915a2ba60149a0bd124", size = 135174619, upload-time = "2026-07-17T19:24:15.404Z" },
@@ -796,7 +880,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "python-dateutil" },
-    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/17/ca/24c6bc92aca3d366146358e47f1d374c0e1a50763ef226fc71eff20a63fb/pandas-3.1.1.tar.gz", hash = "sha256:05fed3e3b7c99b226f160e29d7d6cb7ef39638c758cbfe42b3f24ba34f04b859", size = 5936163, upload-time = "2026-11-04T15:08:01.994Z" }
 wheels = [
@@ -1030,22 +1114,130 @@ wheels = [
 name = "rocm"
 version = "7.2.1"
 source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
-    { name = "rocm-sdk-core", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "rocm-sdk-core", version = "7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz" }
 
 [package.optional-dependencies]
 libraries = [
-    { name = "rocm-sdk-libraries-custom", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "rocm-sdk-libraries-custom", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+]
+
+[[package]]
+name = "rocm"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "rocm-sdk-core", version = "10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+]
+sdist = { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm/rocm-10.3.0a20261114.tar.gz" }
+
+[package.optional-dependencies]
+libraries = [
+    { name = "rocm-sdk-libraries", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+]
+
+[[package]]
+name = "rocm-bootstrap"
+version = "0.3.0"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-bootstrap/rocm_bootstrap-0.3.0-py3-none-any.whl" },
 ]
 
 [[package]]
 name = "rocm-sdk-core"
 version = "7.2.1"
 source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 wheels = [
     { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-core"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-core/rocm_sdk_core-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-core/rocm_sdk_core-10.3.0a20261114-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-device-gfx1030"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-libraries" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1030/rocm_sdk_device_gfx1030-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1030/rocm_sdk_device_gfx1030-10.3.0a20261114-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-device-gfx1031"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-libraries" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1031/rocm_sdk_device_gfx1031-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1031/rocm_sdk_device_gfx1031-10.3.0a20261114-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-device-gfx1032"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-libraries" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1032/rocm_sdk_device_gfx1032-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1032/rocm_sdk_device_gfx1032-10.3.0a20261114-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-device-gfx1034"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-libraries" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1034/rocm_sdk_device_gfx1034-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1034/rocm_sdk_device_gfx1034-10.3.0a20261114-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-libraries"
+version = "10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-libraries/rocm_sdk_libraries-10.3.0a20261114-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/core/whl-next/rocm-sdk-libraries/rocm_sdk_libraries-10.3.0a20261114-py3-none-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1256,16 +1448,18 @@ version = "2.9.1+rocm7.2.1"
 source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }
 resolution-markers = [
     "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "filelock", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "fsspec", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "jinja2", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "networkx", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "rocm", extra = ["libraries"], marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "setuptools", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "sympy", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "typing-extensions", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "filelock", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "fsspec", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "jinja2", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "networkx", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "rocm", version = "7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, extra = ["libraries"], marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "setuptools", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "sympy", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "typing-extensions", marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 wheels = [
     { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl" },
@@ -1281,20 +1475,20 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "cuda-bindings", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "filelock", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "fsspec", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "jinja2", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "networkx", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "setuptools", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "sympy", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "triton", marker = "sys_platform == 'linux' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "typing-extensions", marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
+    { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "filelock", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "fsspec", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "jinja2", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "networkx", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cudnn-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cusparselt-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nccl-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nvshmem-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "setuptools", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "sympy", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "triton", marker = "(sys_platform == 'linux' and extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "typing-extensions", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/17/24/7b9b755e8c4dd2395c6a94bab6a4ed8aded1735ff2538bc63cbba8abeddd/torch-2.15.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:593e5fd0c204284890d1c3dff643be34e549e1d24523e13402510f960d4da438", size = 138558517, upload-time = "2026-10-28T15:16:35.918Z" },
@@ -1309,15 +1503,24 @@ version = "2.15.0+cu132"
 source = { registry = "https://download.pytorch.org/whl/cu132" }
 resolution-markers = [
     "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "filelock", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "fsspec", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "jinja2", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "networkx", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "setuptools", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "sympy", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "typing-extensions", marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "filelock", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "fsspec", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "jinja2", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "networkx", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cudnn-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-cusparselt-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nccl-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "nvidia-nvshmem-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "setuptools", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "sympy", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "triton", marker = "(sys_platform == 'linux' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "typing-extensions", marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.15.0%2Bcu132-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:b72cf81b4700684763b9439416b6cb70c0c1f1ded371a16add93349e45d81019", upload-time = "2026-10-28T13:23:00Z" },
@@ -1326,14 +1529,54 @@ wheels = [
 ]
 
 [[package]]
+name = "torch"
+version = "2.16.0a0+rocm10.3.0a20261114"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "filelock", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "fsspec", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "jinja2", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "networkx", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "rocm", version = "10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, extra = ["libraries"], marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "rocm-bootstrap", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "setuptools", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "sympy", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "typing-extensions", marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/torch/torch-2.16.0a0%2Brocm10.3.0a20261114-cp312-cp312-win_amd64.whl" },
+]
+
+[package.optional-dependencies]
+device-gfx1030 = [
+    { name = "amd-torch-device-gfx1030" },
+]
+device-gfx1031 = [
+    { name = "amd-torch-device-gfx1031" },
+]
+device-gfx1032 = [
+    { name = "amd-torch-device-gfx1032" },
+]
+device-gfx1034 = [
+    { name = "amd-torch-device-gfx1034" },
+]
+
+[[package]]
 name = "torchaudio"
 version = "2.9.1+rocm7.2.1"
 source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }
 resolution-markers = [
     "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 wheels = [
     { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl" },
@@ -1349,14 +1592,31 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/2a/c2b0f44906f8a4e8d90facdf68bc76bb14e72a0cbb9cc0457ca1c2fcd101/torchaudio-2.11.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:917667ab3e357d286b0e2405a33dc538e4344d554b72e1b2b03382a4352ca857", size = 699189, upload-time = "2026-10-28T15:21:42.129Z" },
     { url = "https://files.pythonhosted.org/packages/90/c7/e352c0a0f34653f3f6a581b580352ab1c83e5d04019826ade4dfc26cf664/torchaudio-2.11.1-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:ad1175202b5cdb7585a38c1330845430e128c4ed8ceb770639318aa40fc1994b", size = 1678033, upload-time = "2026-10-28T15:21:43.28Z" },
     { url = "https://files.pythonhosted.org/packages/e6/ad/b0bf9bfa9db80acf0ce660e01a67b3b735343ab51ce1410b18d2aaed254c/torchaudio-2.11.1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:0173b5b51e1368aa88de3cbe4e98508b5e9df4d8d59356c4e1fbc830c96191ef", size = 1816417, upload-time = "2026-10-28T15:21:45.007Z" },
     { url = "https://files.pythonhosted.org/packages/6b/9e/549c9bb2d139fe78c90c9381f9ffbfc87232336df4537a65ea31d51fcdee/torchaudio-2.11.1-py3-none-win_amd64.whl", hash = "sha256:46ea71634d181f797370f046075ea982043c228b38d674fd7d9fc1c855a37b6a", size = 334360, upload-time = "2026-10-28T15:21:40.715Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.11.1+rocm10.3.0a20261116"
+source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+]
+wheels = [
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/torchaudio/torchaudio-2.11.1%2Brocm10.3.0a20261116-py3-none-linux_x86_64.whl" },
+    { url = "https://nightly.repo.amd.com/rocm/pytorch/whl-next/torchaudio/torchaudio-2.11.1%2Brocm10.3.0a20261116-py3-none-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1367,11 +1627,13 @@ dependencies = [
     { name = "librosa" },
     { name = "resampy" },
     { name = "scipy" },
-    { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm')" },
-    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-cuda') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "torchaudio", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "(sys_platform == 'win32' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
-    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or extra == 'extra-8-causalvc-cuda' or extra != 'extra-8-causalvc-rocm'" },
+    { name = "torch", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torch", version = "2.16.0a0+rocm10.3.0a20261114", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.9.1+rocm7.2.1", source = { registry = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" }, marker = "extra == 'extra-8-causalvc-rocm' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-causalvc-cuda' or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-rocm' and extra != 'extra-8-causalvc-rocm-rdna2')" },
+    { name = "torchaudio", version = "2.11.1+rocm10.3.0a20261116", source = { registry = "https://nightly.repo.amd.com/rocm/whl-next/" }, marker = "(extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra != 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra != 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c8/98/0da59205962218ed1be90034aa11db3e2e10a54293508ef0aa07a1e5ceb9/torchcrepe-0.0.24.tar.gz", hash = "sha256:7eebdd59bdfed822ac19820cb73823335e4eba88f1c76c411a7ab05f7ca6db0a", size = 72329307, upload-time = "2025-05-16T18:41:41.393Z" }
@@ -1384,7 +1646,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
@@ -1435,7 +1697,7 @@ version = "0.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm') or (extra == 'extra-8-causalvc-cuda' and extra == 'extra-8-causalvc-rocm-rdna2') or (extra == 'extra-8-causalvc-rocm' and extra == 'extra-8-causalvc-rocm-rdna2')" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "shellingham" },

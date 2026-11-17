@@ -184,6 +184,13 @@ class EngineServer:
         except BaseException as error:
             self.init_error = f"{error}\n{traceback.format_exc()}"
             print(traceback.format_exc())
+            try:  # a failure to load AMD's GPU runtime: say what to do above the details
+                from causalvc.torch_check import is_rocm_failure, rocm_advice
+
+                if is_rocm_failure(self.init_error):
+                    self.init_error = f"{rocm_advice()}\n\n{self.init_error}"
+            except ImportError:
+                pass
             self.emit("fatal", {"code": "init_failed", "message": self.init_error})
             return
         self.emit("ready", self.engine.state())

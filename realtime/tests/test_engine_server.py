@@ -157,6 +157,23 @@ class EngineServerTest(unittest.TestCase):
         client.close()
         self.stop_server()
 
+    def test_a_failure_to_load_amds_runtime_says_what_to_do(self):
+        def broken(emit):
+            # What Windows raises when ROCm's runtime DLL cannot start (an old AMD driver).
+            raise OSError("[WinError 1114] A dynamic link library (DLL) initialization routine failed: rocm_sdk")
+
+        self.start_server(broken)
+        client = EngineClient(self.address, timeout=5)
+        message = client.hello
+        while message.get("event") not in ("fatal",) and not message["data"].get("init_error"):
+            message = client.read_message()
+        text = client.call("get_state")["error"]["message"]
+        self.assertTrue(text.startswith("AMD's GPU runtime (ROCm) could not start"))
+        self.assertIn("Adrenalin Edition 26.2.2", text)
+        self.assertIn("WinError 1114", text)  # the details stay below
+        client.close()
+        self.stop_server()
+
     def test_exits_when_idle(self):
         self.start_server(FakeEngine, exit_when_idle=0.2)
         client = self.connect_ready()

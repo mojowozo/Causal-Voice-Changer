@@ -26,8 +26,9 @@ app on acrylic on Windows (built with the .NET 10 SDK, installed into `.dotnet` 
 can't be built, a small Tk window opens instead. See [training/README.md](training/README.md).
 
 On Windows it installs the PyTorch build for your graphics card: CUDA for NVIDIA, ROCm for AMD
-(Radeon RX 7000/9000 and Ryzen AI graphics). Set `CAUSALVC_GPU=cuda` or `rocm` to choose yourself;
-when running `uv` commands by hand on Windows, add `--extra cuda` or `--extra rocm`.
+(Radeon RX 7000/9000 and Ryzen AI graphics; the RX 6000 series gets AMD's newer nightly build).
+Set `CAUSALVC_GPU=cuda`, `rocm` or `rocm-rdna2` to choose yourself; when running `uv` commands by
+hand on Windows, add `--extra cuda`, `--extra rocm` or `--extra rocm-rdna2`.
 
 ## Building a voice
 

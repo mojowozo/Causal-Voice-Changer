@@ -21,6 +21,10 @@ if not defined CAUSALVC_GPU set "CAUSALVC_GPU=cuda"
 echo Checking Python packages (PyTorch for %CAUSALVC_GPU%)...
 uv sync --extra %CAUSALVC_GPU%
 if errorlevel 1 goto failed
+rem PyTorch must load: AMD's ROCm build fails to start on an old driver or graphics it doesn't support.
+rem Say what to do then, instead of opening a window that cannot start.
+uv run --no-sync python -m causalvc.torch_check
+if errorlevel 1 goto failed
 echo Checking pretrained files...
 uv run --no-sync python -m causalvc.weights
 if errorlevel 1 goto failed
