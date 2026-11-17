@@ -188,6 +188,7 @@ impl Num {
 pub enum Toggle {
     InputDenoise,
     CudaGraphs,
+    SoftenTreble,
 }
 
 impl Toggle {
@@ -195,6 +196,7 @@ impl Toggle {
         match self {
             Toggle::InputDenoise => "input_denoise",
             Toggle::CudaGraphs => "cuda_graphs",
+            Toggle::SoftenTreble => "soften_treble",
         }
     }
 }

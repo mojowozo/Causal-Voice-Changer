@@ -85,6 +85,9 @@ class EngineSettings:
     #: Record each block's GPU work once and replay it (a CUDA graph): about half the time per block
     #: and far steadier. Falls back on its own where recording fails; off runs block by block.
     cuda_graphs: bool = True
+    #: Stretch sudden treble in the middle of a word (a voice's 4-12 kHz band switching on within
+    #: 2 ms, heard as a click) over a few milliseconds; adds 5 ms of delay. See tools/treble_softener.py.
+    soften_treble: bool = True
     #: What the output-level indicator aims for: voice chat (-21 LUFS) or
     #: streaming (-16 LUFS).
     loudness_target: str = "voice_chat"
@@ -138,6 +141,7 @@ PERFORMANCE_DEFAULT_KEYS = (
     "input_denoise",
     "input_denoise_method",
     "cuda_graphs",
+    "soften_treble",
 )
 
 

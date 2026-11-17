@@ -152,6 +152,8 @@ public sealed class Settings
     public string InputDenoiseMethod = "hushwire";
     /// Replay each block's recorded GPU work (a CUDA graph) instead of launching it piece by piece.
     public bool CudaGraphs = true;
+    /// Stretch sudden mid-word treble in the converted voice (5 ms of look-ahead).
+    public bool SoftenTreble = true;
     public string LoudnessTarget = "voice_chat";
     public string RecordingFolder = "";
     public string RecordingMode = "separate";
@@ -179,6 +181,7 @@ public sealed class Settings
         InputDenoise = json.Bool("input_denoise"),
         InputDenoiseMethod = json.Str("input_denoise_method", "hushwire"),
         CudaGraphs = json.BoolOr("cuda_graphs", true),
+        SoftenTreble = json.BoolOr("soften_treble", true),
         LoudnessTarget = json.Str("loudness_target", "voice_chat"),
         RecordingFolder = json.Str("recording_folder"),
         RecordingMode = json.Str("recording_mode", "separate"),

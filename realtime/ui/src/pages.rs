@@ -601,6 +601,13 @@ fn performance_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> 
                         Message::Toggle(Toggle::CudaGraphs, value)
                     }),
             )
+            .add(
+                settings::item::builder(fl!("soften-treble"))
+                    .description(fl!("soften-treble-detail"))
+                    .toggler(settings_.soften_treble, |value| {
+                        Message::Toggle(Toggle::SoftenTreble, value)
+                    }),
+            )
             .into(),
         settings::section()
             .title(fl!("section-noise"))

@@ -60,6 +60,9 @@ pub struct Settings {
     /// Replay each block's recorded GPU work (a CUDA graph) instead of launching it piece by piece.
     #[serde(default = "default_true")]
     pub cuda_graphs: bool,
+    /// Stretch sudden mid-word treble in the converted voice (5 ms of look-ahead).
+    #[serde(default = "default_true")]
+    pub soften_treble: bool,
     /// `"hushwire"` (Amazon Voice Focus) or `"rnnoise"`.
     #[serde(default = "default_denoise_method")]
     pub input_denoise_method: String,

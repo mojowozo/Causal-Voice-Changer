@@ -195,6 +195,8 @@ static class S
     public const string CudaGraphs = "Fast GPU replay";
     public const string CudaGraphsDetail = "Records the model's GPU work once and replays it for every chunk: about twice as fast and much steadier, so short chunks drop out less. Turn off if conversion sounds wrong or fails to start on your graphics card. Changing it restarts conversion.";
     public const string GpuAutomatic = "Automatic (recommended)";
+    public const string SoftenTreble = "Soften sudden treble";
+    public const string SoftenTrebleDetail = "Smooths the brief click some voices make when their treble switches on mid-word, as when an “m” opens into an “o”. Acts only on those moments (about 3% of speech). Adds 5 ms of delay.";
     public const string SectionNoise = "Noise reduction";
     public const string InputDenoise = "Input noise reduction";
     public const string InputDenoiseDetail = "Removes background noise like keyboards, fans and traffic from your mic before conversion.";

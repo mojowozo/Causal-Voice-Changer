@@ -67,6 +67,7 @@ from causalvc import merge as voice_merge
 from tools import asio as asio_driver
 from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
+from tools.treble_softener import TrebleSoftener, DELAY_SECONDS as TREBLE_SOFTENER_DELAY
 from tools.loudness import TARGETS_LUFS, LoudnessMeter
 from tools.model_registry import (
     TrashError,
@@ -200,6 +201,8 @@ class RealtimeEngine:
         #: Denoisers built for the current stream, by method (switching back keeps their state).
         self.denoisers = {}
         self.denoise_lock = threading.RLock()
+        #: The treble softener on the converted voice, or None; read by the audio callback.
+        self.treble_softener = None
         #: Hushwire's model download: None, "downloading" or "failed".
         self.hushwire_download = None
         self.recorder = WavRecorder()
@@ -673,6 +676,8 @@ class RealtimeEngine:
             self.loudness.reset()
         if {"input_denoise", "input_denoise_method"} & set(changed):
             self.refresh_denoiser()
+        if "soften_treble" in changed:
+            self.refresh_treble_softener()
 
     def reset_settings(self, group):
         defaults = EngineSettings()
@@ -859,6 +864,7 @@ class RealtimeEngine:
                 + (self.voice.delay_seconds if self.function == "vc" else 0.0)
             )
         self.refresh_denoiser()  # prepare_inference cleared the last stream's denoiser
+        self.refresh_treble_softener()
         save_settings(self.settings)
         self.status(
             "passthrough_started" if self.function == "im" else "conversion_started"
@@ -1045,6 +1051,7 @@ class RealtimeEngine:
         self.active_denoiser = None
         self.active_denoise_delay = 0.0
         self.denoisers = {}
+        self.treble_softener = None  # refresh_treble_softener builds this stream's
         # Per-stream counters (see __init__).
         self.trimmed_frames = 0
         self.output_underruns = 0
@@ -1523,6 +1530,17 @@ class RealtimeEngine:
             else:
                 printt("Input noise reduction: off")
 
+    def refresh_treble_softener(self):
+        """Soften sudden treble in the converted voice when the settings ask for it, keeping the reported delay in step."""
+        if not self.running or getattr(self, "block_frame", None) is None:
+            return
+        wanted = self.settings.soften_treble and self.function == "vc"
+        if wanted == (self.treble_softener is not None):
+            return
+        self.treble_softener = TrebleSoftener() if wanted else None
+        self.delay_time += TREBLE_SOFTENER_DELAY if wanted else -TREBLE_SOFTENER_DELAY
+        printt("Treble softener: %s", "on, 5 ms" if wanted else "off")
+
     def download_hushwire(self):
         """Accept Hushwire's download notice and fetch its model in the background."""
         if not hushwire.available():
@@ -1588,6 +1606,9 @@ class RealtimeEngine:
         """Apply output gain and file volume, update meters, queue the block."""
         settings = self.settings
         before_gain = output[: self.block_frame].cpu().numpy()
+        softener = self.treble_softener
+        if softener is not None:
+            before_gain = softener.process(before_gain)
         self.loudness.process(before_gain)
         # Soft clip rather than a hard clamp: loud peaks are rounded, not chopped.
         output_mono = soft_clip(before_gain * np.float32(settings.output_gain))

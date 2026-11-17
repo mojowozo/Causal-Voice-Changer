@@ -4,7 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace CausalVC.Realtime.Ui.Pages;
 
-/// Chunk size, GPU, fast GPU replay and noise reduction (pages.rs: performance_page).
+/// Chunk size, GPU, fast GPU replay, treble softening and noise reduction (pages.rs: performance_page).
 public sealed class PerformancePage : PageBase
 {
     public static readonly string[] DenoiseMethods = ["hushwire", "rnnoise"];
@@ -13,6 +13,7 @@ public sealed class PerformancePage : PageBase
     readonly Action<IReadOnlyList<string>, int> _setGpu;
     readonly ToggleSwitch _denoise = new() { OnContent = "", OffContent = "", MinWidth = 0 };
     readonly ToggleSwitch _graphs = new() { OnContent = "", OffContent = "", MinWidth = 0 };
+    readonly ToggleSwitch _treble = new() { OnContent = "", OffContent = "", MinWidth = 0 };
     readonly SettingRow _methodRow;
     readonly Action<IReadOnlyList<string>, int> _setMethod;
     readonly Button _download;
@@ -30,6 +31,10 @@ public sealed class PerformancePage : PageBase
         {
             if (!_updating) Host.SendSetting("cuda_graphs", _graphs.IsOn);
         };
+        _treble.Toggled += (_, _) =>
+        {
+            if (!_updating) Host.SendSetting("soften_treble", _treble.IsOn);
+        };
         var method = Choice(index => Host.SendSetting("input_denoise_method", DenoiseMethods[index]), out _setMethod);
         method.MinWidth = 220;
         _download = Build.Button(S.DenoiseHushwireDownload, async (_, _) => await ConfirmHushwireDownload(), "", "AccentButtonStyle");
@@ -38,7 +43,8 @@ public sealed class PerformancePage : PageBase
         Column.Children.Add(new SettingsSection(S.SectionBuffering).Add(_chunk.Row));
         Column.Children.Add(new SettingsSection(S.SectionInference).Add(new SettingRow(S.Gpu, S.GpuDetail,
             Choice(index => Host.SendSetting("gpu", _gpus[index].Id), out _setGpu)))
-            .Add(new SettingRow(S.CudaGraphs, S.CudaGraphsDetail, _graphs)));
+            .Add(new SettingRow(S.CudaGraphs, S.CudaGraphsDetail, _graphs))
+            .Add(new SettingRow(S.SoftenTreble, S.SoftenTrebleDetail, _treble)));
         Column.Children.Add(new SettingsSection(S.SectionNoise)
             .Add(new SettingRow(S.InputDenoise, S.InputDenoiseDetail, _denoise))
             .Add(_methodRow));
@@ -67,6 +73,7 @@ public sealed class PerformancePage : PageBase
         _updating = true;
         _denoise.IsOn = settings.InputDenoise;
         _graphs.IsOn = settings.CudaGraphs;
+        _treble.IsOn = settings.SoftenTreble;
         _updating = false;
     }
 
