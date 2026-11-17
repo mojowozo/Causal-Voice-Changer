@@ -48,11 +48,11 @@ jobs:
     permissions:
       contents: write # gh release upload
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release || github.ref }}
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -113,7 +113,7 @@ jobs:
         working-directory: stage
         run: 7z a -tzip -mx=9 "..\$env:ARCHIVE" "$env:NAME"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: ${{ env.ARCHIVE }}
@@ -134,7 +134,7 @@ jobs:
     permissions:
       contents: write # gh release upload
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release || github.ref }}
 
@@ -195,7 +195,7 @@ jobs:
         working-directory: stage
         run: tar -czf "../$ARCHIVE" "$NAME"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: ${{ env.ARCHIVE }}
