@@ -3,11 +3,6 @@ Causal Voice Changer is a 48Khz voice changer technology which attempts to bridg
 
 <img width="463" height="55" alt="Latency Measurement" src="https://github.com/user-attachments/assets/2d15c1d7-c32b-44bf-953b-d38e5f877341" />
 
-Realtime example: 
-
-https://github.com/user-attachments/assets/cbb8e298-6d2e-4720-b690-b81a42cb1582
-
-
 ## Differences from RVC
 
 RVC takes in audio, converts the chunk, and then stitches them together via a crossfade algorithm. RVC was originally designed to convert files, and as a result its mechanism of voice changing starts to degrade at low block sizes, as both accuracy and audio quality drop. This is easy to notice if you set a low block size, and then attempt to draw out a word. You will hear the seams of the blocks as they stitch together. 
