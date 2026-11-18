@@ -3,7 +3,9 @@ Causal Voice Changer is a 48Khz voice changer technology which attempts to bridg
 
 <img width="463" height="55" alt="Latency Measurement" src="https://github.com/user-attachments/assets/2d15c1d7-c32b-44bf-953b-d38e5f877341" />
 
-Realtime example: [causal-test.mp3](https://github.com/user-attachments/files/35002190/causal-test.mp3)
+Realtime example: 
+
+https://github.com/user-attachments/assets/cbb8e298-6d2e-4720-b690-b81a42cb1582
 
 
 ## Differences from RVC
