@@ -2,7 +2,10 @@
 Causal Voice Changer is a 48Khz voice changer technology which attempts to bridge the voice changer gap between low latency options (ex. Beatrice) and higher-fidelity-but-slower options (ex. RVC) in order to achieve a balance between speed and quality instead of sacrificing one for the other. It uses a distilled version of ContentVec and RMVPE to achieve this. 
 
 <img width="463" height="55" alt="Latency Measurement" src="https://github.com/user-attachments/assets/2d15c1d7-c32b-44bf-953b-d38e5f877341" />
-Example of realtime: [causal-test.mp3](https://github.com/user-attachments/files/35002313/causal-test.mp3)
+
+Example of realtime: 
+[causal-test.mp3](https://github.com/user-attachments/files/35002321/causal-test.mp3)
+
 
 ## Differences from RVC
 
