@@ -25,8 +25,8 @@ _RES16: dict[str, torchaudio.transforms.Resample] = {}
 
 
 @torch.no_grad()
-def extract(enc: StreamingEncoder, rmvpe: Rmvpe, wav48: torch.Tensor):
-    """[B, N] at 48 kHz -> content [B, T/2, C], f0 [B, T], loudness [B, T]."""
+def extract_all(enc: StreamingEncoder, rmvpe: Rmvpe, wav48: torch.Tensor):
+    """[B, N] at 48 kHz -> content [B, Tc, C], f0 [B, T], voicing [B, T], loudness [B, T]."""
     dev_key = str(wav48.device)
     res = _RES16.get(dev_key)
     if res is None:
@@ -35,7 +35,19 @@ def extract(enc: StreamingEncoder, rmvpe: Rmvpe, wav48: torch.Tensor):
     wav16 = res(wav48)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=wav48.is_cuda and isinstance(enc, StreamingEncoder)):
         content = enc.encode(wav16).float()
-    return content, rmvpe(wav16), loudness(wav48)
+    if hasattr(rmvpe, "pitch_and_voicing"):
+        f0, voicing = rmvpe.pitch_and_voicing(wav16)
+    else:
+        f0 = rmvpe(wav16)
+        voicing = (f0 > 0).float()
+    return content, f0, voicing, loudness(wav48)
+
+
+@torch.no_grad()
+def extract(enc: StreamingEncoder, rmvpe: Rmvpe, wav48: torch.Tensor):
+    """[B, N] at 48 kHz -> content [B, T/2, C], f0 [B, T], loudness [B, T]."""
+    content, f0, _, loud = extract_all(enc, rmvpe, wav48)
+    return content, f0, loud
 
 
 class CausalVC:
@@ -76,18 +88,22 @@ class CausalVC:
         n = wav48.shape[-1]
         unit = FRAME if getattr(self.enc, "hop", 320) == 160 else 2 * FRAME
         x = torch.nn.functional.pad(wav48.to(self.device)[None], (0, (-n) % unit))
-        content, f0, loud = extract(self.enc, self.rmvpe, x)
+        content, f0, voicing, loud = extract_all(self.enc, self.rmvpe, x)
         if self.index > 0:  # pull each content frame toward the target's own nearest frames
             near = self.lookup(content[0], self.bank(speaker))
             content = (1 - self.index) * content + self.index * near[None]
         spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
         f0 = f0 * 2.0 ** (semitones / 12.0)
         enc_hz = 100 if getattr(self.enc, "hop", 320) == 160 else 50
-        h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None, content_hz=enc_hz)
+        v_in = voicing if self.dec.expressive else None
+        h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None, content_hz=enc_hz, voicing=v_in)
         if self.hsmooth:
             k = self.hsmooth
             h = torch.nn.functional.avg_pool1d(torch.nn.functional.pad(h, (k, k), mode="replicate"), 2 * k + 1, 1)
-        y = self.dec.generate(h, g, self.dec.source(f0[:, : h.shape[-1]]))[0, 0]
+        th = h.shape[-1]
+        reg = self.dec.register_vec(f0[:, :th], None if v_in is None else v_in[:, :th]) if self.dec.reg_cond is not None else None
+        exc = self.dec.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])
+        y = self.dec.generate(h, g, exc, reg=reg)[0, 0]
         return torch.nn.functional.pad(y, (0, max(0, n - len(y))))[:n]
 
     @torch.no_grad()

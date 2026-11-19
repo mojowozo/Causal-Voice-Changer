@@ -23,13 +23,16 @@ import torchaudio
 from causalvc.augment import degrade
 from causalvc.encoder.model import HOP, SR, StreamingEncoder
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 TEACHER_CANDIDATES = (
     ROOT / "weights" / "contentvec",
     Path("/mnt/ssd/Applio-3.7.1/rvc/models/embedders/contentvec"),
 )
 TEACHER = str(next((p for p in TEACHER_CANDIDATES if p.is_dir()), TEACHER_CANDIDATES[-1]))
-EXPRESSIVE_TAGS = ("nonverbal_", "emo_amazement", "emo_extasy", "emo_fear", "emo_pain", "emo_anger", "highpitch", "whisper")
+EXPRESSIVE_TAGS = (
+    "nonverbal_", "interjection_", "emo_amazement", "emo_extasy", "emo_fear",
+    "emo_pain", "emo_anger", "emo_sadness", "emo_relief", "highpitch", "lowpitch", "whisper",
+)
 
 
 def _worker_init(_: int) -> None:
@@ -39,25 +42,40 @@ def _worker_init(_: int) -> None:
 class Crops(torch.utils.data.Dataset):
     """Random fixed-length crops resampled to 16 kHz across mixed-rate datasets (LibriTTS, VCTK, EARS)."""
 
-    def __init__(self, files: list[str], seconds: float):
-        self.files, self.seconds, self.n = files, seconds, int(seconds * SR)
+    def __init__(self, files: list[str], seconds: float, pitch_aug: bool = False):
+        self.files, self.seconds, self.n, self.pitch_aug = files, seconds, int(seconds * SR), pitch_aug
+        self.ears = [p for p in files if "/ears/" in p.replace("\\", "/")]
+        self.vctk = [p for p in files if "/vctk/" in p.replace("\\", "/")]
+        self.other = [p for p in files if "/ears/" not in p.replace("\\", "/") and "/vctk/" not in p.replace("\\", "/")]
         self.expressive = [p for p in files if any(t in Path(p).stem for t in EXPRESSIVE_TAGS)]
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, i: int) -> torch.Tensor:
-        use_exp = bool(self.expressive) and random.random() < 0.20
+        r = random.random()
+        pool = None
+        if self.expressive and r < 0.22:
+            pool = self.expressive
+        elif self.ears and self.other and r < 0.50:
+            pool = self.ears
+        elif self.vctk and self.other and r < 0.70:
+            pool = self.vctk
+        alpha = 1.0
+        if self.pitch_aug and random.random() < 0.25:
+            st = random.choice([-7, -5, -3, 2, 4, 6, 8, 10, 12])
+            alpha = 2.0 ** (st / 12.0)
         for _ in range(20):
-            path = random.choice(self.expressive) if use_exp else self.files[i]
+            path = random.choice(pool) if pool else self.files[i]
             info = sf.info(path)
-            want = int(self.seconds * info.samplerate)
+            eff_sr = max(6400, int(round(info.samplerate * alpha / 100.0)) * 100)
+            want = int(self.seconds * eff_sr)
             if info.frames >= want // 2:
                 start = random.randint(0, max(0, info.frames - want))
-                wav, sr = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
+                wav, _ = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
                 x = torch.from_numpy(wav[:, 0])
-                if sr != SR:
-                    x = torchaudio.functional.resample(x, sr, SR)
+                if eff_sr != SR:
+                    x = torchaudio.functional.resample(x, eff_sr, SR)
                 if len(x) < self.n:
                     x = F.pad(x, (0, self.n - len(x)))
                 return x[: self.n]
@@ -132,6 +150,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--augment", action="store_true", help="degrade the student's input like a real microphone")
+    ap.add_argument("--pitch-aug", action="store_true", help="pitch-shift 25% of crops (-7 to +12 semitones) from native rate")
     ap.add_argument("--teacher", help="path to ContentVec teacher folder")
     ap.add_argument("--init", help="encoder.pt to start from (weights only)")
     ap.add_argument("--resume", action="store_true", help="continue from the last saved weights (optimizer state is rebuilt)")
@@ -153,7 +172,7 @@ def main() -> None:
     random.Random(0).shuffle(valid)
     valid = valid[:200]
     loader = torch.utils.data.DataLoader(
-        Crops(files, args.seconds), batch_size=args.batch, shuffle=True, drop_last=True,
+        Crops(files, args.seconds, pitch_aug=args.pitch_aug), batch_size=args.batch, shuffle=True, drop_last=True,
         num_workers=args.workers, persistent_workers=True, worker_init_fn=_worker_init,
     )
     dev = args.device
@@ -190,8 +209,13 @@ def main() -> None:
             wav16 = wav16[:, : HOP * (wav16.shape[1] // HOP)]
             target = teacher_features(teacher, wav16, hop=args.hop)
             gain = torch.empty(wav16.shape[0], 1, device=dev).uniform_(-12, 3)
+            inp16 = wav16
+            if args.augment:
+                deg = degrade(wav16)
+                keep_clean = (torch.rand(wav16.shape[0], 1, device=dev) < 0.35).float()
+                inp16 = keep_clean * wav16 + (1.0 - keep_clean) * deg
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                pred = model((degrade(wav16) if args.augment else wav16) * 10 ** (gain / 20))
+                pred = model(inp16 * 10 ** (gain / 20))
             loss, cos = distill_loss(pred, target, args.lookahead)
             opt.zero_grad(set_to_none=True)
             loss.backward()

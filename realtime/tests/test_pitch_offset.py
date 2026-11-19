@@ -24,7 +24,7 @@ class MapF0Test(unittest.TestCase):
     def test_result_stays_in_the_decoders_range(self):
         f0 = torch.tensor([0.0, 80.0, 900.0])
         self.assertEqual(map_f0(f0, 1.0, -200.0).tolist(), [0.0, F0_RANGE[0], 700.0])
-        self.assertEqual(map_f0(f0, 1.0, 300.0)[2].item(), F0_RANGE[1])
+        self.assertEqual(map_f0(f0, 1.0, 600.0)[2].item(), F0_RANGE[1])
 
 
     def test_ceiling_keeps_part_of_the_rise_in_semitones(self):

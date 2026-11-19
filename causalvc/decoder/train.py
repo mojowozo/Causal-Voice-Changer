@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import signal
 from pathlib import Path
@@ -22,9 +23,9 @@ import torchaudio
 
 from causalvc.decoder.disc import Discriminators, EnergyLoss, MelLoss, SpecLoss, d_loss, g_loss
 from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder
-from causalvc.augment import add_noise, colour
+from causalvc.augment import add_noise, add_silent_transients, colour
 from causalvc.decoder.model import tone as tone_of
-from causalvc.infer import CausalVC, extract, load_encoder
+from causalvc.infer import CausalVC, extract_all, load_encoder
 from causalvc.pitch import Rmvpe
 from causalvc.progress import Progress
 
@@ -57,17 +58,22 @@ def voice_files(args) -> dict[str, list[str]]:
     return found
 
 
-EXPRESSIVE_TAGS = ("nonverbal_", "emo_amazement", "emo_extasy", "emo_fear", "emo_pain", "emo_anger", "highpitch", "loud")
+EXPRESSIVE_TAGS = (
+    "nonverbal_", "emo_amazement", "emo_extasy", "emo_fear", "emo_pain", "emo_anger",
+    "emo_sadness", "emo_relief", "interjection_", "highpitch", "lowpitch", "whisper", "loud",
+)
 
 
 class Crops(torch.utils.data.Dataset):
     """A random speaker, a random file, a random crop, resampled to 48 kHz."""
 
-    def __init__(self, spk: dict[str, list[str]], seconds: float, steps: int, only: list[str] | None = None):
+    def __init__(self, spk: dict[str, list[str]], seconds: float, steps: int, only: list[str] | None = None,
+                 silence_share: float = 0.0):
         self.names, self.spk, self.seconds, self.steps = list(spk), spk, seconds, steps
+        self.silence_share = silence_share
         self.pick = [self.names.index(n) for n in only] if only else list(range(len(self.names)))
-        # During base training, oversample expressive / high-pitch EARS clips so 350-800 Hz speech is well covered
-        # without pitch-warping a speaker's true vocal-tract formants.
+        # During base training, oversample expressive / high-pitch / whisper / laugh EARS clips so 35-1000 Hz
+        # registers and non-verbal vocals are densely covered on real human recordings.
         self.expressive = {
             name: [p for p in files if any(tag in Path(p).stem for tag in EXPRESSIVE_TAGS)] if not only else []
             for name, files in spk.items()
@@ -78,11 +84,31 @@ class Crops(torch.utils.data.Dataset):
 
     def __getitem__(self, _: int):
         n = int(self.seconds * SR)
+        if self.silence_share > 0 and random.random() < self.silence_share:
+            s = random.choice(self.pick)
+            if random.random() < 0.5:
+                return torch.zeros(n), s
+            # Release-into-silence crop: speech that fades cleanly to exact 0 halfway through the clip.
+            path = random.choice(self.spk[self.names[s]])
+            info = sf.info(path)
+            want = int(self.seconds * info.samplerate)
+            wav, sr = sf.read(path, start=random.randint(0, max(0, info.frames - want)), frames=want, dtype="float32", always_2d=True)
+            wav = torch.from_numpy(wav[:, 0])
+            if sr != SR:
+                wav = torchaudio.functional.resample(wav, sr, SR)
+            wav = torch.nn.functional.pad(wav, (max(0, n - len(wav)), 0))[:n]
+            peak = wav.abs().max().clamp_min(1e-4)
+            wav = wav * min(10 ** (random.uniform(-14.0, 0.0) / 20), 0.95 / peak.item())
+            cut = int(n * random.uniform(0.55, 0.80))
+            fade = min(int(0.020 * SR), cut)
+            wav[cut - fade : cut] *= 0.5 * (1.0 + torch.cos(math.pi * torch.arange(fade) / max(1, fade)))
+            wav[cut:] = 0.0
+            return wav, s
         for _try in range(8):
             s = random.choice(self.pick)
             name = self.names[s]
             exp = self.expressive.get(name)
-            pool = exp if exp and random.random() < 0.35 else self.spk[name]
+            pool = exp if exp and random.random() < 0.40 else self.spk[name]
             path = random.choice(pool)
             info = sf.info(path)
             want = int(self.seconds * info.samplerate)
@@ -292,6 +318,9 @@ def main(on_save=None) -> None:
                     "The average starts short and lengthens to 1/(1-decay) steps, so early checkpoints do not lag")
     ap.add_argument("--tone", type=float, default=0.0, help="experimental: also tell the decoder each frame's brightness and vowel openness; "
                     "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
+    ap.add_argument("--expressive", action="store_true", help="continuous voicing confidence (0..1), 32-1400 Hz log-F0 register conditioning, and silence/click floor training")
+    ap.add_argument("--silence-share", type=float, default=-1.0, help="share of crops that are digital silence or fade-to-silence (default: 0.06 with --expressive, else 0)")
+    ap.add_argument("--base-reg", type=float, default=0.0, help="L2-SP weight anchoring shared layers toward --init during single-voice builds so laughs, whispers and extreme registers do not drift")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
     args = ap.parse_args()
 
@@ -342,10 +371,11 @@ def main(on_save=None) -> None:
         **(({"antialias": True}) if args.antialias else {}),
         **(({"content_hz": 100}) if content_hz == 100 else {}),
         **(({"tone": 2}) if args.tone else {}),
+        **(({"expressive": True}) if args.expressive else {}),
     }
     gen, disc, mel_loss = Decoder(len(spk), **cfg).to(dev), Discriminators(args.disc).to(dev), MelLoss(f_max=f_max).to(dev)
     print(f"generator {sum(p.numel() for p in gen.parameters()) / 1e6:.1f}M params", flush=True)
-    opt_g = torch.optim.AdamW(gen.parameters(), args.lr, betas=(0.8, 0.99))
+    opt_g = torch.optim.AdamW(gen.parameters(), args.lr, betas=(0.8, 0.99), weight_decay=0.0 if args.base_reg else 0.01)
     opt_d = torch.optim.AdamW(disc.parameters(), args.lr, betas=(0.8, 0.99))
     step = 0
     saved_ema = None
@@ -405,8 +435,27 @@ def main(on_save=None) -> None:
     for _ in range(step):
         sch_g.step(), sch_d.step()
 
+    base_anchor: list[tuple[torch.nn.Parameter, torch.Tensor]] = []
+    anchor_numel = 0
+    if args.base_reg > 0 and (args.init or (args.resume and args.only)):
+        ref_path = args.init
+        if not ref_path and (out / "args.json").is_file():
+            ref_path = json.loads((out / "args.json").read_text()).get("init")
+        if ref_path and Path(ref_path).is_file():
+            ref_gen = torch.load(ref_path, map_location=dev)["generator"]
+            for pname, param in gen.named_parameters():
+                if pname.startswith(("speaker.", "pre_cond.", "post.")) or ".cond." in pname:
+                    continue
+                if pname in ref_gen and ref_gen[pname].shape == param.shape:
+                    base_anchor.append((param, ref_gen[pname].detach().float().clone()))
+                    anchor_numel += param.numel()
+            del ref_gen
+            if anchor_numel:
+                print(f"L2-SP base anchor active on {len(base_anchor)} shared tensors ({anchor_numel / 1e6:.1f}M params, weight={args.base_reg})", flush=True)
+
+    silence_share = (0.06 if args.expressive else 0.0) if args.silence_share < 0 else args.silence_share
     loader = torch.utils.data.DataLoader(
-        Crops(spk, args.seconds, args.steps * args.batch, args.only), batch_size=args.batch,
+        Crops(spk, args.seconds, args.steps * args.batch, args.only, silence_share=silence_share), batch_size=args.batch,
         num_workers=args.workers, drop_last=True, persistent_workers=True, worker_init_fn=_quiet_worker,
     )
     # Reconstruct frames that end before the encoder's zero-padded lookahead region.
@@ -458,19 +507,24 @@ def main(on_save=None) -> None:
         src = wav
         if args.noise_aug:  # what the microphone hears (src) differs from what should come out (wav)
             src, wav = add_noise(wav, args.noise_aug)
+        elif silence_share > 0:
+            src = add_silent_transients(src, wav)
         if args.colour_aug:
             src = colour(src, args.colour_aug)
-        content, f0, loud = extract(enc, rmvpe, src)
+        content, f0, voicing, loud = extract_all(enc, rmvpe, src)
         if args.perturb and random.random() < args.perturb:
             content = warped_content(enc, src, content.shape[1])
         elif bank is not None:
             content = looked_up(content, bank, s)
         tn = tone_of(src) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
+        v_in = voicing if args.expressive else None
         with amp():
-            h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn)
-        exc = gen.source(f0[:, : h.shape[-1]])
+            h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn, voicing=v_in)
+        th = h.shape[-1]
+        exc = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])
+        reg = gen.register_vec(f0[:, lo:hi], None if v_in is None else v_in[:, lo:hi]) if gen.reg_cond is not None else None
         with amp():
-            fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME]).float()
+            fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME], reg=reg).float()
         real = wav[:, None, lo * FRAME : hi * FRAME]
 
         # Real and generated audio in one pass: the discriminators treat every example on its own, so
@@ -502,17 +556,31 @@ def main(on_save=None) -> None:
         if args.decorr:
             # The same frames again with fresh noise in the excitation. Real breath noise is different every
             # time; without this the decoder computes one fixed noise-like pattern from the features and
-            # ignores the noise it is given. Penalise the per-frame correlation of the two outputs where unvoiced.
-            exc2 = gen.source(f0[:, : h.shape[-1]])[..., lo * FRAME : hi * FRAME]
+            # ignores the noise it is given. Penalise the per-frame correlation of the two outputs where unvoiced
+            # (or half-voiced in laughs/sighs), but never on silent target frames where the output should be 0.
+            exc2 = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])[..., lo * FRAME : hi * FRAME]
             with amp():
-                again = gen.generate(h[..., lo:hi], g, exc2).float()
+                again = gen.generate(h[..., lo:hi], g, exc2, reg=reg).float()
             a, b = (y[:, 0].unflatten(1, (-1, FRAME)) for y in (fake, again))
             a, b = a - a.mean(-1, keepdim=True), b - b.mean(-1, keepdim=True)
             corr = (a * b).sum(-1) / (a.norm(dim=-1) * b.norm(dim=-1) + 1e-5)
-            quiet = (f0[:, lo:hi] == 0).float()
+            audible = (real[:, 0].unflatten(1, (-1, FRAME)).pow(2).mean(-1).sqrt() > 3e-4).float()
+            quiet = ((1.0 - v_in[:, lo:hi]).pow(2) if v_in is not None else (f0[:, lo:hi] == 0).float()) * audible
             loss_dc = (corr.pow(2) * quiet).sum() / quiet.sum().clamp_min(1.0)
             loss_g = loss_g + args.decorr * loss_dc
             log["decorr"] = log.get("decorr", 0.0) + loss_dc.item() / 100
+        if silence_share > 0:
+            real_f = real[:, 0].unflatten(1, (-1, FRAME))
+            silent_mask = (real_f.pow(2).mean(-1).sqrt() < 1e-4).float()
+            if silent_mask.any():
+                fake_f = fake[:, 0].unflatten(1, (-1, FRAME))
+                loss_sil = (fake_f.abs().mean(-1) * silent_mask).sum() / silent_mask.sum().clamp_min(1.0)
+                loss_g = loss_g + 40.0 * loss_sil
+                log["sil"] = log.get("sil", 0.0) + loss_sil.item() / 100
+        if base_anchor:
+            loss_reg = sum((p.float() - p0).pow(2).sum() for p, p0 in base_anchor) / anchor_numel
+            loss_g = loss_g + args.base_reg * loss_reg
+            log["reg"] = log.get("reg", 0.0) + loss_reg.item() / 100
         if args.energy_loss:
             loss_en = energy_loss(fake, real)
             loss_g = loss_g + args.energy_loss * loss_en

@@ -29,11 +29,11 @@ static class S
 
     public const string SectionTraining = "Training";
     public const string Steps = "Steps";
-    public const string StepsDetail = "How long to train. 10,000 is a good start; more steps follow the voice more closely.";
+    public const string StepsDetail = "How many steps to train for.";
     public const string SaveEvery = "Save a version every";
     public const string SaveEveryDetail = "Steps between saved versions (NAME-1000s, NAME-2000s and so on), to compare and keep the best.";
     public const string Batch = "Batch size";
-    public const string BatchDetail = "Clips trained on at once. Lower it if the GPU runs out of memory.";
+    public const string BatchDetail = "Number of clips trained on at once. Lower it if the GPU runs out of memory.";
     public const string Noise = "Ignore background sounds";
     public const string NoiseDetail = "Trains the voice to stay silent through clicks, snaps, claps and room noise. Whispers and laughs lose a little detail.";
     public const string Restart = "Start over";
@@ -44,9 +44,9 @@ static class S
     public const string BaseDetail = "The voice model training starts from. Your own bases go in the custom-base folder.";
     public const string BaseDefault = "Default";
     public const string Gpu = "GPU";
-    public const string GpuDetail = "The graphics card that trains the voice.";
+    public const string GpuDetail = "The graphics card used to train";
     public const string GpuLoading = "Looking for GPUs…";
-    public const string GpuCpu = "No GPU found (very slow)";
+    public const string GpuCpu = "No GPU found, training with CPU (this will be slow)";
 
     public const string SectionInstall = "Voice changer";
     public const string Install = "Add to the voice changer";
@@ -60,7 +60,7 @@ static class S
         $"{name} added to the queue ({(position == 1 ? "next up" : $"#{position} in line")}). See it on the Builds page.";
     public const string Stop = "Stop";
     public const string EndNow = "End now";
-    public const string StopDetail = "Stop saves a checkpoint first; building the same voice again resumes. Click again to end at once without saving.";
+    public const string StopDetail = "Stop saves a checkpoint first. Click again to end immediately without saving.";
 
     public static string Progress(long step, long total) => $"Step {step:N0} of {total:N0}";
     public static string ProgressTimes(string elapsed, string remaining, double rate) =>
@@ -74,7 +74,7 @@ static class S
     public const string Remove = "Remove";
     public const string BuildNow = "Build now";
     public const string BuildsQueueDrag = "Drag a build to change the order. Build now saves the current build and puts it first in line, to resume after.";
-    public const string CloseNote = "Closing this window stops training the same way Stop does: a checkpoint is saved first.";
+    public const string CloseNote = "Closing this window terminates training and saves a checkpoint.";
 
     public const string LogEmpty = "Messages from training appear here.";
     public const string ClearLog = "Clear";
@@ -84,14 +84,14 @@ static class S
         string name = state.Current?.Name ?? "";
         return state.Phase switch
         {
-            "starting" => $"Starting {name} (loading the models takes a little while)…",
+            "starting" => $"Starting {name}…",
             "training" => $"Training {name}",
             "stopping" when state.Next is { } next => $"Saving {name} to switch to {next.Name}; {name} resumes next…",
             "stopping" => $"Stopping {name}: saving a checkpoint first…",
             "finished" => $"{name} is finished",
-            "stopped" => $"{name} stopped; build it again to continue",
-            "failed" => $"{name} failed (exit code {state.ExitCode}); the log says why",
-            _ => "Ready. Fill in the voice and start training.",
+            "stopped" => $"{name} build stopped",
+            "failed" => $"{name} failed (exit code {state.ExitCode}). Check log for details",
+            _ => "Ready to train",
         };
     }
 

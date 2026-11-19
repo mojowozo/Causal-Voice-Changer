@@ -62,8 +62,8 @@ class VoiceFileError(ValueError):
 
 #: Where the shared networks were trained, on a machine that has them there instead of the downloaded base.
 SHARED_LOCAL = {
-    "encoder.pt": ("runs/models/enc-100hz-la3/encoder.pt",),
-    "pitch.pt": ("runs/models/pitch-la1-hi/pitch.pt",),
+    "encoder.pt": ("runs/models/enc-100hz-v4/encoder.pt",),
+    "pitch.pt": ("runs/models/pitch-la1-v4/pitch.pt",),
 }
 
 

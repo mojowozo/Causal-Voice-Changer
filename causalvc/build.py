@@ -28,7 +28,7 @@ if sys.platform != "win32":  # PyTorch supports this only on Linux
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BASES = ("runs/models/dec-s6-100hz", "runs/models/dec-s6")
+DEFAULT_BASES = ("runs/models/dec-s8-100hz-v4", "runs/models/dec-s7-100hz", "runs/models/dec-s6-100hz", "runs/models/dec-s6")
 CUSTOM = ROOT / "custom-base"
 
 
@@ -112,6 +112,7 @@ def main() -> None:
     ap.add_argument("--decorr", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--colour-aug", type=float, default=0.0, help="share of inputs given a random microphone colour (the training window uses 0.5); see causalvc.decoder.train")
+    ap.add_argument("--base-reg", type=float, default=None, help="L2-SP anchor weight toward base shared layers (default: 25 on expressive bases, else 0)")
     ap.add_argument("--ema", type=float, default=0.0, help="save a moving average of the decoder's weights (the training window uses 0.999); see causalvc.decoder.train")
     ap.add_argument("--bf16", action="store_true", help="train in bfloat16, about 1.5x faster at the same quality (the training window always passes it); see causalvc.decoder.train")
     ap.add_argument("--run", help="run folder name under runs/models (default voice-NAME)")
@@ -172,6 +173,9 @@ def main() -> None:
     argv += ["--glide-next"] if base.get("glide_next") else ["--glide"] if base.get("glide") else []
     argv += ["--smooth-in", smooth_in] if smooth_in else []
     argv += ["--tone", str(base["tone"])] if base.get("tone") else []
+    argv += ["--expressive"] if base.get("expressive") else []
+    base_reg = (25.0 if base.get("expressive") else 0.0) if a.base_reg is None else a.base_reg
+    argv += ["--base-reg", str(base_reg)] if base_reg > 0 else []
     argv += ["--bf16"] if a.bf16 else []
     argv += ["--colour-aug", str(a.colour_aug)] if a.colour_aug else []
     argv += ["--ema", str(a.ema)] if a.ema else []

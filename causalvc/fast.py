@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, loudness, tone
+from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, _tone_buffers, loudness, tone
 from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
@@ -86,8 +86,9 @@ class FastStreamingVC:
         # The voice's index (causalvc.index), if it has one, and how strongly it is blended in (0-1).
         self.index = self.index_unit = None
         self.index_rate, self.rate = torch.zeros((), device=device), 0.0
-        # A graph needs a CUDA device and fixed shapes; the tone input's band masks are not fixed.
-        self.graphs = bool(graphs) and str(device).startswith("cuda") and self.dec.tone is None
+        if self.dec.tone is not None:
+            _tone_buffers(torch.device(device))
+        self.graphs = bool(graphs) and str(device).startswith("cuda")
         self.graph = None
         self.reset()
 
@@ -130,6 +131,7 @@ class FastStreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.pending_f0 = torch.zeros(1, device=d)
+        self.pending_v = torch.zeros(1, device=d)
         self.pending_h = None  # features of the newest frame, waiting for its excitation (glide="next")
         self.frames = 0  # 100 Hz frames of input received so far
 
@@ -194,8 +196,8 @@ class FastStreamingVC:
 
     # ---- pitch tracker ---------------------------------------------------
 
-    def _pitch(self, wav16: torch.Tensor, m: int) -> torch.Tensor:
-        """The last 1120 + 160 m samples at 16 kHz -> F0 of m new frames [m] (before the pitch shift)."""
+    def _pitch_with_voicing(self, wav16: torch.Tensor, m: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """The last 1120 + 160 m samples at 16 kHz -> (F0 [m], voicing [m]) of m new frames."""
         p = self.pitch
         mel = torch.log(p.mel(wav16[None]).clamp_min(1e-5))[..., 4 : 4 + m]  # frames with a full window on both sides
         x = p.inp(self._hist("p.mel", mel, 2))
@@ -204,16 +206,34 @@ class FastStreamingVC:
             x = x + b.fc2(F.gelu(b.fc1(b.norm(y)))).transpose(1, 2)
         x = x.transpose(1, 2)
         g, self.st["p.gru"] = p.gru(x, self.st.get("p.gru"))
-        return p.decode(torch.sigmoid(p.head(torch.cat([x, g], dim=-1))))[0]
+        f0, v = p.decode_with_voicing(torch.sigmoid(p.head(torch.cat([x, g], dim=-1))))
+        return f0[0], v[0]
+
+    def _pitch(self, wav16: torch.Tensor, m: int) -> torch.Tensor:
+        return self._pitch_with_voicing(wav16, m)[0]
 
     # ---- decoder ---------------------------------------------------------
 
-    def _features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, g: torch.Tensor, tn: torch.Tensor | None = None) -> torch.Tensor:
+    def _features(
+        self,
+        content: torch.Tensor,
+        f0: torch.Tensor,
+        loud: torch.Tensor,
+        g: torch.Tensor,
+        tn: torch.Tensor | None = None,
+        voicing: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """content [m, 768], f0 [m], loud [m] for the new frames -> hidden [1, D, m]."""
         d = self.dec
         x = d.content(content[None]) + d.pitch_embed(f0[None]) + d.loud((loud[None, :, None] + 40.0) / 20.0)
+        if d.f0_proj is not None:
+            rv = d.register_vec(f0[None], None if voicing is None else voicing[None]).to(d.f0_proj.weight.dtype)
+            x = x + d.f0_proj(rv)
         if tn is not None:
-            x = x + d.tone(tn[None] / 10.0)
+            t_emb = d.tone((tn[None] / 10.0).to(d.tone.weight.dtype))
+            if d.expressive:
+                t_emb = t_emb * d.tone_gate(loud[None])[..., None].to(t_emb.dtype)
+            x = x + t_emb
         x = x.transpose(1, 2)
         for i, b in enumerate(d.blocks):
             y = self._cconv(b.dw, x, ("d.b", i)).transpose(1, 2) + b.cond(g)[:, None]
@@ -223,10 +243,12 @@ class FastStreamingVC:
             x = (z[..., 1:] + z[..., :-1]) / 2
         return x
 
-    def _generate(self, h: torch.Tensor, g: torch.Tensor, exc: torch.Tensor) -> torch.Tensor:
+    def _generate(self, h: torch.Tensor, g: torch.Tensor, exc: torch.Tensor, reg: torch.Tensor | None = None) -> torch.Tensor:
         """hidden [1, D, m] and excitation [1, C, m * FRAME] for the same frames -> waveform [m * FRAME]."""
         d = self.dec
         x = self._cconv(d.pre, h, "g.pre") + d.pre_cond(g)[..., None]
+        if d.reg_cond is not None and reg is not None:
+            x = x + d.reg_cond(reg.to(d.reg_cond.weight.dtype)).transpose(1, 2)
         for i, (up, src, res) in enumerate(zip(d.ups, d.src, d.res)):
             x = F.leaky_relu(x, 0.1)
             z = self._hist(("g.up", i), x, 1)  # a transposed convolution's output hop depends on this frame and the one before
@@ -263,13 +285,13 @@ class FastStreamingVC:
     def _slots(self) -> list[torch.Tensor]:
         """Every tensor the stream carries from one block to the next."""
         late = [] if self.pending_h is None else [self.pending_h]
-        return [self.tail, self.phase, self.prev_f0, self.pending_f0, *late, *self.steps, *(self.st[k] for k in self.keys)]
+        return [self.tail, self.phase, self.prev_f0, self.pending_f0, self.pending_v, *late, *self.steps, *(self.st[k] for k in self.keys)]
 
     def _put(self, slots: list[torch.Tensor]) -> None:
-        self.tail, self.phase, self.prev_f0, self.pending_f0 = slots[:4]
-        i = 4
+        self.tail, self.phase, self.prev_f0, self.pending_f0, self.pending_v = slots[:5]
+        i = 5
         if self.pending_h is not None:
-            self.pending_h, i = slots[4], 5
+            self.pending_h, i = slots[5], 6
         n = len(self.steps)
         self.steps = list(slots[i : i + n])
         for k, t in zip(self.keys, slots[i + n :]):
@@ -388,26 +410,33 @@ class FastStreamingVC:
                     content.append(c50_t[f // 2 - s_lo])
             content = torch.stack(content)
 
-        f0 = self._pitch(wav16[-(1120 + 160 * m) :], m)
+        f0, v = self._pitch_with_voicing(wav16[-(1120 + 160 * m) :], m)
         f0 = map_f0_tensor(f0, self.pmap) if self.graphs else map_f0(f0, self.ratio, self.offset, self.ceiling, self.keep)
         if first < 0:  # before any real frame is final the old runtime's history is silence too
-            f0 = torch.where(torch.arange(first, first + m, device=f0.device) >= 0, f0, torch.zeros_like(f0))
+            valid = torch.arange(first, first + m, device=f0.device) >= 0
+            f0 = torch.where(valid, f0, torch.zeros_like(f0))
+            v = torch.where(valid, v, torch.zeros_like(v))
         loud = loudness(buf[None, buf.shape[0] - (D + m) * FRAME : buf.shape[0] - D * FRAME])[0]
 
         g = self.dec.speaker(self.spk)
         tn = None
         if self.dec.tone is not None:  # each frame's tone is measured over it and the frame before
             tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
-        h = self._features(content, f0, loud, g, tn)
+        use_v = self.dec.expressive
+        h = self._features(content, f0, loud, g, tn, v if use_v else None)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind
-            exc = self.dec.source(torch.cat([self.pending_f0, f0[:-1]])[None], self.phase, nxt=f0[-1:])
-            self.pending_f0 = f0[-1:]
+            f0_e = torch.cat([self.pending_f0, f0[:-1]])
+            v_e = torch.cat([self.pending_v, v[:-1]]) if use_v else None
+            exc = self.dec.source(f0_e[None], self.phase, nxt=f0[-1:], voicing=None if v_e is None else v_e[None], nxt_v=v[-1:] if use_v else None)
+            self.pending_f0, self.pending_v = f0[-1:], v[-1:]
             held = h.new_zeros(1, h.shape[1], 1) if self.pending_h is None else self.pending_h
             h, self.pending_h = torch.cat([held, h[..., :-1]], dim=-1), h[..., -1:]
+            reg = self.dec.register_vec(f0_e[None], None if v_e is None else v_e[None]) if self.dec.reg_cond is not None else None
         else:
-            exc = self.dec.source(f0[None], self.phase, self.prev_f0)
+            exc = self.dec.source(f0[None], self.phase, self.prev_f0, voicing=v[None] if use_v else None)
+            reg = self.dec.register_vec(f0[None], v[None] if use_v else None) if self.dec.reg_cond is not None else None
         self.phase, self.prev_f0 = self.dec.source.last_phase, f0[-1:]
-        return self._generate(h, g, exc)
+        return self._generate(h, g, exc, reg=reg)
 
 
 def streaming(decoder: str, pitch: str, device: str = "cuda:0", encoder: str | None = None, level: float | None = None,

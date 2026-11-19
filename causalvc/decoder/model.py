@@ -163,9 +163,18 @@ class Source(nn.Module):
         ok = half.abs() > 1e-7
         return torch.where(ok, torch.sin(k * theta / 2) * torch.sin((k + 1) * theta / 2) / torch.where(ok, half, 1.0), 0.0)
 
-    def forward(self, f0: torch.Tensor, phase0: torch.Tensor | None = None, prev: torch.Tensor | None = None, nxt: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        f0: torch.Tensor,
+        phase0: torch.Tensor | None = None,
+        prev: torch.Tensor | None = None,
+        nxt: torch.Tensor | None = None,
+        voicing: torch.Tensor | None = None,
+        nxt_v: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """f0 [B, T]; phase0 [B] and prev [B] (the F0 of the frame before) carry a stream across calls;
-        nxt [B] is the F0 of the frame after the last one, for glide="next"."""
+        nxt [B] is the F0 of the frame after the last one, for glide="next". Optional `voicing` [B, T] in
+        0..1 blends harmonic amplitude against breath noise smoothly on half-voiced laughs, sighs and fry."""
         f = f0.repeat_interleave(FRAME, dim=1).double()  # [B, N]
         if self.glide == "next":
             # A pitch frame is the pitch at the *start* of its 10 ms (measured on both trackers), so holding
@@ -185,11 +194,22 @@ class Source(nn.Module):
         if phase0 is not None:
             phase = phase + phase0[:, None]
         self.last_phase = phase[:, -1] % 1.0
+        if voicing is None:
+            voiced = (f > 0).float()[:, None]
+        else:
+            vf = voicing.clamp(0.0, 1.0).float() * (f0 > 0).float()
+            if self.glide == "next":
+                nv = vf[:, -1:] if nxt_v is None else (nxt_v.clamp(0.0, 1.0).float() * ((f0[:, -1] if nxt is None else nxt) > 0).float())[:, None]
+                after_v = torch.cat([vf[:, 1:], nv], dim=1)
+                ramp_v = torch.arange(FRAME, device=f0.device, dtype=torch.float32) / FRAME
+                v_samp = (vf[..., None] + (after_v - vf)[..., None] * ramp_v).flatten(1)
+            else:
+                v_samp = vf.repeat_interleave(FRAME, dim=1)
+            voiced = (v_samp * (f > 0).float())[:, None]
         if self.phase_only:
-            return torch.stack([(phase % 1.0).float(), f.float()], dim=1)
+            return torch.cat([torch.stack([(phase % 1.0).float(), f.float()], dim=1), voiced], dim=1)
         k = torch.arange(1, self.h + 1, device=f0.device, dtype=torch.float64)[None, :, None]
         sines = torch.sin(2 * math.pi * ((phase[:, None] * k) % 1.0)).float()
-        voiced = (f > 0).float()[:, None]
         std = voiced * self.noise + (1 - voiced) * self.amp / 3
         out = [sines * (f.float()[:, None] * k.float() < SR / 2) * voiced * self.amp]
         if self.bands:
@@ -210,7 +230,7 @@ class Source(nn.Module):
         with torch.autocast(phase_f.device.type, enabled=False):
             ph = phase_f[:, 0, rem - 1 :: rem].float()
             f = phase_f[:, 1, rem - 1 :: rem].float()
-            voiced = (f > 0).float()[:, None]
+            voiced = phase_f[:, 2:3, rem - 1 :: rem].float() if phase_f.shape[1] > 2 else (f > 0).float()[:, None]
             k = torch.arange(1, self.h + 1, device=ph.device, dtype=torch.float32)[None, :, None]
             ratio = f[:, None] * k / float(rate)
             win = 0.5 * (1.0 + torch.cos(math.pi * ((ratio - 0.40) / 0.07).clamp(0.0, 1.0)))
@@ -251,6 +271,7 @@ class Decoder(nn.Module):
         tone: int = 0,
         antialias: bool = False,
         content_hz: int = 50,
+        expressive: bool = False,
     ):
         super().__init__()
         rates = tuple(rates)
@@ -259,6 +280,7 @@ class Decoder(nn.Module):
         self.rates = rates
         self.antialias = bool(antialias)
         self.content_hz = content_hz
+        self.expressive = bool(expressive)
         self.speaker = nn.Embedding(n_speakers, spk_dim)
         self.content = nn.Linear(content_dim, dim)
         self.pitch = nn.Embedding(256, dim)
@@ -268,6 +290,12 @@ class Decoder(nn.Module):
         self.tone = nn.Linear(tone, dim) if tone else None
         if tone:
             nn.init.zeros_(self.tone.weight), nn.init.zeros_(self.tone.bias)
+        # Continuous log-pitch (32-1400 Hz) + periodicity confidence (0..1) for smooth fry/soprano and register shift.
+        self.f0_proj = nn.Linear(2, dim) if self.expressive else None
+        self.reg_cond = nn.Linear(2, channels) if self.expressive else None
+        if self.expressive:
+            nn.init.zeros_(self.f0_proj.weight), nn.init.zeros_(self.f0_proj.bias)
+            nn.init.zeros_(self.reg_cond.weight), nn.init.zeros_(self.reg_cond.bias)
         # Diagnostic only: condition on the target's own mel spectrogram (copy-synthesis ceiling).
         self.mel = nn.Linear(128, dim) if mel_cond else None
         if mel_cond:
@@ -334,8 +362,30 @@ class Decoder(nn.Module):
             return torch.where((f0 > 0)[..., None], pe, self.pitch(torch.zeros_like(lo)))
         return self.pitch(self.pitch_bucket(f0))
 
-    def features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, spk: torch.Tensor, mel: torch.Tensor | None = None,
-                 tone: torch.Tensor | None = None, content_hz: int | None = None):
+    @staticmethod
+    def register_vec(f0: torch.Tensor, voicing: torch.Tensor | None = None) -> torch.Tensor:
+        """[..., T] -> [..., T, 2]: continuous log2(f0 / 200 Hz) where voiced, and periodicity in 0..1."""
+        active = (f0 > 0).float()
+        lf = torch.log2(f0.float().clamp_min(32.0) / 200.0) * active
+        v = active if voicing is None else (voicing.float().clamp(0.0, 1.0) * active)
+        return torch.stack([lf, v], dim=-1)
+
+    @staticmethod
+    def tone_gate(loud: torch.Tensor) -> torch.Tensor:
+        """Smooth 0..1 gate over -55..-40 dB so silent frames never inject a bright 0 dB tone ratio."""
+        return ((loud.float() + 55.0) / 15.0).clamp(0.0, 1.0)
+
+    def features(
+        self,
+        content: torch.Tensor,
+        f0: torch.Tensor,
+        loud: torch.Tensor,
+        spk: torch.Tensor,
+        mel: torch.Tensor | None = None,
+        tone: torch.Tensor | None = None,
+        content_hz: int | None = None,
+        voicing: torch.Tensor | None = None,
+    ):
         """content [B, T/2, C] at 50 Hz (or [B, T, C] at 100 Hz); f0 (Hz, 0 unvoiced) and loud (dB) [B, T]
         at 100 Hz; spk [B]. Returns hidden [B, D, T] and speaker vector."""
         g = self.speaker(spk)
@@ -351,10 +401,16 @@ class Decoder(nn.Module):
                 x = x.repeat_interleave(2, dim=1)[:, :t]
         pe = self.pitch_embed(f0[:, :t])
         x = x + pe + self.loud((loud[:, :t, None] + 40.0) / 20.0)
+        if self.f0_proj is not None:
+            rv = self.register_vec(f0[:, :t], None if voicing is None else voicing[:, :t]).to(self.f0_proj.weight.dtype)
+            x = x + self.f0_proj(rv)
         if self.mel is not None:
             x = x + self.mel(mel[:, :t])
         if self.tone is not None and tone is not None:
-            x = x + self.tone(tone[:, :t] / 10.0)
+            tn = self.tone((tone[:, :t] / 10.0).to(self.tone.weight.dtype))
+            if self.expressive:
+                tn = tn * self.tone_gate(loud[:, :t])[..., None].to(tn.dtype)
+            x = x + tn
         x = x.transpose(1, 2)
         for block in self.blocks:
             x = block(x, g)
@@ -362,9 +418,11 @@ class Decoder(nn.Module):
             x = (x + F.pad(x, (1, 0), mode="replicate")[..., :-1]) / 2
         return x, g
 
-    def generate(self, h: torch.Tensor, g: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+    def generate(self, h: torch.Tensor, g: torch.Tensor, excitation: torch.Tensor, reg: torch.Tensor | None = None) -> torch.Tensor:
         """h [B, D, T], excitation [B, C, T * FRAME] -> waveform [B, 1, T * FRAME]."""
         x = self.pre(h) + self.pre_cond(g)[..., None]
+        if self.reg_cond is not None and reg is not None:
+            x = x + self.reg_cond(reg.to(self.reg_cond.weight.dtype)).transpose(1, 2)
         if self.exc == "multirate":
             for up, src, res, rate, rem in zip(self.ups, self.src, self.res, self.stage_rates, self.stage_rem):
                 e_i = self.source.stage_excitation(excitation, rate, rem).to(x.dtype)
@@ -410,17 +468,30 @@ def loudness(wav: torch.Tensor) -> torch.Tensor:
 
 
 TONE_BANDS = ((2000, 8000, 250, 2000), (700, 2000, 250, 700))  # brightness, vowel openness
+_TONE_BANKS: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _tone_buffers(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    key = str(device)
+    bufs = _TONE_BANKS.get(key)
+    if bufs is None:
+        win = torch.hann_window(2 * FRAME, device=device)
+        f = torch.arange(FRAME + 1, device=device, dtype=torch.float32) * (SR / (2 * FRAME))
+        cols = [((f >= lo) & (f < hi)).float() for a, b, c, d in TONE_BANDS for lo, hi in ((a, b), (c, d))]
+        bufs = (win, torch.stack(cols, dim=-1))
+        _TONE_BANKS[key] = bufs
+    return bufs
 
 
 def tone(wav: torch.Tensor) -> torch.Tensor:
     """[B, N] at 48 kHz -> [B, N // FRAME, 2] in dB: brightness (2-8 kHz against 0.25-2 kHz) and
     openness (0.7-2 kHz against 0.25-0.7 kHz) of each 10 ms frame, from that frame and the one before."""
     n = wav.shape[1] // FRAME
-    x = F.pad(wav[:, : n * FRAME], (FRAME, 0)).unfold(1, 2 * FRAME, FRAME)  # [B, n, 960]
-    S = torch.fft.rfft(x * torch.hann_window(2 * FRAME, device=wav.device)).abs().pow(2)
-    f = torch.arange(S.shape[-1], device=wav.device) * SR / (2 * FRAME)
-    e = lambda lo, hi: S[..., (f >= lo) & (f < hi)].sum(-1) + 1e-4  # noqa: E731  (the floor keeps silence near 0 dB)
-    return torch.stack([10 * torch.log10(e(a, b) / e(c, d)) for a, b, c, d in TONE_BANDS], dim=-1)
+    win, bank = _tone_buffers(wav.device)
+    x = F.pad(wav[:, : n * FRAME].float(), (FRAME, 0)).unfold(1, 2 * FRAME, FRAME)  # [B, n, 960]
+    S = torch.fft.rfft(x * win).abs().pow(2)
+    e = S @ bank + 1e-4  # fixed matmul (no boolean indexing), so CUDA graphs can record it
+    return 10.0 * torch.log10(e[..., 0::2] / e[..., 1::2])
 
 
 class CausalMel(nn.Module):

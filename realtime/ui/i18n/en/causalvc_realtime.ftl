@@ -37,7 +37,7 @@ none = None
 reload = Reload
 section-voice = Voice
 pitch = Pitch (semitones)
-pitch-detail = How far to shift your voice: +12 is one octave up. Pitch match below can suggest a value.
+pitch-detail = How far to shift your voice: +12 is one octave up.
 pitch-advanced = Advanced pitch
 pitch-advanced-detail = Output pitch = your pitch × the shift above + an offset in Hz, with an optional ceiling for peaks. Most voices don't need these. Offset: { $offset }; ceiling: { $ceiling }.
 pitch-advanced-show = Show

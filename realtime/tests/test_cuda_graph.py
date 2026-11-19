@@ -108,6 +108,48 @@ class CudaGraphTest(unittest.TestCase):
             runs.append(torch.cat([voice.process(x[i : i + 1920]) for i in range(0, x.shape[0] - 1919, 1920)]).cpu())
         self.assertLess(float((runs[0] - runs[1]).abs().max()), 1e-4)
 
+    def test_expressive_and_tone_decoder_records_cuda_graph(self):
+        import tempfile
+        from pathlib import Path
+        from causalvc.decoder.model import Decoder
+        from causalvc.fast import FastStreamingVC
+        from causalvc.voice import load
+
+        device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")
+        spec = load(find_voice().model_path)
+        ck = torch.load(spec["decoder"], map_location="cpu")
+        cfg = {**ck["cfg"], "tone": 2, "expressive": True}
+        dec = Decoder(len(ck["speakers"]), **cfg)
+        own = dec.state_dict()
+        for k, v in ck["generator"].items():
+            if k in own and own[k].shape == v.shape:
+                own[k].copy_(v)
+        dec.load_state_dict(own)
+        with torch.no_grad():
+            dec.tone.weight.fill_(0.02)
+            dec.tone.bias.fill_(0.1)
+            dec.f0_proj.weight.fill_(0.02)
+            dec.reg_cond.weight.fill_(0.02)
+        with tempfile.TemporaryDirectory() as tmp:
+            dec_path = str(Path(tmp) / "decoder.pt")
+            torch.save({"generator": dec.state_dict(), "cfg": cfg, "speakers": ck["speakers"], "step": 1}, dec_path)
+            x = speech_like(1.5).to(device)
+            graph_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), spec["encoder"], graphs=True)
+            graph_vc.set_voice(spec["speaker"], semitones=4.0)
+            graph_vc.prepare(960)
+            self.assertIsNotNone(graph_vc.graph)
+            eager_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), spec["encoder"], graphs=False)
+            eager_vc.set_voice(spec["speaker"], semitones=4.0)
+            for _ in range(13):
+                eager_vc.process(torch.zeros(32 * 480, device=device))
+            for _ in range(3):
+                eager_vc.process(torch.zeros(960, device=device))
+            torch.manual_seed(0)
+            yg = torch.cat([graph_vc.process(x[i : i + 960]) for i in range(0, len(x), 960)]).cpu()
+            torch.manual_seed(0)
+            ye = torch.cat([eager_vc.process(x[i : i + 960]) for i in range(0, len(x), 960)]).cpu()
+            self.assertLess(float((yg - ye).pow(2).mean().sqrt()), 1e-3 * float(ye.pow(2).mean().sqrt()))
+
 
 if __name__ == "__main__":
     unittest.main()

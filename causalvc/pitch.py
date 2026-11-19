@@ -9,6 +9,13 @@ import torch
 import torch.nn.functional as F
 
 
+def voicing_from_peak(peak: torch.Tensor, thr: float) -> torch.Tensor:
+    """Smooth periodicity confidence in 0..1 from RMVPE salience peak: 0 below `thr`,
+    rising smoothly across breathy/half-voiced laughs and fry (0.03..0.55) to 1 on clean vowels."""
+    v = ((peak - thr) / max(1e-4, 0.55 - thr)).clamp(0.0, 1.0).sqrt()
+    return torch.where(peak > thr, v, torch.zeros_like(v))
+
+
 class Rmvpe:
     hop = 160  # samples at 16 kHz -> 100 frames per second
 
@@ -32,14 +39,23 @@ class Rmvpe:
         mel = F.pad(mel, (0, 32 * ((n - 1) // 32 + 1) - n), mode="reflect")
         return self.model(mel)[:, :n].float()
 
-    def decode(self, sal: torch.Tensor) -> torch.Tensor:
-        """Salience [B, T, 360] -> F0 in Hz [B, T], 0 where unvoiced."""
+    def decode_with_voicing(self, sal: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Salience [B, T, 360] -> (F0 in Hz [B, T], voicing confidence in 0..1 [B, T])."""
         peak, centre = sal.max(dim=-1)
         idx = centre[..., None] + torch.arange(9, device=sal.device)  # window in padded coordinates
         local = F.pad(sal, (4, 4)).gather(-1, idx)
         cents = (local * self.cents[idx]).sum(-1) / local.sum(-1).clamp_min(1e-9)
         f0 = 10.0 * 2.0 ** (cents / 1200.0)
-        return torch.where(peak > self.thr, f0, torch.zeros_like(f0))
+        return torch.where(peak > self.thr, f0, torch.zeros_like(f0)), voicing_from_peak(peak, self.thr)
+
+    def decode(self, sal: torch.Tensor) -> torch.Tensor:
+        """Salience [B, T, 360] -> F0 in Hz [B, T], 0 where unvoiced."""
+        return self.decode_with_voicing(sal)[0]
+
+    @torch.no_grad()
+    def pitch_and_voicing(self, wav16: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """[B, N] at 16 kHz -> (F0 in Hz, voicing in 0..1), each [B, N // 160 + 1]."""
+        return self.decode_with_voicing(self.salience(wav16))
 
     @torch.no_grad()
     def __call__(self, wav16: torch.Tensor) -> torch.Tensor:

@@ -22,7 +22,7 @@ from causalvc.pitch_causal import load_pitch
 DELAY = 5  # 100 Hz frames between the newest input and the newest output
 HIST = 128  # frames of features kept for the decoder
 GEN = 32  # frames of context the waveform generator is given
-F0_RANGE = (50.0, 1100.0)  # Hz: the span of the decoder's pitch buckets (Decoder.pitch_bucket)
+F0_RANGE = (32.0, 1400.0)  # Hz: sub-50 Hz vocal fry up to high soprano/whistle
 
 
 def map_f0(f0: torch.Tensor, ratio: float, offset: float = 0.0, ceiling: float = 0.0, keep: float = 1.0) -> torch.Tensor:
@@ -88,12 +88,14 @@ class StreamingVC:
         self.buf = torch.zeros(self.n, device=d)
         self.content = torch.zeros(HIST, 768, device=d)
         self.f0 = torch.zeros(HIST, device=d)
+        self.voicing = torch.zeros(HIST, device=d)
         self.loud = torch.full((HIST,), -100.0, device=d)
         self.tone = torch.zeros(HIST, 2, device=d)
         self.exc = torch.zeros(self.dec.source.channels, HIST * FRAME, device=d)
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.pending_f0 = torch.zeros(1, device=d)  # newest pitch frame, whose excitation waits for the next one
+        self.pending_v = torch.zeros(1, device=d)
         self.level, self.level_pow, self.level_n, self.gain = -23.0, 0.0, 0, 1.0  # running speech level (dB, power), frames seen, gain
 
     LEVEL_BAND = 5.0  # dB above the target that still counts as an ordinary level and is left alone
@@ -165,17 +167,23 @@ class StreamingVC:
 
                     content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
         sal = torch.sigmoid(self.pitch.forward(wav16).float())  # step t is pitch frame t - lookahead
-        f0 = map_f0(self.pitch.decode(sal)[0, frames + self.pitch.lookahead], self.ratio, self.offset, self.ceiling, self.keep)
+        raw_f0, raw_v = self.pitch.decode_with_voicing(sal)
+        f0 = map_f0(raw_f0[0, frames + self.pitch.lookahead], self.ratio, self.offset, self.ceiling, self.keep)
+        v = raw_v[0, frames + self.pitch.lookahead]
         loud = loudness(self.buf[None])[0, frames]
 
+        use_v = self.dec.expressive
         if self.late:  # excitation for the frame before each new one, now that its following pitch is known
-            exc = self.dec.source(torch.cat([self.pending_f0, f0[:-1]])[None], self.phase, nxt=f0[-1:])[0]
-            self.pending_f0 = f0[-1:]
+            f0_e = torch.cat([self.pending_f0, f0[:-1]])
+            v_e = torch.cat([self.pending_v, v[:-1]]) if use_v else None
+            exc = self.dec.source(f0_e[None], self.phase, nxt=f0[-1:], voicing=None if v_e is None else v_e[None], nxt_v=v[-1:] if use_v else None)[0]
+            self.pending_f0, self.pending_v = f0[-1:], v[-1:]
         else:
-            exc = self.dec.source(f0[None], self.phase, self.prev_f0)[0]
+            exc = self.dec.source(f0[None], self.phase, self.prev_f0, voicing=v[None] if use_v else None)[0]
         self.phase, self.prev_f0 = self.dec.source.last_phase, f0[-1:]
         self.content = torch.cat([self.content[m:], content])
         self.f0 = torch.cat([self.f0[m:], f0])
+        self.voicing = torch.cat([self.voicing[m:], v])
         self.loud = torch.cat([self.loud[m:], loud])
         if self.dec.tone is not None:
             self.tone = torch.cat([self.tone[m:], tone(self.buf[None])[0, frames]])
@@ -185,8 +193,13 @@ class StreamingVC:
         g = dec.speaker(self.spk)
         x = dec.content(self.content[None]) + dec.pitch_embed(self.f0[None])
         x = x + dec.loud((self.loud[None, :, None] + 40.0) / 20.0)
+        if dec.f0_proj is not None:
+            x = x + dec.f0_proj(dec.register_vec(self.f0[None], self.voicing[None]).to(dec.f0_proj.weight.dtype))
         if dec.tone is not None:
-            x = x + dec.tone(self.tone[None] / 10.0)
+            tn = dec.tone((self.tone[None] / 10.0).to(dec.tone.weight.dtype))
+            if dec.expressive:
+                tn = tn * dec.tone_gate(self.loud[None])[..., None].to(tn.dtype)
+            x = x + tn
         x = x.transpose(1, 2)
         for b in dec.blocks:
             x = b(x, g)
@@ -195,5 +208,6 @@ class StreamingVC:
         k, a = m + GEN, dec.lookahead + self.late  # the last `a` frames still lack their future input or excitation
         end = x.shape[-1] - a
         e = self.late  # the excitation buffer runs this many frames behind the features
-        y = dec.generate(x[..., end - k : end], g, self.exc[None, :, (end - k + e) * FRAME : (end + e) * FRAME])
+        reg = dec.register_vec(self.f0[None, end - k : end], self.voicing[None, end - k : end]) if dec.reg_cond is not None else None
+        y = dec.generate(x[..., end - k : end], g, self.exc[None, :, (end - k + e) * FRAME : (end + e) * FRAME], reg=reg)
         return y[0, 0, -m * FRAME :]

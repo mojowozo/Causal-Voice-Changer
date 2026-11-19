@@ -47,8 +47,8 @@ SETTINGS = "realtime_settings.json"
 PARTS = {"encoder": "encoder.pt", "pitch": "pitch.pt"}
 #: Where a project keeps the shared ones: the downloaded base, or where they were trained.
 SHARED_PLACES = {
-    "encoder.pt": ("weights/causalvc-base/encoder.pt", "runs/models/enc-100hz-la3/encoder.pt"),
-    "pitch.pt": ("weights/causalvc-base/pitch.pt", "runs/models/pitch-la1-hi/pitch.pt"),
+    "encoder.pt": ("weights/causalvc-base/encoder.pt", "runs/models/enc-100hz-v4/encoder.pt"),
+    "pitch.pt": ("weights/causalvc-base/pitch.pt", "runs/models/pitch-la1-v4/pitch.pt"),
 }
 
 

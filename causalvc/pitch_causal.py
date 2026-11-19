@@ -70,13 +70,22 @@ class CausalPitch(nn.Module):
         k = self.lookahead
         return self.forward(F.pad(wav16, (0, k * HOP)))[:, k:]
 
-    def decode(self, sal: torch.Tensor) -> torch.Tensor:
+    def decode_with_voicing(self, sal: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        from causalvc.pitch import voicing_from_peak
+
         peak, centre = sal.max(dim=-1)
         idx = centre[..., None] + torch.arange(9, device=sal.device)
         local = F.pad(sal, (4, 4)).gather(-1, idx)
         cents = (local * self.cents[idx]).sum(-1) / local.sum(-1).clamp_min(1e-9)
         f0 = 10.0 * 2.0 ** (cents / 1200.0)
-        return torch.where(peak > self.thr, f0, torch.zeros_like(f0))
+        return torch.where(peak > self.thr, f0, torch.zeros_like(f0)), voicing_from_peak(peak, self.thr)
+
+    def decode(self, sal: torch.Tensor) -> torch.Tensor:
+        return self.decode_with_voicing(sal)[0]
+
+    @torch.no_grad()
+    def pitch_and_voicing(self, wav16: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.decode_with_voicing(torch.sigmoid(self.logits(wav16).float()))
 
     @torch.no_grad()
     def __call__(self, wav16: torch.Tensor) -> torch.Tensor:
@@ -118,14 +127,13 @@ class Crops(torch.utils.data.Dataset):
         n = int(self.seconds * 16000)
         path = self.files[i]
         info = sf.info(path)
-        # Pitch-shift upward/downward by resampling directly from native rate (24-48 kHz) so high pitches
-        # up to ~1000 Hz are densely covered without Nyquist aliasing.
+        # Pitch-shift upward/downward by resampling directly from native rate (24-48 kHz) so sub-50 Hz vocal fry
+        # (down to ~32 Hz) and high pitches (up to ~1400 Hz) are both densely covered without Nyquist aliasing.
         alpha = 1.0
-        if self.pitch_aug and random.random() < 0.45:
-            # Quantize to 32 discrete steps (-3 to +14 semitones) so torchaudio caches few kernel tables per worker.
-            st = random.choice([-3, -2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+        if self.pitch_aug and random.random() < 0.50:
+            st = random.choice([-9, -7, -5, -3, -2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
             alpha = 2.0 ** (st / 12.0)
-        eff_sr = max(8000, int(round(info.samplerate * alpha / 100.0)) * 100)
+        eff_sr = max(6400, int(round(info.samplerate * alpha / 100.0)) * 100)
         want = int(self.seconds * eff_sr)
         start = random.randint(0, max(0, info.frames - want))
         wav, _ = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)

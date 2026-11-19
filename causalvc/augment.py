@@ -86,6 +86,34 @@ def add_noise(wav: torch.Tensor, share: float = 0.6, silent: float = 0.12, sr: i
 
 
 @torch.no_grad()
+def add_silent_transients(src: torch.Tensor, target: torch.Tensor, sr: int = 48000) -> torch.Tensor:
+    """For already-silent target examples in a batch, keep half as pure digital silence and give half a faint
+    room floor plus 1-2 short impulsive clicks/thumps (2-18 ms) while `target` stays 0, so dead air and brief
+    mic clicks come out silent without dulling whispers or laughs on voiced/breathy examples."""
+    rms = target.pow(2).mean(dim=-1).sqrt()
+    silent_idx = torch.nonzero(rms < 1e-4, as_tuple=False).flatten().tolist()
+    if not silent_idx:
+        return src
+    out = src.clone()
+    n = out.shape[-1]
+    dev = out.device
+    freq = torch.fft.rfftfreq(n, 1 / sr, device=dev).clamp_min(20)
+    u = lambda lo, hi: float(torch.empty(1).uniform_(lo, hi))  # noqa: E731
+    for i in silent_idx:
+        if u(0, 1) < 0.45:  # pure digital silence input -> exact digital silence output
+            out[i].zero_()
+            continue
+        x = torch.fft.irfft(torch.fft.rfft(torch.randn(n, device=dev)) * freq ** (-u(0.3, 1.4)), n)
+        out[i] = x / x.pow(2).mean().sqrt().clamp_min(1e-6) * 10 ** (u(-72, -52) / 20)
+        for _ in range(int(u(1, 3))):
+            k = int(u(0.002, 0.018) * sr)
+            at = int(u(0, max(1, n - k)))
+            burst = torch.randn(k, device=dev) * torch.exp(-torch.arange(k, device=dev) / max(1.0, k / u(4, 9)))
+            out[i, at : at + k] += burst / burst.abs().max().clamp_min(1e-6) * 10 ** (u(-32, -8) / 20)
+    return out.clamp(-1.0, 1.0)
+
+
+@torch.no_grad()
 def colour(wav: torch.Tensor, share: float = 0.5, sr: int = 48000) -> torch.Tensor:
     """Microphone and voice colour on a decoder's input, for teaching it to give the same voice whatever
     the microphone: [B, N] -> [B, N], for `share` of the examples (the rest pass unchanged); the clean

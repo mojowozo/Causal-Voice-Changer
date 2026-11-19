@@ -26,13 +26,13 @@ FILES = {
 
 
 # The base a voice is built from: one zip holding these four files (checksums are of the files, not the zip).
-BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v3-100hz.zip?download=true")
+BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v4-100hz.zip?download=true")
 BASE_NAME = "causalvc-base"
 BASE_FILES = {
-    "last.pt": "b3d901474d00be83f614190a4ebf1a339786848d777f222caab7caee761edbcb",
-    "encoder.pt": "7ade63f91e37c9700a229cfb0265b569273b02c14de70bbb9db19cc8618494c3",
-    "pitch.pt": "b946c0d73d07c6d3e62136193e9779527501590b0e88b508b436b8955ea0353b",
-    "args.json": "0af6610fc33225f223f04d715fa36aa76c8a5776c2c6c1b536b4c0e7af8e35b4",
+    "last.pt": "e8f2fd8cf7fb61b68a454f73d1faea479d8a923aef7dd5242119a216d9ff6f61",
+    "encoder.pt": "4b7d7fe78fe01a94648eaf3216e2a14004da8bd09caf7ae0c6661a3251c26693",
+    "pitch.pt": "a4c3f1098cd8592233203129059c93857d8575407edc05faee5b47af0b999636",
+    "args.json": "e39434d48669e6d63a659214df69be7a3f2378c17163e8e3b85dadc6d5f655b2",
 }
 
 
