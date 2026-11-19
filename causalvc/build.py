@@ -28,7 +28,7 @@ if sys.platform != "win32":  # PyTorch supports this only on Linux
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BASE = "runs/models/dec-s6"
+DEFAULT_BASES = ("runs/models/dec-s6-100hz", "runs/models/dec-s6")
 CUSTOM = ROOT / "custom-base"
 
 
@@ -36,8 +36,8 @@ def bases() -> dict[str, Path]:
     """Bases a voice can start from: the default, then every folder in custom-base/ holding last.pt and args.json."""
     from causalvc.weights import base_folder
 
-    local = ROOT / DEFAULT_BASE  # present where the base was trained; everywhere else it is the downloaded one
-    found = {"default": local if (local / "last.pt").is_file() else base_folder()}
+    local = next((ROOT / b for b in DEFAULT_BASES if (ROOT / b / "last.pt").is_file()), None)
+    found = {"default": local if local is not None else base_folder()}
     if CUSTOM.is_dir():
         for d in sorted(CUSTOM.iterdir()):
             if (d / "last.pt").is_file() and (d / "args.json").is_file():
@@ -105,6 +105,9 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--restart", action="store_true", help="ignore an existing checkpoint for this name and start over")
     ap.add_argument("--perturb", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
+    ap.add_argument("--exc", help="override base excitation mode (default: bandlimit when base is full, else base's)")
+    ap.add_argument("--smooth-in", default=None, help="override base input smoothing (default: cp when base has none)")
+    ap.add_argument("--index-bank", type=int, default=0, help="content frames kept for index-aware training (default 0 on voice builds)")
     ap.add_argument("--energy-loss", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--decorr", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
     ap.add_argument("--noise-aug", type=float, default=0.0, help="experimental: see causalvc.decoder.train")
@@ -131,15 +134,17 @@ def main() -> None:
         return str(own.relative_to(ROOT)) if own.is_relative_to(ROOT) else str(own)
 
     encoder = beside("encoder.pt", base["encoder"])
+    pitch_own = beside("pitch.pt", "")
 
     def register(step: int, decoder: Path) -> None:
         """Turn one checkpoint into a voice of its own, NAME-STEPs.cvc: one file that needs nothing else from this machine."""
-        from causalvc.voice import export_cvc, install, voice_folder
+        from causalvc.voice import export_cvc, install, own_parts, voice_folder
 
         label = f"{a.name}-{step}s"
         index = run_dir / "index.pt"
+        parts = own_parts({"encoder": encoder, **({"pitch": pitch_own} if pitch_own else {})}, [base_dir, ROOT], decoder)
         made = export_cvc(decoder, a.name, run_dir / "voices" / f"{label}.cvc", label,
-                          index.read_bytes() if index.is_file() else None)
+                          index.read_bytes() if index.is_file() else None, parts=parts)
         decoder.unlink(missing_ok=True)  # the voice's own copy (this voice only) replaces the checkpoint's
         if a.app_models:
             install(made, voice_folder(Path(a.app_models), a.name) / made.name)  # the same file, in the voice changer's folder for this voice
@@ -151,16 +156,21 @@ def main() -> None:
         return
     if done:
         print(f"resuming {run} from step {done}", flush=True)
+    index_bank = max(0, a.index_bank)
+    exc = a.exc or ("bandlimit" if base.get("exc", "full") == "full" else base["exc"])
+    smooth_in = (base.get("smooth_in") or "cp") if a.smooth_in is None else a.smooth_in
     argv = ["--name", run, "--encoder", encoder,
             "--disc", str(base["disc"]), "--bands", str(base["bands"]), "--lookahead", str(base["lookahead"]),
-            "--channels", str(base["channels"]), "--dim", str(base["dim"]), "--exc", base["exc"],
+            "--channels", str(base["channels"]), "--dim", str(base["dim"]), "--exc", exc,
             "--batch", str(a.batch), "--lr", "1e-4", "--stft-loss", "20", "--steps", str(a.steps),
             "--save-every", str(a.save_every or max(1, a.steps // 4)), "--device", a.device,
-            "--voice", f"{a.name}={a.audio}", "--only", a.name,
+            "--voice", f"{a.name}={a.audio}", "--only", a.name, "--index-bank", str(index_bank),
             "--perturb", str(a.perturb), "--energy-loss", str(a.energy_loss), "--decorr", str(a.decorr), "--noise-aug", str(a.noise_aug)]
     argv += ["--resume"] if done else ["--init", str(base_dir / "last.pt")]
+    argv += ["--rates", *(str(r) for r in base["rates"])] if base.get("rates") else []
+    argv += ["--antialias"] if base.get("antialias") else []
     argv += ["--glide-next"] if base.get("glide_next") else ["--glide"] if base.get("glide") else []
-    argv += ["--smooth-in", base["smooth_in"]] if base.get("smooth_in") else []
+    argv += ["--smooth-in", smooth_in] if smooth_in else []
     argv += ["--tone", str(base["tone"])] if base.get("tone") else []
     argv += ["--bf16"] if a.bf16 else []
     argv += ["--colour-aug", str(a.colour_aug)] if a.colour_aug else []

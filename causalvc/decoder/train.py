@@ -57,12 +57,21 @@ def voice_files(args) -> dict[str, list[str]]:
     return found
 
 
+EXPRESSIVE_TAGS = ("nonverbal_", "emo_amazement", "emo_extasy", "emo_fear", "emo_pain", "emo_anger", "highpitch", "loud")
+
+
 class Crops(torch.utils.data.Dataset):
     """A random speaker, a random file, a random crop, resampled to 48 kHz."""
 
     def __init__(self, spk: dict[str, list[str]], seconds: float, steps: int, only: list[str] | None = None):
         self.names, self.spk, self.seconds, self.steps = list(spk), spk, seconds, steps
         self.pick = [self.names.index(n) for n in only] if only else list(range(len(self.names)))
+        # During base training, oversample expressive / high-pitch EARS clips so 350-800 Hz speech is well covered
+        # without pitch-warping a speaker's true vocal-tract formants.
+        self.expressive = {
+            name: [p for p in files if any(tag in Path(p).stem for tag in EXPRESSIVE_TAGS)] if not only else []
+            for name, files in spk.items()
+        }
 
     def __len__(self) -> int:
         return self.steps
@@ -71,7 +80,10 @@ class Crops(torch.utils.data.Dataset):
         n = int(self.seconds * SR)
         for _try in range(8):
             s = random.choice(self.pick)
-            path = random.choice(self.spk[self.names[s]])
+            name = self.names[s]
+            exp = self.expressive.get(name)
+            pool = exp if exp and random.random() < 0.35 else self.spk[name]
+            path = random.choice(pool)
             info = sf.info(path)
             want = int(self.seconds * info.samplerate)
             start = random.randint(0, max(0, info.frames - want))
@@ -87,6 +99,46 @@ class Crops(torch.utils.data.Dataset):
         return wav * gain, s
 
 
+def detect_fmax(files: list[str]) -> float | None:
+    """Effective upper frequency (Hz) of a target voice's recordings, or None when full-band 48 kHz.
+    Prevents 44.1 kHz or 16 kHz-cutoff livestream recordings from distorting spectral losses above their cutoff."""
+    if not files:
+        return None
+    sampled = random.Random(0).sample(files, min(len(files), 16))
+    nyq = 24000.0
+    powers = []
+    win = torch.hann_window(2048)
+    for path in sampled:
+        try:
+            info = sf.info(path)
+            nyq = min(nyq, 0.475 * info.samplerate)
+            want = min(info.frames, 2 * info.samplerate)
+            n_cuts = 8 if len(sampled) <= 2 and info.frames > 16 * info.samplerate else 1
+            for idx_c in range(n_cuts):
+                start = int((info.frames - want) * (idx_c + 0.5) / n_cuts)
+                w, sr = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
+                x = torch.from_numpy(w[:, 0])
+                if sr != SR:
+                    x = torchaudio.functional.resample(x, sr, SR)
+                if len(x) >= 2048 and x.pow(2).mean().sqrt() > 2e-3:
+                    powers.append(torch.stft(x, 2048, 512, window=win, return_complex=True).abs().pow(2).mean(-1))
+        except Exception:
+            continue
+    if powers:
+        S = torch.stack(powers).mean(0)
+        fr = torch.arange(len(S)) * SR / 2048.0
+        ref = S[(fr >= 500) & (fr < 6000)].mean().clamp_min(1e-12)
+        # Detect hard codec/livestream brickwalls (e.g. MP3/AAC 16 kHz cutoff where power plunges <-72 dB re midband
+        # and drops >22 dB below the band right beneath it), without clipping natural 48 kHz speech air.
+        for hi in (16500, 18500, 20500):
+            above = 10.0 * torch.log10(S[(fr >= hi) & (fr < min(23500, hi + 3000))].mean() / ref + 1e-12)
+            below = 10.0 * torch.log10(S[(fr >= hi - 3500) & (fr < hi - 500)].mean() / ref + 1e-12)
+            if above < -72.0 and (below - above) > 22.0:
+                nyq = min(nyq, float(hi - 500))
+                break
+    return round(max(15500.0, nyq), 1) if nyq < 19000.0 else None
+
+
 def split_outputs(outputs, n: int):
     """The discriminators' outputs for a batch of 2n made of two halves -> the outputs of each half."""
     def part(sl):
@@ -96,26 +148,40 @@ def split_outputs(outputs, n: int):
 
 
 @torch.no_grad()
-def build_bank(spk: dict[str, list[str]], enc, frames: int, dev: str, cache: Path) -> torch.Tensor:
+def build_bank(spk: dict[str, list[str]], enc, frames: int, dev: str, cache: Path, only: list[str] | None = None) -> torch.Tensor:
     """[speakers, frames, C] half-precision content frames of each speaker's own audio."""
     if cache.exists():
-        return torch.load(cache, map_location=dev)
+        loaded = torch.load(cache, map_location=dev)
+        if loaded.shape[0] == len(spk):
+            return loaded
+    want = set(only) if only else None
+    feat_dim = enc.head.out_features if hasattr(enc, "head") else 768
     bank = []
-    for i, files in enumerate(spk.values()):
+    for i, (name, files) in enumerate(spk.items()):
+        if (want is not None and name not in want) or not files:
+            bank.append(torch.zeros(frames, feat_dim, dtype=torch.float16, device=dev))
+            continue
         feats, n = [], 0
         for path in random.Random(0).sample(files, len(files)):
             wav, sr = sf.read(path, dtype="float32", always_2d=True)
             w16 = torchaudio.functional.resample(torch.from_numpy(wav[: 60 * sr, 0]), sr, 16000).to(dev)
             if len(w16) < 8000:
                 continue
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=str(dev).startswith("cuda")):
                 feats.append(enc.encode(w16[None]).float()[0])
             n += len(feats[-1])
             if n >= frames:
                 break
+        if not feats:
+            # Short single-file voice (<0.5s): still encode whatever audio is there.
+            wav, sr = sf.read(files[0], dtype="float32", always_2d=True)
+            w16 = torchaudio.functional.resample(torch.from_numpy(wav[:, 0]), sr, 16000).to(dev)
+            w16 = torch.nn.functional.pad(w16, (0, max(0, 3200 - len(w16))))
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=str(dev).startswith("cuda")):
+                feats.append(enc.encode(w16[None]).float()[0])
         f = torch.cat(feats)
-        bank.append(f.repeat(frames // len(f) + 1, 1)[:frames].half())
-        if i % 20 == 0:
+        bank.append(f.repeat(frames // len(f) + 1, 1)[:frames].half().to(dev))
+        if want is None and i % 20 == 0:
             print(f"bank {i}/{len(spk)}", flush=True)
     bank = torch.stack(bank)
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -123,15 +189,23 @@ def build_bank(spk: dict[str, list[str]], enc, frames: int, dev: str, cache: Pat
     return bank
 
 
-@torch.no_grad()
+WARP_STEPS = (14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26)
+_WARP_RESAMPLERS: dict[tuple[str, int], torchaudio.transforms.Resample] = {}
+
+
 @torch.no_grad()
 def warped_content(enc, wav48: torch.Tensor, frames: int) -> torch.Tensor:
     """Content of a copy whose spectrum (formants and pitch) is stretched by a random factor
-    of 0.7-1.3, put back on the original frame clock. Training on it stops the decoder
-    reading the voice's tone off speaker traces left in the content features, which other
-    people's speech will not carry."""
-    k = random.choice([14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26])
-    wav16 = torchaudio.functional.resample(wav48, 3 * k, 20)  # to 16 kHz and warped by k/20 in one step
+    of 0.6-1.5, put back on the original frame clock. Training on it stops the decoder
+    reading the voice's tone off speaker traces left in the content features, even across
+    large (+10..+14 st) pitch shifts."""
+    k = random.choice(WARP_STEPS)
+    key = (str(wav48.device), k)
+    res = _WARP_RESAMPLERS.get(key)
+    if res is None:
+        res = torchaudio.transforms.Resample(3 * k, 20).to(wav48.device)
+        _WARP_RESAMPLERS[key] = res
+    wav16 = res(wav48)  # to 16 kHz and warped by k/20 in one step
     wav16 = torch.nn.functional.pad(wav16, (0, (-wav16.shape[-1]) % 320))
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=wav48.is_cuda):
         c = enc.encode(wav16).float()
@@ -164,6 +238,7 @@ def write_samples(path: Path, out: Path, pairs: list[tuple[str, str, int]], devi
 
 
 def _quiet_worker(_: int) -> None:
+    torch.set_num_threads(1)
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl-C is handled by the main process, which saves first
 
 
@@ -186,9 +261,11 @@ def main(on_save=None) -> None:
     ap.add_argument("--save-every", type=int, default=5000)
     ap.add_argument("--channels", type=int, default=384)
     ap.add_argument("--dim", type=int, default=256)
+    ap.add_argument("--rates", type=int, nargs="+", default=[10, 6, 4, 2], help="upsampling factors multiplying to 480 (e.g. 20 4 3 2)")
+    ap.add_argument("--antialias", action="store_true", help="causal low-pass anti-imaging on upsamplers and 2x oversampled activations")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--init", help="another run's last.pt to start from (fine-tuning); the step count restarts")
-    ap.add_argument("--disc", type=int, default=1, help="1: magnitude spectrogram discriminators; 2: banded complex ones")
+    ap.add_argument("--disc", type=int, default=1, help="1: magnitude spectrogram discriminators; 2: banded complex ones; 3: +longer 48 kHz periods")
     ap.add_argument("--d-warmup", type=int, default=0, help="steps that train only the discriminators (new ones on a trained generator)")
     ap.add_argument("--bands", type=int, default=0, help="4: add band-summed harmonics up to Nyquist to the excitation")
     ap.add_argument("--glide", action="store_true", help="excitation pitch slides between frames instead of stepping")
@@ -197,7 +274,7 @@ def main(on_save=None) -> None:
     ap.add_argument("--mel-cond", action="store_true", help="diagnostic: also feed the target's own mel (copy-synthesis ceiling)")
     ap.add_argument("--index-bank", type=int, default=0, help="content frames kept per speaker; >0 trains on looked-up content as conversion does")
     ap.add_argument("--stft-loss", type=float, default=0.0, help="weight of a linear-frequency log-STFT loss (resolves high harmonics)")
-    ap.add_argument("--exc", default="full", choices=["full", "bandlimit", "fundamental"], help="which excitation partials each decoder stage is fed")
+    ap.add_argument("--exc", default="full", choices=["full", "bandlimit", "fundamental", "multirate"], help="which excitation partials each decoder stage is fed")
     ap.add_argument("--smooth-in", default="", help="letters: c interpolate content, p blend pitch buckets, h average hidden frames")
     ap.add_argument("--only", nargs="+", help="train on these speakers only; the speaker table is kept")
     ap.add_argument("--perturb", type=float, default=0.0, help="share of steps whose content comes from a spectrally warped copy of the crop")
@@ -245,8 +322,28 @@ def main(on_save=None) -> None:
 
     enc, rmvpe = load_encoder(args.encoder, dev), Rmvpe(dev)
     k = enc.lookahead if hasattr(enc, "lookahead") else 2
-    cfg = {"channels": args.channels, "dim": args.dim, "bands": args.bands, "glide": "next" if args.glide_next else args.glide, "lookahead": args.lookahead, "mel_cond": args.mel_cond, "exc": args.exc, "smooth_in": args.smooth_in, **({"tone": 2} if args.tone else {})}
-    gen, disc, mel_loss = Decoder(len(spk), **cfg).to(dev), Discriminators(args.disc).to(dev), MelLoss().to(dev)
+    content_hz = 100 if getattr(enc, "hop", 320) == 160 else 50
+    f_max = None
+    if args.only:
+        target_audio = [p for n in args.only for p in spk.get(n, [])]
+        f_max = detect_fmax(target_audio)
+        if f_max is not None:
+            print(f"target audio bandwidth ~{f_max / 1000:.1f} kHz: capping spectral losses there", flush=True)
+    cfg = {
+        "channels": args.channels,
+        "dim": args.dim,
+        "bands": args.bands,
+        "glide": "next" if args.glide_next else args.glide,
+        "lookahead": args.lookahead,
+        "mel_cond": args.mel_cond,
+        "exc": args.exc,
+        "smooth_in": args.smooth_in,
+        **(({"rates": list(args.rates)}) if list(args.rates) != [10, 6, 4, 2] else {}),
+        **(({"antialias": True}) if args.antialias else {}),
+        **(({"content_hz": 100}) if content_hz == 100 else {}),
+        **(({"tone": 2}) if args.tone else {}),
+    }
+    gen, disc, mel_loss = Decoder(len(spk), **cfg).to(dev), Discriminators(args.disc).to(dev), MelLoss(f_max=f_max).to(dev)
     print(f"generator {sum(p.numel() for p in gen.parameters()) / 1e6:.1f}M params", flush=True)
     opt_g = torch.optim.AdamW(gen.parameters(), args.lr, betas=(0.8, 0.99))
     opt_d = torch.optim.AdamW(disc.parameters(), args.lr, betas=(0.8, 0.99))
@@ -261,14 +358,22 @@ def main(on_save=None) -> None:
     elif args.init:
         ck = torch.load(args.init, map_location=dev)
         own = gen.state_dict()  # excitation convs may have gained input channels: new ones start at zero
+        loaded_g = 0
         for a, b in ck["generator"].items():
-            if own[a].shape != b.shape:  # new inputs (excitation channels, future taps) start at zero
+            if a not in own:
+                continue
+            if own[a].shape != b.shape:  # new inputs (speakers, future taps) start at zero; changed upsamplers/src keep fresh init
+                if a.startswith(("ups.", "src.")):
+                    continue
                 own[a].zero_()
                 part = tuple(slice(0, min(m, n)) for m, n in zip(own[a].shape, b.shape))  # the base may also have more (speakers)
                 own[a][part] = b[part]
+                loaded_g += 1
             else:
                 own[a].copy_(b)
+                loaded_g += 1
         gen.load_state_dict(own)
+        print(f"generator: {loaded_g} of {len(own)} tensors loaded", flush=True)
         own = disc.state_dict()  # keep the discriminators whose shape is unchanged
         keep = {a: b for a, b in ck["discriminator"].items() if a in own and own[a].shape == b.shape}
         disc.load_state_dict(keep, strict=False)
@@ -306,14 +411,20 @@ def main(on_save=None) -> None:
     )
     # Reconstruct frames that end before the encoder's zero-padded lookahead region.
     t_total = int(args.seconds * 100)
-    hi = t_total - 2 * (k + 2)
+    step_frames = 1 if content_hz == 100 else 2
+    hi = t_total - step_frames * (k + 2)
     lo = hi - args.segment
     cmel = CausalMel().to(dev)
-    spec_loss = SpecLoss().to(dev)
-    energy_loss = EnergyLoss().to(dev)
+    spec_loss = SpecLoss(f_max=f_max).to(dev)
+    energy_loss = EnergyLoss(f_max=f_max).to(dev)
     bank = None
     if args.index_bank:
-        bank = build_bank(spk, enc, args.index_bank, dev, Path("runs/cache") / f"bank_{Path(args.encoder).parent.name}_{args.index_bank}.pt")
+        bank_cache = (
+            out / f"bank_{args.index_bank}.pt"
+            if args.only
+            else Path("runs/cache") / f"bank_{Path(args.encoder).parent.name}_{args.index_bank}.pt"
+        )
+        bank = build_bank(spk, enc, args.index_bank, dev, bank_cache, only=args.only)
         print(f"bank {tuple(bank.shape)}", flush=True)
     log, shown = {}, ""
 
@@ -352,7 +463,7 @@ def main(on_save=None) -> None:
         content, f0, loud = extract(enc, rmvpe, src)
         if args.perturb and random.random() < args.perturb:
             content = warped_content(enc, src, content.shape[1])
-        if bank is not None:
+        elif bank is not None:
             content = looked_up(content, bank, s)
         tn = tone_of(src) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
         with amp():

@@ -39,6 +39,12 @@ pub struct Form {
     pub app_models: String,
     #[serde(default)]
     pub noise: bool,
+    #[serde(default = "default_true")]
+    pub colour: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_batch() -> u64 {

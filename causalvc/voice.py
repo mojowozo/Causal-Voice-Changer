@@ -61,16 +61,25 @@ class VoiceFileError(ValueError):
 
 
 #: Where the shared networks were trained, on a machine that has them there instead of the downloaded base.
-SHARED_LOCAL = {"encoder.pt": "runs/models/enc-la2-460/encoder.pt", "pitch.pt": "runs/models/pitch-la2/pitch.pt"}
+SHARED_LOCAL = {
+    "encoder.pt": ("runs/models/enc-100hz-la3/encoder.pt",),
+    "pitch.pt": ("runs/models/pitch-la1-hi/pitch.pt",),
+}
 
 
 def shared(name: str) -> Path:
     """The content encoder ("encoder.pt") or pitch tracker ("pitch.pt") every voice uses."""
-    from causalvc.weights import base_folder, ensure_base
+    from causalvc.weights import BASE_FILES, BASE_URL, base_folder, ensure_base, sha256
 
-    for path in (base_folder() / name, ROOT / SHARED_LOCAL[name]):  # the downloaded base, or where they were trained
+    for rel in SHARED_LOCAL[name]:  # a locally trained network first, else the downloaded base
+        path = ROOT / rel
         if path.is_file():
             return path
+    base = base_folder()
+    if (base / name).is_file() and (
+        not BASE_URL or not (base / "args.json").is_file() or sha256(base / "args.json") == BASE_FILES["args.json"]
+    ):
+        return base / name
     return ensure_base() / name
 
 
@@ -194,14 +203,17 @@ def write_cvc(target, name: str, speaker: str, decoder_bytes: bytes, settings: b
     return target
 
 
-def export_cvc(decoder, speaker: str, target, name: str | None = None, index: bytes | None = None) -> Path:
+def export_cvc(decoder, speaker: str, target, name: str | None = None, index: bytes | None = None,
+               parts: dict | None = None) -> Path:
     """Write a .cvc voice from a decoder checkpoint (with `index`, its index.pt); returns its path."""
     import torch
 
-    target = Path(target)
+    target, decoder = Path(target), Path(decoder)
+    if parts is None:
+        parts = own_parts({}, [decoder.parent, ROOT], decoder)
     buffer = io.BytesIO()
     torch.save(slim_decoder(decoder, speaker), buffer)
-    return write_cvc(target, name or voice_name(target), speaker, buffer.getvalue(), index=index)
+    return write_cvc(target, name or voice_name(target), speaker, buffer.getvalue(), parts=parts, index=index)
 
 
 def folder_to_cvc(path, target, settings: bool = True, name: str | None = None) -> Path:
@@ -276,7 +288,9 @@ def own_parts(spec: dict, bases: list[Path], decoder) -> dict:
         if path is None:
             continue
         member = CVC_PARTS[key]
-        shared_copies = [p for p in (base_folder() / member, ROOT / SHARED_LOCAL[member]) if p.is_file()]
+        shared_copies = [
+            p for p in (base_folder() / member, *(ROOT / rel for rel in SHARED_LOCAL[member])) if p.is_file()
+        ]
         if not any(_same_file(path, copy) for copy in shared_copies):
             parts[key] = path
     return parts

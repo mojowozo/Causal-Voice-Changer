@@ -115,6 +115,11 @@ fn voice_page(app: &App) -> Element<'_, Message> {
                 .toggler(app.noise, Message::Noise),
         )
         .add(
+            settings::item::builder(fl!("colour"))
+                .description(fl!("colour-detail"))
+                .toggler(app.colour, Message::Colour),
+        )
+        .add(
             settings::item::builder(fl!("restart"))
                 .description(fl!("restart-detail"))
                 .toggler(app.restart, Message::Restart),

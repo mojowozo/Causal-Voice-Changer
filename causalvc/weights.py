@@ -26,13 +26,13 @@ FILES = {
 
 
 # The base a voice is built from: one zip holding these four files (checksums are of the files, not the zip).
-BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base.zip?download=true")
+BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v3-100hz.zip?download=true")
 BASE_NAME = "causalvc-base"
 BASE_FILES = {
-    "last.pt": "2af712f8ce1bd1478fbd8545732aa1e2098bb806e85f2161367bbfea5a095d4a",
-    "encoder.pt": "4a066fa47fc5f0a6ce89823f640aa3f0035e312a3b3b11aec76e884a0ac75abb",
-    "pitch.pt": "1afb8e20235061fa08db98d0ce17c1d23f13d477037f2e45b0f554dee945d735",
-    "args.json": "71804d09052da26d2c3c7318cf3c9dfd1aee1f9233a951a0304d2bee1d5ab584",
+    "last.pt": "b3d901474d00be83f614190a4ebf1a339786848d777f222caab7caee761edbcb",
+    "encoder.pt": "7ade63f91e37c9700a229cfb0265b569273b02c14de70bbb9db19cc8618494c3",
+    "pitch.pt": "b946c0d73d07c6d3e62136193e9779527501590b0e88b508b436b8955ea0353b",
+    "args.json": "0af6610fc33225f223f04d715fa36aa76c8a5776c2c6c1b536b4c0e7af8e35b4",
 }
 
 
@@ -81,7 +81,9 @@ def base_folder() -> Path:
 def ensure_base() -> Path:
     """Folder holding the base (last.pt, args.json, encoder.pt, pitch.pt), downloaded and unpacked on first use."""
     folder = base_folder()
-    if all((folder / name).is_file() for name in BASE_FILES):
+    if all((folder / name).is_file() for name in BASE_FILES) and (
+        not BASE_URL or sha256(folder / "args.json") == BASE_FILES["args.json"]
+    ):
         return folder
     if not BASE_URL:
         sys.exit(f"the base is not in {folder} and no download address is set (CAUSALVC_BASE_URL)")

@@ -53,9 +53,14 @@ class StreamingVC:
         self.dec.load_state_dict(ckpt["generator"])
         self.dec.to(device).eval()
         # glide="next" slides the excitation pitch to the following frame's value, so it runs one frame behind
+        self.hop100 = getattr(self.enc, "hop", 320) == 160
+        self.base_delay = (self.pitch.lookahead + 3) if self.hop100 else DELAY
         self.late = int(self.dec.source.glide == "next")
-        self.delay = DELAY + self.dec.lookahead + self.late  # frames between the newest input and the newest output
-        assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
+        self.delay = self.base_delay + self.dec.lookahead + self.late  # frames between the newest input and the newest output
+        if self.hop100:
+            assert self.enc.lookahead <= self.base_delay
+        else:
+            assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
         self.n = int(window * SR)
         self.ratio, self.offset, self.ceiling, self.keep, self.spk = 1.0, 0.0, 0.0, 1.0, None
         self.index, self.rate = None, 0.0  # the voice's index (causalvc.index) and its strength
@@ -121,24 +126,44 @@ class StreamingVC:
 
     @torch.no_grad()
     def process(self, block: torch.Tensor) -> torch.Tensor:
-        """[n] at 48 kHz (n a multiple of 960) -> [n], delayed by DELAY frames."""
+        """[n] at 48 kHz (n a multiple of 960 at 50 Hz, or 480 at 100 Hz) -> [n], delayed by base_delay frames."""
         m = block.shape[0] // FRAME  # new 100 Hz frames
-        assert block.shape[0] == m * FRAME and m % 2 == 0
+        assert block.shape[0] == m * FRAME and m >= 1 and (self.hop100 or m % 2 == 0)
+        D = self.base_delay
         block = block.to(self.device)
         if self.level_target is not None:
             block = self.normalise(block, m)
         self.buf = torch.cat([self.buf[block.shape[0] :], block])
         total = self.n // FRAME
-        frames = torch.arange(total - DELAY - m, total - DELAY, device=self.device)  # frames made final now
+        frames = torch.arange(total - D - m, total - D, device=self.device)  # frames made final now
 
         wav16 = torchaudio.functional.resample(self.buf[None], SR, 16000)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.buf.is_cuda):
             steps = self.enc.forward(wav16).float()[0]  # step t is content frame t - lookahead
-        content = steps[frames // 2 + self.enc.lookahead]
-        if self.index is not None and self.rate > 0:
-            from causalvc.index import lookup
+        if self.hop100:
+            content = steps[frames + self.enc.lookahead]
+            if self.index is not None and self.rate > 0:
+                from causalvc.index import lookup
 
-            content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
+                content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
+        else:
+            idx_curr = frames // 2 + self.enc.lookahead
+            if "c" in self.dec.smooth_in:
+                idx_prev = (frames // 2 - 1).clamp_min(0) + self.enc.lookahead
+                c_curr, c_prev = steps[idx_curr], steps[idx_prev]
+                if self.index is not None and self.rate > 0:
+                    from causalvc.index import lookup
+
+                    c_curr = torch.lerp(c_curr, lookup(c_curr, self.index, self.index_unit), self.rate)
+                    c_prev = torch.lerp(c_prev, lookup(c_prev, self.index, self.index_unit), self.rate)
+                even = (frames % 2 == 0)[:, None]
+                content = torch.where(even, 0.5 * (c_curr + c_prev), c_curr)
+            else:
+                content = steps[idx_curr]
+                if self.index is not None and self.rate > 0:
+                    from causalvc.index import lookup
+
+                    content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
         sal = torch.sigmoid(self.pitch.forward(wav16).float())  # step t is pitch frame t - lookahead
         f0 = map_f0(self.pitch.decode(sal)[0, frames + self.pitch.lookahead], self.ratio, self.offset, self.ceiling, self.keep)
         loud = loudness(self.buf[None])[0, frames]
@@ -158,7 +183,7 @@ class StreamingVC:
 
         dec = self.dec
         g = dec.speaker(self.spk)
-        x = dec.content(self.content[None]) + dec.pitch(dec.pitch_bucket(self.f0[None]))
+        x = dec.content(self.content[None]) + dec.pitch_embed(self.f0[None])
         x = x + dec.loud((self.loud[None, :, None] + 40.0) / 20.0)
         if dec.tone is not None:
             x = x + dec.tone(self.tone[None] / 10.0)

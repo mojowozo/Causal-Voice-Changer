@@ -29,6 +29,8 @@ batch = Batch size
 batch-detail = Clips trained on at once. Lower it if the GPU runs out of memory.
 noise = Ignore background sounds
 noise-detail = Trains the voice to stay silent through clicks, snaps, claps and room noise. Whispers and laughs lose a little detail.
+colour = Random microphone colour
+colour-detail = Gives half of the training inputs a random microphone sound, so the voice depends less on your mic. On by default.
 restart = Start over
 restart-detail = Ignore this voice name's earlier progress and train from the beginning. Applies to the next build only.
 

@@ -103,9 +103,13 @@ def agreement(f_s: torch.Tensor, f_t: torch.Tensor) -> dict[str, float]:
     }
 
 
+def _worker_init(_: int) -> None:
+    torch.set_num_threads(1)
+
+
 class Crops(torch.utils.data.Dataset):
-    def __init__(self, files: list[str], seconds: float):
-        self.files, self.seconds = files, seconds
+    def __init__(self, files: list[str], seconds: float, pitch_aug: bool = False):
+        self.files, self.seconds, self.pitch_aug = files, seconds, pitch_aug
 
     def __len__(self) -> int:
         return len(self.files)
@@ -114,12 +118,20 @@ class Crops(torch.utils.data.Dataset):
         n = int(self.seconds * 16000)
         path = self.files[i]
         info = sf.info(path)
-        want = int(self.seconds * info.samplerate)
+        # Pitch-shift upward/downward by resampling directly from native rate (24-48 kHz) so high pitches
+        # up to ~1000 Hz are densely covered without Nyquist aliasing.
+        alpha = 1.0
+        if self.pitch_aug and random.random() < 0.45:
+            # Quantize to 32 discrete steps (-3 to +14 semitones) so torchaudio caches few kernel tables per worker.
+            st = random.choice([-3, -2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+            alpha = 2.0 ** (st / 12.0)
+        eff_sr = max(8000, int(round(info.samplerate * alpha / 100.0)) * 100)
+        want = int(self.seconds * eff_sr)
         start = random.randint(0, max(0, info.frames - want))
-        wav, sr = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
+        wav, _ = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
         wav = torch.from_numpy(wav[:, 0])
-        if sr != 16000:
-            wav = torchaudio.functional.resample(wav, sr, 16000)
+        if eff_sr != 16000:
+            wav = torchaudio.functional.resample(wav, eff_sr, 16000)
         return F.pad(wav, (0, max(0, n - len(wav))))[:n]
 
 
@@ -144,6 +156,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--eval-every", type=int, default=2500)
+    ap.add_argument("--init", help="pitch.pt checkpoint to fine-tune from")
+    ap.add_argument("--pitch-aug", action="store_true", help="augment crops up to +14 semitones so >500 Hz pitches track cleanly")
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -151,7 +165,7 @@ def main() -> None:
     out = Path(args.out) / args.name
     out.mkdir(parents=True, exist_ok=True)
     (out / "args.json").write_text(json.dumps(vars(args), indent=1))
-    files = sorted(str(p) for d in args.train for p in Path(d).rglob("*") if p.suffix == ".wav" or p.name.endswith("_mic1.flac"))
+    files = sorted(str(p) for d in args.train if Path(d).exists() for p in Path(d).rglob("*") if p.suffix == ".wav" or p.name.endswith("_mic1.flac"))
     valid = sorted(str(p) for p in Path(args.valid).rglob("*.wav"))
     random.Random(0).shuffle(valid)
     valid = valid[:200]
@@ -159,14 +173,17 @@ def main() -> None:
     teacher = Rmvpe(dev)
     cfg = {"dim": args.dim, "blocks": args.blocks, "lookahead": args.lookahead}
     model = CausalPitch(**cfg).to(dev)
+    if args.init:
+        model.load_state_dict(torch.load(args.init, map_location=dev)["model"])
+        print(f"initialised from {args.init}", flush=True)
     print(f"{len(files)} files, {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min((s + 1) / 1000, 0.5 * (1 + np.cos(np.pi * min(s / args.steps, 1.0))))
     )
     loader = torch.utils.data.DataLoader(
-        Crops(files, args.seconds), batch_size=args.batch, shuffle=True, drop_last=True,
-        num_workers=args.workers, persistent_workers=True,
+        Crops(files, args.seconds, pitch_aug=args.pitch_aug), batch_size=args.batch, shuffle=True, drop_last=True,
+        num_workers=args.workers, persistent_workers=True, worker_init_fn=_worker_init,
     )
     k, step, t0, log = args.lookahead, 0, time.time(), []
     while step < args.steps:
@@ -189,16 +206,25 @@ def main() -> None:
                 print(f"step {step} loss {loss.item():.5f} {step / (time.time() - t0):.1f} it/s", flush=True)
             if step % args.eval_every == 0 or step == args.steps:
                 model.eval()
-                fs, ft = [], []
+                fs, ft, fs_hi, ft_hi = [], [], [], []
                 with torch.no_grad():
-                    for path in valid:
+                    for idx_v, path in enumerate(valid):
                         w, sr = sf.read(path, dtype="float32", always_2d=True)
-                        x = torchaudio.functional.resample(torch.from_numpy(w[:, 0]).to(dev)[None], sr, 16000)
+                        wt = torch.from_numpy(w[:, 0]).to(dev)[None]
+                        x = torchaudio.functional.resample(wt, sr, 16000)
                         a, b = model(x)[0], teacher(x)[0]
                         m = min(len(a), len(b))
                         fs.append(a[:m]), ft.append(b[:m])
+                        if idx_v < 50:  # +10 st high-pitch tracking check (~300-700 Hz)
+                            sr_hi = int(round(sr * (2.0 ** (10.0 / 12.0)) / 100.0)) * 100
+                            xh = torchaudio.functional.resample(wt, sr_hi, 16000)
+                            if xh.shape[-1] > 3200:
+                                ah, bh = model(xh)[0], teacher(xh)[0]
+                                mh = min(len(ah), len(bh))
+                                fs_hi.append(ah[:mh]), ft_hi.append(bh[:mh])
                 model.train()
-                r = {"step": step, **agreement(torch.cat(fs), torch.cat(ft))}
+                hi_ag = agreement(torch.cat(fs_hi), torch.cat(ft_hi)) if fs_hi else {}
+                r = {"step": step, **agreement(torch.cat(fs), torch.cat(ft)), **({f"hi_{k}": v for k, v in hi_ag.items() if k in ("rpa50", "vuv_err")})}
                 log.append(r)
                 print("== " + " ".join(f"{a} {b:.4f}" if a != "step" else f"step {b}" for a, b in r.items()), flush=True)
                 torch.save({"model": model.state_dict(), "cfg": cfg, "step": step}, out / "pitch.pt")

@@ -23,39 +23,67 @@ import torchaudio
 from causalvc.augment import degrade
 from causalvc.encoder.model import HOP, SR, StreamingEncoder
 
-TEACHER = "/mnt/ssd/Applio-3.7.1/rvc/models/embedders/contentvec"
+ROOT = Path(__file__).resolve().parent.parent
+TEACHER_CANDIDATES = (
+    ROOT / "weights" / "contentvec",
+    Path("/mnt/ssd/Applio-3.7.1/rvc/models/embedders/contentvec"),
+)
+TEACHER = str(next((p for p in TEACHER_CANDIDATES if p.is_dir()), TEACHER_CANDIDATES[-1]))
+EXPRESSIVE_TAGS = ("nonverbal_", "emo_amazement", "emo_extasy", "emo_fear", "emo_pain", "emo_anger", "highpitch", "whisper")
+
+
+def _worker_init(_: int) -> None:
+    torch.set_num_threads(1)
 
 
 class Crops(torch.utils.data.Dataset):
-    """Random fixed-length crops at the files' native rate (resampled on GPU)."""
+    """Random fixed-length crops resampled to 16 kHz across mixed-rate datasets (LibriTTS, VCTK, EARS)."""
 
-    def __init__(self, files: list[str], seconds: float, native_sr: int):
-        self.files, self.n = files, int(seconds * native_sr)
+    def __init__(self, files: list[str], seconds: float):
+        self.files, self.seconds, self.n = files, seconds, int(seconds * SR)
+        self.expressive = [p for p in files if any(t in Path(p).stem for t in EXPRESSIVE_TAGS)]
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, i: int) -> torch.Tensor:
+        use_exp = bool(self.expressive) and random.random() < 0.20
         for _ in range(20):
-            path = self.files[i]
-            frames = sf.info(path).frames
-            if frames >= self.n:
-                start = random.randint(0, frames - self.n)
-                wav, _ = sf.read(path, start=start, frames=self.n, dtype="float32", always_2d=True)
-                return torch.from_numpy(wav[:, 0])
+            path = random.choice(self.expressive) if use_exp else self.files[i]
+            info = sf.info(path)
+            want = int(self.seconds * info.samplerate)
+            if info.frames >= want // 2:
+                start = random.randint(0, max(0, info.frames - want))
+                wav, sr = sf.read(path, start=start, frames=want, dtype="float32", always_2d=True)
+                x = torch.from_numpy(wav[:, 0])
+                if sr != SR:
+                    x = torchaudio.functional.resample(x, sr, SR)
+                if len(x) < self.n:
+                    x = F.pad(x, (0, self.n - len(x)))
+                return x[: self.n]
             i = random.randrange(len(self.files))
         raise RuntimeError("no file long enough")
 
 
-def load_teacher(device: str):
+def load_teacher(device: str, teacher_path: str | None = None):
     from transformers import HubertModel
 
-    return HubertModel.from_pretrained(TEACHER).to(device).eval().requires_grad_(False)
+    src = teacher_path or str(next((p for p in TEACHER_CANDIDATES if p.is_dir()), TEACHER))
+    return HubertModel.from_pretrained(src).to(device).eval().requires_grad_(False)
 
 
 @torch.no_grad()
-def teacher_features(teacher, wav16: torch.Tensor) -> torch.Tensor:
-    return teacher(wav16).last_hidden_state
+def teacher_features(teacher, wav16: torch.Tensor, hop: int = 320) -> torch.Tensor:
+    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=wav16.is_cuda):
+        if hop == 320:
+            return teacher(wav16).last_hidden_state.float()
+        # 100 Hz (10 ms) targets in ContentVec's exact space: pad by one 10 ms hop on each side so frame t is
+        # centred on [160*t - 160 .. 160*t + 240] (~5 ms), matching StreamingEncoder's 10 ms frame clock.
+        w_pad = F.pad(wav16, (160, 160))
+        even = teacher(w_pad).last_hidden_state
+        odd = teacher(w_pad[:, 160:]).last_hidden_state
+        m = min(even.shape[1], odd.shape[1])
+        return torch.stack([even[:, :m], odd[:, :m]], dim=2).flatten(1, 2)[:, : wav16.shape[1] // 160].float()
 
 
 def distill_loss(pred: torch.Tensor, target: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -70,11 +98,14 @@ def distill_loss(pred: torch.Tensor, target: torch.Tensor, k: int) -> tuple[torc
 def evaluate(model, teacher, files: list[str], device: str, degraded: bool = False) -> float:
     model.eval()
     cos = []
+    hop = getattr(model, "hop", 320)
     torch.manual_seed(1)  # the same degradations at every evaluation
     for path in files:
         wav, sr = sf.read(path, dtype="float32", always_2d=True)
         x = torchaudio.functional.resample(torch.from_numpy(wav[:, 0]).to(device)[None], sr, SR)
-        y = teacher_features(teacher, x)
+        if x.shape[-1] < 1600:
+            continue
+        y = teacher_features(teacher, x, hop=hop)
         p = model.encode(degrade(x) if degraded else x)
         n = min(p.shape[1], y.shape[1])
         cos.append(F.cosine_similarity(p[:, :n], y[:, :n], dim=-1).mean().item())
@@ -89,6 +120,8 @@ def main() -> None:
     ap.add_argument("--valid", default="data/raw/libritts_r/LibriTTS_R/test-clean")
     ap.add_argument("--out", default="runs/models")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--hop", type=int, default=320, choices=[160, 320], help="320: 50 Hz (20 ms); 160: 100 Hz (10 ms)")
+    ap.add_argument("--window", type=int, default=150, help="frames of left context attention may use")
     ap.add_argument("--lookahead", type=int, default=2)
     ap.add_argument("--dim", type=int, default=512)
     ap.add_argument("--layers", type=int, default=8)
@@ -99,6 +132,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--augment", action="store_true", help="degrade the student's input like a real microphone")
+    ap.add_argument("--teacher", help="path to ContentVec teacher folder")
     ap.add_argument("--init", help="encoder.pt to start from (weights only)")
     ap.add_argument("--resume", action="store_true", help="continue from the last saved weights (optimizer state is rebuilt)")
     args = ap.parse_args()
@@ -108,26 +142,36 @@ def main() -> None:
     out = Path(args.out) / args.name
     out.mkdir(parents=True, exist_ok=True)
     (out / "args.json").write_text(json.dumps(vars(args), indent=1))
-    files = sorted(str(p) for d in args.train for p in Path(d).rglob("*.wav"))
+    files = sorted(
+        str(p)
+        for d in args.train
+        if Path(d).exists()
+        for p in Path(d).rglob("*")
+        if p.suffix == ".wav" or p.name.endswith("_mic1.flac")
+    )
     valid = sorted(str(p) for p in Path(args.valid).rglob("*.wav"))
     random.Random(0).shuffle(valid)
     valid = valid[:200]
-    native = sf.info(files[0]).samplerate
     loader = torch.utils.data.DataLoader(
-        Crops(files, args.seconds, native), batch_size=args.batch, shuffle=True, drop_last=True,
-        num_workers=args.workers, persistent_workers=True,
+        Crops(files, args.seconds), batch_size=args.batch, shuffle=True, drop_last=True,
+        num_workers=args.workers, persistent_workers=True, worker_init_fn=_worker_init,
     )
     dev = args.device
-    teacher = load_teacher(dev)
-    cfg = {"dim": args.dim, "layers": args.layers, "lookahead": args.lookahead}
+    teacher = load_teacher(dev, args.teacher)
+    cfg = {
+        "dim": args.dim,
+        "layers": args.layers,
+        "lookahead": args.lookahead,
+        **({"hop": args.hop} if args.hop != 320 else {}),
+        **({"window": args.window} if args.window != 150 else {}),
+    }
     model = StreamingEncoder(**cfg).to(dev)
-    print(f"{len(files)} files, {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params", flush=True)
+    print(f"{len(files)} files, {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params (hop={args.hop})", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=0.01)
-    warm = 2000
+    warm = min(2000, max(200, args.steps // 10))
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min((s + 1) / warm, 0.5 * (1 + np.cos(np.pi * min(s / args.steps, 1.0))))
     )
-    resample = torchaudio.transforms.Resample(native, SR).to(dev)
     step, t0, log = 0, time.time(), []
     if args.resume and (out / "encoder.pt").exists():
         ck = torch.load(out / "encoder.pt", map_location=dev)
@@ -142,9 +186,9 @@ def main() -> None:
     start = step
     while step < args.steps:
         for wav in loader:
-            wav16 = resample(wav.to(dev, non_blocking=True))
+            wav16 = wav.to(dev, non_blocking=True)
             wav16 = wav16[:, : HOP * (wav16.shape[1] // HOP)]
-            target = teacher_features(teacher, wav16)
+            target = teacher_features(teacher, wav16, hop=args.hop)
             gain = torch.empty(wav16.shape[0], 1, device=dev).uniform_(-12, 3)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 pred = model((degrade(wav16) if args.augment else wav16) * 10 ** (gain / 20))

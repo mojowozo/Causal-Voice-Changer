@@ -77,6 +77,65 @@ def tone(ws):
     return (10 * torch.log10(b) - 10 * torch.log10(S[(fr >= 80) & (fr < 16000)].sum())).cpu().numpy()
 
 
+def aliasing_spurs(x):
+    """Narrowband (8192-pt STFT) aliasing spur excess in dB above the inter-harmonic floor (0.5-8 kHz):
+    returns dict with +-50 Hz / +-100 Hz frame-rate sidebands and folded stage-rate spurs (1/2/6/8 kHz),
+    or None if too few pitch-stable voiced frames exist."""
+    x = x[: 48000 * 30].to(DEV)
+    f0 = rmvpe_f0(x)
+    n_fft = 8192
+    S = torch.stft(x, n_fft, 480, window=torch.hann_window(n_fft, device=DEV), return_complex=True).abs().pow(2)
+    T = min(len(f0), S.shape[1])
+    fr = torch.arange(S.shape[0], device=DEV) * 48000 / n_fft
+    f = f0[:T]
+    win = f.unfold(0, 9, 1)
+    steady = (win.min(1).values > 110) & (win.max(1).values / win.min(1).values.clamp_min(1) < 1.015)
+    ts = torch.nonzero(steady)[:, 0] + 4
+    if len(ts) < 5:
+        return None
+    Sp = S[:, ts].T
+    c1 = f[ts][:, None] * (1 + torch.arange(-15, 16, device=DEV)[None, :] / 1000.0)
+    best_f = []
+    ks_fit = torch.arange(1, 8, device=DEV)[None, :]
+    for i in range(len(ts)):
+        bins = ((c1[i][:, None] * ks_fit) / (48000 / n_fft)).round().long().clamp(0, S.shape[0] - 1)
+        best_f.append(c1[i][Sp[i][bins].sum(-1).argmax()])
+    fc = torch.stack(best_f)[:, None]
+    harm_f = fc * torch.arange(1, 40, device=DEV)[None, :]
+    d_harm = (fr[None, :, None] - harm_f[:, None, :]).abs().min(-1).values
+    d_sb50 = (fr[None, :, None] - (harm_f[:, None, :] + 50)).abs().min(-1).values.minimum(
+             (fr[None, :, None] - (harm_f[:, None, :] - 50)).abs().min(-1).values)
+    d_sb100 = (fr[None, :, None] - (harm_f[:, None, :] + 100)).abs().min(-1).values.minimum(
+              (fr[None, :, None] - (harm_f[:, None, :] - 100)).abs().min(-1).values)
+
+    def fold_dist(rate, m_max, k_max):
+        folds = torch.cat([(m * float(rate) - k * fc).abs() for m in range(1, m_max) for k in range(2, k_max)], dim=1)
+        return (fr[None, :, None] - folds[:, None, :]).abs().min(-1).values
+
+    d_f1k, d_f2k = fold_dist(1000, 10, 16), fold_dist(2000, 6, 18)
+    d_f6k, d_f8k = fold_dist(6000, 4, 24), fold_dist(8000, 3, 28)
+    band = (fr >= 500) & (fr <= 8000)
+    away = (d_harm > 32) & (d_sb50 > 22) & (d_sb100 > 22)
+    m_floor = band[None, :] & away & (d_f1k > 18) & (d_f2k > 18) & (d_f6k > 18) & (d_f8k > 18)
+
+    def db_of(m):
+        ok = m.sum(-1) > 2
+        if ok.sum() == 0:
+            return float("nan")
+        v = (Sp * m).sum(-1) / m.sum(-1).clamp_min(1)
+        return float(10 * torch.log10(v[ok].mean() + 1e-12))
+
+    fl = db_of(m_floor)
+    return {
+        "sb50_dB": round(db_of(band[None, :] & (d_sb50 < 12) & (d_harm > 25)) - fl, 1),
+        "sb100_dB": round(db_of(band[None, :] & (d_sb100 < 12) & (d_harm > 25) & (d_sb50 > 20)) - fl, 1),
+        "fold1k_dB": round(db_of(band[None, :] & away & (d_f1k < 12)) - fl, 1),
+        "fold2k_dB": round(db_of(band[None, :] & away & (d_f2k < 12)) - fl, 1),
+        "fold6k_dB": round(db_of(band[None, :] & away & (d_f6k < 12)) - fl, 1),
+        "fold8k_dB": round(db_of(band[None, :] & away & (d_f8k < 12)) - fl, 1),
+    }
+
+
 def echo_delay(x):
     """For a mix of a signal and a delayed copy (mic plus model): delay in ms and peak strength."""
     S = torch.stft(x, 1024, 48, window=torch.hann_window(1024), return_complex=True).abs()
@@ -98,7 +157,7 @@ if __name__ == "__main__":
     print(f"real target: median f0 {float(fr.median()):.0f} Hz (10-90%: {float(fr.quantile(.1)):.0f}-{float(fr.quantile(.9)):.0f}), real-vs-real sim {ceil:.3f}, "
           f"utmos {np.mean([mos.score(r16(x)) for x in real[:8]]):.2f}, clarity {np.round(hr, 1)}")
     for p in sys.argv[2:]:
-        y = load48(p); f = rmvpe_f0(y); f = f[f > 0]; lag, v = echo_delay(y); c = clarity(y)[0]
+        y = load48(p); f = rmvpe_f0(y); f = f[f > 0]; lag, v = echo_delay(y); c = clarity(y)[0]; sp = aliasing_spurs(y)
         print(f"{os.path.basename(p)}: sim {emb.embed(r16(y)) @ cen:.3f}, utmos {mos.score(r16(y)):.2f}, median f0 {float(f.median()):.0f} Hz "
               f"(10-90%: {float(f.quantile(.1)):.0f}-{float(f.quantile(.9)):.0f}), clarity {np.round(c, 1) if c else None}, "
-              f"tone minus real {np.round(tone([y]) - rb, 1)}, echo {lag} ms ({v:.2f})")
+              f"spurs {sp}, tone minus real {np.round(tone([y]) - rb, 1)}, echo {lag} ms ({v:.2f})")

@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
+from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, loudness, tone
 from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
@@ -35,7 +35,7 @@ TAIL = 3840  # 48 kHz samples of input kept between blocks (80 ms): covers every
 
 
 def supported(dec: Decoder) -> bool:
-    return dec.lookahead == 0 and not dec.smooth_in and dec.mel is None and dec.exc == "full"
+    return dec.lookahead == 0 and set(dec.smooth_in) <= {"c", "p", "h"} and dec.mel is None and dec.exc in ("full", "bandlimit", "multirate")
 
 
 def map_f0_tensor(f0: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
@@ -71,9 +71,14 @@ class FastStreamingVC:
         self.rot = (ang.cos(), ang.sin())
         # The same filter as torchaudio.functional.resample, built once (and so recordable in a graph).
         self.resample = torchaudio.transforms.Resample(SR, 16000).to(device)
+        self.hop100 = getattr(self.enc, "hop", 320) == 160
+        self.base_delay = (self.pitch.lookahead + 3) if self.hop100 else DELAY
         self.late = int(self.dec.source.glide == "next")
-        self.delay = DELAY + self.late
-        assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
+        self.delay = self.base_delay + self.late
+        if self.hop100:
+            assert self.enc.lookahead <= self.base_delay
+        else:
+            assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
         self.ratio, self.offset, self.ceiling, self.keep = 1.0, 0.0, 0.0, 1.0
         # Kept in place (a recorded graph reads them where they are): the speaker and the pitch settings.
         self.spk = torch.zeros(1, dtype=torch.long, device=device)
@@ -143,14 +148,24 @@ class FastStreamingVC:
         """A causal convolution (decoder.model.CConv) on new frames only."""
         return m.conv(self._hist(key, x, m.pad)) if m.pad else m.conv(x)
 
+    def _lpf(self, lpf: CausalLPF, x: torch.Tensor, key) -> torch.Tensor:
+        return F.conv1d(self._hist(key, x, lpf.pad), lpf.weight, groups=lpf.channels)
+
+    def _aa_act(self, act: AntiAliasAct, x: torch.Tensor, key) -> torch.Tensor:
+        b, c, t = x.shape
+        u = F.conv1d(self._hist((key, "u"), x, act.pad_up), act.w_up, groups=c).view(b, c, 2, t).transpose(2, 3).reshape(b, c, 2 * t)
+        u = F.leaky_relu(u, 0.1)
+        return F.conv1d(self._hist((key, "d"), u, act.pad_dn), act.w_dn, stride=2, groups=c)
+
     # ---- content encoder -------------------------------------------------
 
     def _encode(self, wav16: torch.Tensor, n: int) -> torch.Tensor:
-        """The last 240 + 320 n samples at 16 kHz -> n new encoder steps [n, 768]."""
+        """The last 240 + hop * n samples at 16 kHz -> n new encoder steps [n, 768]."""
         e = self.enc
-        m = torch.log(e.mel(wav16[None]).clamp_min(1e-5))  # [1, mels, 2n]
+        m = torch.log(e.mel(wav16[None]).clamp_min(1e-5))  # [1, mels, 2n at 50 Hz or n at 100 Hz]
         h = F.gelu(e.conv1(self._hist("e.mel", m, 2)))
-        x = F.gelu(e.conv2(self._hist("e.h", h, 2))).transpose(1, 2)  # [1, n, dim]
+        h2_pad = 3 if getattr(e, "hop", 320) == 160 else 2
+        x = F.gelu(e.conv2(self._hist("e.h", h, h2_pad))).transpose(1, 2)  # [1, n, dim]
         for i, blk in enumerate(e.blocks):
             b, t, c = x.shape
             q, k, v = blk.qkv(blk.n1(x)).view(b, t, 3, blk.heads, c // blk.heads).permute(2, 0, 3, 1, 4)
@@ -196,13 +211,16 @@ class FastStreamingVC:
     def _features(self, content: torch.Tensor, f0: torch.Tensor, loud: torch.Tensor, g: torch.Tensor, tn: torch.Tensor | None = None) -> torch.Tensor:
         """content [m, 768], f0 [m], loud [m] for the new frames -> hidden [1, D, m]."""
         d = self.dec
-        x = d.content(content[None]) + d.pitch(d.pitch_bucket(f0[None])) + d.loud((loud[None, :, None] + 40.0) / 20.0)
+        x = d.content(content[None]) + d.pitch_embed(f0[None]) + d.loud((loud[None, :, None] + 40.0) / 20.0)
         if tn is not None:
             x = x + d.tone(tn[None] / 10.0)
         x = x.transpose(1, 2)
         for i, b in enumerate(d.blocks):
             y = self._cconv(b.dw, x, ("d.b", i)).transpose(1, 2) + b.cond(g)[:, None]
             x = x + b.fc2(F.gelu(b.fc1(b.norm(y)))).transpose(1, 2)
+        if "h" in d.smooth_in:
+            z = self._hist("d.h", x, 1)
+            x = (z[..., 1:] + z[..., :-1]) / 2
         return x
 
     def _generate(self, h: torch.Tensor, g: torch.Tensor, exc: torch.Tensor) -> torch.Tensor:
@@ -212,13 +230,28 @@ class FastStreamingVC:
         for i, (up, src, res) in enumerate(zip(d.ups, d.src, d.res)):
             x = F.leaky_relu(x, 0.1)
             z = self._hist(("g.up", i), x, 1)  # a transposed convolution's output hop depends on this frame and the one before
-            x = up.conv(z)[..., up.stride : z.shape[-1] * up.stride] + src(exc)
+            u = up.conv(z)[..., up.stride : z.shape[-1] * up.stride]
+            if up.lpf is not None:
+                u = self._lpf(up.lpf, u, ("g.uplpf", i))
+            if d.exc == "multirate":
+                e_i = d.source.stage_excitation(exc, d.stage_rates[i], d.stage_rem[i]).to(x.dtype)
+                s_i = self._cconv(src, e_i, ("g.src", i))
+            elif d.exc == "bandlimit":
+                s_i = src(d.limit(exc[:, :-1], exc[:, -1:], d.stage_rates[i]).to(x.dtype))
+            else:
+                s_i = src(exc)
+            x = u + s_i
             out = 0
             for j, r in enumerate(res):
                 y = x
-                for k, (c1, c2) in enumerate(zip(r.c1, r.c2)):
-                    t = self._cconv(c1, F.leaky_relu(y, 0.1), ("g.r", i, j, k, 1))
-                    y = y + self._cconv(c2, F.leaky_relu(t, 0.1), ("g.r", i, j, k, 2))
+                if r.a1 is None:
+                    for k, (c1, c2) in enumerate(zip(r.c1, r.c2)):
+                        t = self._cconv(c1, F.leaky_relu(y, 0.1), ("g.r", i, j, k, 1))
+                        y = y + self._cconv(c2, F.leaky_relu(t, 0.1), ("g.r", i, j, k, 2))
+                else:
+                    for k, (c1, c2, a1, a2) in enumerate(zip(r.c1, r.c2, r.a1, r.a2)):
+                        t = self._cconv(c1, self._aa_act(a1, y, ("g.a", i, j, k, 1)), ("g.r", i, j, k, 1))
+                        y = y + self._cconv(c2, self._aa_act(a2, t, ("g.a", i, j, k, 2)), ("g.r", i, j, k, 2))
                 out = out + y
             x = out / len(res)
         return torch.tanh(self._cconv(d.post, F.leaky_relu(x, 0.1), "g.post"))[0, 0]
@@ -305,38 +338,66 @@ class FastStreamingVC:
 
     def _process(self, block: torch.Tensor) -> torch.Tensor:
         m = block.shape[0] // FRAME
-        assert block.shape[0] == m * FRAME and m % 2 == 0
+        assert block.shape[0] == m * FRAME and m >= 1 and (self.hop100 or m % 2 == 0)
+        D = self.base_delay
         buf = torch.cat([self.tail, block.to(self.device)])
         self.tail = buf[-TAIL:]
         self.frames += m
 
         wav16 = self.resample(buf[None])[0]
-        for step in self._encode(wav16[-(240 + 160 * m) :], m // 2):
-            self.steps.append(step)
-        self.steps = self.steps[-(m // 2 + 2) :]
-        # Frame f is final now (f = frames - DELAY - m .. frames - DELAY - 1); it uses content frame f // 2,
-        # which is encoder step f // 2 + lookahead. The newest step is frames // 2 - 1.
-        newest = self.frames // 2 - 1
-        first = self.frames - DELAY - m
-        zero = self.steps[0].new_zeros(self.steps[0].shape)
-        content = []
-        for f in range(first, first + m):
-            back = newest - (f // 2 + self.enc.lookahead)  # how many steps before the newest
-            content.append(self.steps[-1 - back] if f >= 0 and back < len(self.steps) else zero)
-        content = torch.stack(content)
-        if self.index is not None and (self.graphs or self.rate > 0):
-            content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.index_rate)
+        if self.hop100:
+            for step in self._encode(wav16[-(240 + 160 * m) :], m):
+                self.steps.append(step)
+            self.steps = self.steps[-(m + D + 1) :]
+            newest = self.frames - 1
+            first = self.frames - D - m
+            zero = self.steps[0].new_zeros(self.steps[0].shape)
+            content = []
+            for f in range(first, first + m):
+                back = newest - (f + self.enc.lookahead)
+                content.append(self.steps[-1 - back] if f >= 0 and 0 <= back < len(self.steps) else zero)
+            content = torch.stack(content)
+            if self.index is not None and (self.graphs or self.rate > 0):
+                content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.index_rate)
+        else:
+            for step in self._encode(wav16[-(240 + 160 * m) :], m // 2):
+                self.steps.append(step)
+            self.steps = self.steps[-(m // 2 + 3) :]
+            # Frame f is final now (f = frames - D - m .. frames - D - 1); it uses content frame f // 2,
+            # which is encoder step f // 2 + lookahead. The newest step is frames // 2 - 1.
+            newest = self.frames // 2 - 1
+            first = self.frames - D - m
+            zero = self.steps[0].new_zeros(self.steps[0].shape)
+            smooth_c = "c" in self.dec.smooth_in
+            s_lo = first // 2 - int(smooth_c)
+            s_hi = (first + m - 1) // 2
+            c50 = []
+            for s_idx in range(s_lo, s_hi + 1):
+                back = newest - (s_idx + self.enc.lookahead)  # how many steps before the newest
+                c50.append(self.steps[-1 - back] if s_idx >= 0 and 0 <= back < len(self.steps) else zero)
+            c50_t = torch.stack(c50)
+            if self.index is not None and (self.graphs or self.rate > 0):
+                c50_t = torch.lerp(c50_t, lookup(c50_t, self.index, self.index_unit), self.index_rate)
+            content = []
+            for f in range(first, first + m):
+                if f < 0:
+                    content.append(zero)
+                elif smooth_c and f % 2 == 0 and f > 0:
+                    content.append(0.5 * (c50_t[f // 2 - s_lo] + c50_t[f // 2 - 1 - s_lo]))
+                else:
+                    content.append(c50_t[f // 2 - s_lo])
+            content = torch.stack(content)
 
         f0 = self._pitch(wav16[-(1120 + 160 * m) :], m)
         f0 = map_f0_tensor(f0, self.pmap) if self.graphs else map_f0(f0, self.ratio, self.offset, self.ceiling, self.keep)
         if first < 0:  # before any real frame is final the old runtime's history is silence too
             f0 = torch.where(torch.arange(first, first + m, device=f0.device) >= 0, f0, torch.zeros_like(f0))
-        loud = loudness(buf[None, buf.shape[0] - (DELAY + m) * FRAME : buf.shape[0] - DELAY * FRAME])[0]
+        loud = loudness(buf[None, buf.shape[0] - (D + m) * FRAME : buf.shape[0] - D * FRAME])[0]
 
         g = self.dec.speaker(self.spk)
         tn = None
         if self.dec.tone is not None:  # each frame's tone is measured over it and the frame before
-            tn = tone(buf[None, buf.shape[0] - (DELAY + m + 1) * FRAME : buf.shape[0] - DELAY * FRAME])[0, 1:]
+            tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
         h = self._features(content, f0, loud, g, tn)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind
             exc = self.dec.source(torch.cat([self.pending_f0, f0[:-1]])[None], self.phase, nxt=f0[-1:])
@@ -353,7 +414,12 @@ def streaming(decoder: str, pitch: str, device: str = "cuda:0", encoder: str | N
               graphs: bool = False):
     """The fastest runtime that handles this decoder."""
     cfg = torch.load(decoder, map_location="cpu")["cfg"]
-    plain = not cfg.get("lookahead") and not cfg.get("smooth_in") and not cfg.get("mel_cond") and cfg.get("exc", "full") == "full"
+    plain = (
+        not cfg.get("lookahead")
+        and set(cfg.get("smooth_in", "")) <= {"c", "p", "h"}
+        and not cfg.get("mel_cond")
+        and cfg.get("exc", "full") in ("full", "bandlimit", "multirate")
+    )
     if plain and level is None:
         return FastStreamingVC(decoder, pitch, device, encoder, graphs=graphs)
     from causalvc.stream import StreamingVC

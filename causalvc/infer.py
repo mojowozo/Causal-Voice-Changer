@@ -21,10 +21,18 @@ def load_encoder(path: str, device: str) -> StreamingEncoder:
     return enc.to(device).eval().requires_grad_(False)
 
 
+_RES16: dict[str, torchaudio.transforms.Resample] = {}
+
+
 @torch.no_grad()
 def extract(enc: StreamingEncoder, rmvpe: Rmvpe, wav48: torch.Tensor):
     """[B, N] at 48 kHz -> content [B, T/2, C], f0 [B, T], loudness [B, T]."""
-    wav16 = torchaudio.functional.resample(wav48, SR, 16000)
+    dev_key = str(wav48.device)
+    res = _RES16.get(dev_key)
+    if res is None:
+        res = torchaudio.transforms.Resample(SR, 16000).to(wav48.device)
+        _RES16[dev_key] = res
+    wav16 = res(wav48)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=wav48.is_cuda and isinstance(enc, StreamingEncoder)):
         content = enc.encode(wav16).float()
     return content, rmvpe(wav16), loudness(wav48)
@@ -66,14 +74,16 @@ class CausalVC:
     def convert(self, wav48: torch.Tensor, speaker: str, semitones: float = 0.0) -> torch.Tensor:
         """Mono [N] at 48 kHz in, same length out."""
         n = wav48.shape[-1]
-        x = torch.nn.functional.pad(wav48.to(self.device)[None], (0, (-n) % (2 * FRAME)))
+        unit = FRAME if getattr(self.enc, "hop", 320) == 160 else 2 * FRAME
+        x = torch.nn.functional.pad(wav48.to(self.device)[None], (0, (-n) % unit))
         content, f0, loud = extract(self.enc, self.rmvpe, x)
         if self.index > 0:  # pull each content frame toward the target's own nearest frames
             near = self.lookup(content[0], self.bank(speaker))
             content = (1 - self.index) * content + self.index * near[None]
         spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
         f0 = f0 * 2.0 ** (semitones / 12.0)
-        h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None)
+        enc_hz = 100 if getattr(self.enc, "hop", 320) == 160 else 50
+        h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None, content_hz=enc_hz)
         if self.hsmooth:
             k = self.hsmooth
             h = torch.nn.functional.avg_pool1d(torch.nn.functional.pad(h, (k, k), mode="replicate"), 2 * k + 1, 1)

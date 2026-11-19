@@ -62,6 +62,7 @@ DEFAULT_FORM = {
     "device": "cuda:0",
     "fixes": True,
     "noise": False,
+    "colour": True,
     "app_models": str(ROOT / "realtime" / "models"),
 }
 
@@ -107,7 +108,8 @@ class Job:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, name: str, audio: str, batch: int, steps: int, save_every: int, base: str, device: str,
-              restart: bool = False, app_models: str = "", fixes: bool = True, noise: bool = False) -> None:
+              restart: bool = False, app_models: str = "", fixes: bool = True, noise: bool = False,
+              colour: bool = True) -> None:
         self.run_dir, self.stopping = ROOT / "runs" / "models" / f"voice-{name}", False
         cmd = [sys.executable, "-u", "-m", "causalvc.build", "--name", name, "--audio", audio, "--batch", str(batch),
                "--steps", str(steps), "--save-every", str(save_every), "--base", base, "--device", device]
@@ -117,7 +119,7 @@ class Job:
         cmd += ["--perturb", "0.75", "--energy-loss", "20", "--decorr", "10"] if fixes else []
         # Random microphone colour on half of the inputs: the voice depends less on the microphone, keeps bright or
         # breathy voices clearer and sounds a little more natural for everyone (P89: MOS +0.08 over 40 sentences).
-        cmd += ["--colour-aug", "0.5"]
+        cmd += ["--colour-aug", "0.5"] if colour else []
         # Save an average of the recent weights rather than the last step's, which varies from run to run
         # (P89: MOS +0.08 over the same run's last weights, clearer on a bright voice); costs no time.
         cmd += ["--ema", "0.999"]
@@ -214,6 +216,7 @@ def check_config(args: dict, bases: list[str]) -> dict:
         "app_models": str(args.get("app_models") or "").strip(),
         "fixes": bool(args.get("fixes", True)),
         "noise": bool(args.get("noise", False)),
+        "colour": bool(args.get("colour", True)),
     }
 
 

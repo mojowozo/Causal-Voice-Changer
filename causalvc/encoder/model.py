@@ -65,29 +65,35 @@ class StreamingEncoder(nn.Module):
         ffn: int = 2048,
         out_dim: int = 768,
         n_mels: int = 80,
-        window: int = 150,  # frames of left context attention may use (3 s)
-        lookahead: int = 2,  # frames of future (20 ms each)
+        window: int = 150,  # frames of left context attention may use (3 s at 50 Hz)
+        lookahead: int = 2,  # frames of future (hop / 16 samples ms each)
         dropout: float = 0.0,
+        hop: int = 320,  # samples per frame at 16 kHz: 320 (50 Hz) or 160 (100 Hz)
     ):
         super().__init__()
-        self.window, self.lookahead = window, lookahead
+        assert hop in (160, 320)
+        self.window, self.lookahead, self.hop = window, lookahead, hop
         self.mel = torchaudio.transforms.MelSpectrogram(
             SR, n_fft=400, hop_length=160, n_mels=n_mels, center=False, power=1.0
         )
         self.conv1 = nn.Conv1d(n_mels, dim, 3)
-        self.conv2 = nn.Conv1d(dim, dim, 4, stride=2)
+        self.conv2 = nn.Conv1d(dim, dim, 4, stride=hop // 160)
         self.blocks = nn.ModuleList(Block(dim, heads, ffn, dropout=dropout) for _ in range(layers))
         self.norm = nn.LayerNorm(dim)
         self.head = nn.Linear(dim, out_dim)
 
     def frontend(self, wav: torch.Tensor) -> torch.Tensor:
-        """(B, N) -> (B, N // 320, dim); frame t sees samples < 320 * (t + 1)."""
+        """(B, N) -> (B, N // hop, dim); frame t sees samples < hop * (t + 1)."""
         with torch.autocast(wav.device.type, enabled=False):
             m = self.mel(F.pad(wav.float(), (240, 0)))
             m = torch.log(m.clamp_min(1e-5))
-        m = m[..., : 2 * (m.shape[-1] // 2)]
-        h = F.gelu(self.conv1(F.pad(m, (2, 0))))
-        h = F.gelu(self.conv2(F.pad(h, (2, 0))))
+        if self.hop == 320:
+            m = m[..., : 2 * (m.shape[-1] // 2)]
+            h = F.gelu(self.conv1(F.pad(m, (2, 0))))
+            h = F.gelu(self.conv2(F.pad(h, (2, 0))))
+        else:
+            h = F.gelu(self.conv1(F.pad(m, (2, 0))))
+            h = F.gelu(self.conv2(F.pad(h, (3, 0))))
         return h.transpose(1, 2)
 
     def forward(self, wav: torch.Tensor) -> torch.Tensor:
@@ -109,5 +115,5 @@ class StreamingEncoder(nn.Module):
         causal, so the lookahead is paid by padding the end and shifting.
         """
         k = self.lookahead
-        y = self.forward(F.pad(wav, (0, k * HOP)))
+        y = self.forward(F.pad(wav, (0, k * self.hop)))
         return y[:, k:]

@@ -108,7 +108,8 @@ class Discriminators(nn.Module):
             if version == 1
             else [BandD(n) for n in (2048, 1024, 512)]
         )
-        self.ds = nn.ModuleList([PeriodD(p) for p in (2, 3, 5, 7, 11)] + spec)
+        extra = [PeriodD(p) for p in (17, 23)] if version >= 3 else []
+        self.ds = nn.ModuleList([PeriodD(p) for p in (2, 3, 5, 7, 11)] + spec + extra)
 
     def forward(self, x: torch.Tensor):
         return [d(x) for d in self.ds]
@@ -130,10 +131,10 @@ def g_loss(real, fake) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 class MelLoss(nn.Module):
-    def __init__(self, sr: int = 48000):
+    def __init__(self, sr: int = 48000, f_max: float | None = None):
         super().__init__()
         self.mels = nn.ModuleList(
-            torchaudio.transforms.MelSpectrogram(sr, n_fft=n, hop_length=n // 4, n_mels=m, power=1.0)
+            torchaudio.transforms.MelSpectrogram(sr, n_fft=n, hop_length=n // 4, n_mels=m, f_max=f_max, power=1.0)
             for n, m in ((512, 40), (1024, 80), (2048, 128))
         )
 
@@ -150,9 +151,9 @@ class SpecLoss(nn.Module):
     stay narrower than the harmonic spacing at every frequency, so noise between
     high harmonics is penalised directly."""
 
-    def __init__(self, ffts: tuple[int, ...] = (1024, 2048, 4096)):
+    def __init__(self, ffts: tuple[int, ...] = (1024, 2048, 4096), sr: int = 48000, f_max: float | None = None):
         super().__init__()
-        self.ffts = ffts
+        self.ffts, self.sr, self.f_max = ffts, sr, f_max
         for n in ffts:
             self.register_buffer(f"w{n}", torch.hann_window(n), persistent=False)
 
@@ -160,6 +161,9 @@ class SpecLoss(nn.Module):
         loss = 0.0
         for n in self.ffts:
             a, b = (torch.stft(x.squeeze(1), n, n // 4, window=getattr(self, f"w{n}"), return_complex=True).abs() for x in (fake, real))
+            if self.f_max is not None:
+                top = max(8, int(n * self.f_max / self.sr) + 1)
+                a, b = a[:, :top], b[:, :top]
             loss = loss + F.l1_loss(torch.log(a.clamp_min(1e-4)), torch.log(b.clamp_min(1e-4)))
         return loss / len(self.ffts)
 
@@ -170,11 +174,11 @@ class EnergyLoss(nn.Module):
     level a few dB under its true power; averaging power before the log has no such bias,
     so this holds the long-term tone of the output to the recording's."""
 
-    def __init__(self, sr: int = 48000, n_fft: int = 2048, bands: int = 64):
+    def __init__(self, sr: int = 48000, n_fft: int = 2048, bands: int = 64, f_max: float | None = None):
         super().__init__()
         self.n_fft = n_fft
         self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
-        self.scale = torchaudio.transforms.MelScale(bands, sr, n_stft=n_fft // 2 + 1, norm=None)
+        self.scale = torchaudio.transforms.MelScale(bands, sr, f_max=f_max, n_stft=n_fft // 2 + 1, norm=None)
 
     def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
         a, b = (

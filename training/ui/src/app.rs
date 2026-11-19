@@ -66,6 +66,7 @@ pub enum Message {
     Text(Field, String),
     Restart(bool),
     Noise(bool),
+    Colour(bool),
     Install(bool),
     SelectBase(usize),
     SelectGpu(usize),
@@ -100,6 +101,7 @@ pub struct App {
     pub batch: String,
     pub restart: bool,
     pub noise: bool,
+    pub colour: bool,
     pub install: bool,
     pub app_models: String,
     /// Base names from the trainer ("default" first) and their labels.
@@ -163,6 +165,7 @@ impl cosmic::Application for App {
             batch: "8".into(),
             restart: false,
             noise: false,
+            colour: true,
             install: true,
             app_models: String::new(),
             bases: vec!["default".into()],
@@ -214,6 +217,7 @@ impl cosmic::Application for App {
             }
             Message::Restart(on) => self.restart = on,
             Message::Noise(on) => self.noise = on,
+            Message::Colour(on) => self.colour = on,
             Message::Install(on) => self.install = on,
             Message::SelectBase(index) => self.base = index,
             Message::SelectGpu(index) => {
@@ -322,6 +326,7 @@ impl App {
                 // Not offered in the window: every voice trains with the quality fixes.
                 "fixes": true,
                 "noise": self.noise,
+                "colour": self.colour,
                 "restart": self.restart,
                 "app_models": if self.install { self.app_models.trim() } else { "" },
             }),
@@ -398,6 +403,7 @@ impl App {
         self.save_every = form.save_every.to_string();
         self.batch = form.batch.to_string();
         self.noise = form.noise;
+        self.colour = form.colour;
         self.install = !form.app_models.is_empty();
         if !form.app_models.is_empty() {
             self.app_models = form.app_models;
