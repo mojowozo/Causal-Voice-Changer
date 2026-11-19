@@ -85,12 +85,31 @@ def gpus() -> list[str]:
 
 def torch_gpus() -> list[dict]:
     """Every GPU PyTorch can train on, NVIDIA (CUDA) or AMD (ROCm, which uses the same device names)."""
+    # Query in a child process: on Windows, importing torch/numpy on a background thread
+    # deadlocks while another thread is blocked reading sys.stdin.
+    probe = (
+        "import json, torch; "
+        "print(json.dumps("
+        "[{'id': f'cuda:{i}', 'label': torch.cuda.get_device_name(i)} for i in range(torch.cuda.device_count())] "
+        "if torch.cuda.is_available() else [{'id': 'cpu', 'label': None}]"
+        "))"
+    )
     try:
-        import torch
-
-        if torch.cuda.is_available():
-            return [{"id": f"cuda:{i}", "label": torch.cuda.get_device_name(i)} for i in range(torch.cuda.device_count())]
-    except (ImportError, RuntimeError):  # no PyTorch, or a broken GPU driver: train on the CPU
+        res = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        if lines:
+            gpus = json.loads(lines[-1])
+            if isinstance(gpus, list) and gpus:
+                return gpus
+    except (OSError, subprocess.SubprocessError, ValueError):
         pass
     return [{"id": "cpu", "label": None}]
 
