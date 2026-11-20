@@ -104,7 +104,7 @@ def write_private_file(path, text):
 
 
 class EngineServer:
-    def __init__(self, address, engine_factory=None, exit_when_idle=None):
+    def __init__(self, address, engine_factory=None, exit_when_idle=None, updater_factory=None):
         #: A Unix socket path, or ``tcp:<endpoint file>``.
         self.address = address
         #: The token TCP clients must send first; ``None`` on a Unix socket.
@@ -113,6 +113,9 @@ class EngineServer:
         self.exit_when_idle = exit_when_idle
         self.engine = None
         self.init_error = None
+        #: Builds the causalvc.update.Updater (given emit) at start; None in tests: no update commands.
+        self.updater_factory = updater_factory
+        self.updater = None
         self.clients = set()
         self.log_chunks = collections.deque()
         self.log_size = 0
@@ -282,6 +285,43 @@ class EngineServer:
 
     LOG_COMMANDS = ("get_log", "clear_log", "save_log", "shutdown", "ping")
 
+    def update_command(self, name, args):
+        """Update commands work before the engine is ready (or when it failed to start: an update may fix that)."""
+        from causalvc.update import UpdateError
+
+        updater = self.updater
+        if updater is None:
+            raise CommandError("unavailable", "Updates are not available here.")
+        try:
+            if name == "check_update":
+                updater.check(bool(args.get("manual", True)))
+            elif name == "download_update":
+                updater.download()
+            elif name == "install_update":
+                pid = args.get("pid")
+                updater.install(pid if isinstance(pid, int) and not isinstance(pid, bool) else None)
+                # The installer waits for this process and the window to exit; the window closes
+                # itself once this answer arrives, and the engine stops right after.
+                self.loop.call_later(0.5, self.stopping.set)
+            elif name == "skip_update":
+                version = args.get("version")
+                if not isinstance(version, str):
+                    raise CommandError("bad_request", "'version' is required")
+                updater.skip(version)
+            elif name == "later_update":
+                updater.later()
+            elif name == "set_update_check":
+                on = args.get("on")
+                if not isinstance(on, bool):
+                    raise CommandError("bad_request", "'on' is required")
+                updater.set_check_at_launch(on)
+        except UpdateError as error:
+            raise CommandError(error.code, str(error)) from error
+        return updater.snapshot()
+
+    UPDATE_COMMANDS = ("get_update", "check_update", "download_update", "install_update", "skip_update",
+                       "later_update", "set_update_check")
+
     async def run_command(self, name, args):
         if name == "ping":
             return {"protocol": PROTOCOL_VERSION, "ready": self.engine is not None}
@@ -295,6 +335,8 @@ class EngineServer:
         if name == "shutdown":
             self.stopping.set()
             return None
+        if name in self.UPDATE_COMMANDS:
+            return self.update_command(name, args)
         if self.engine is None:
             if self.init_error:
                 raise CommandError("init_failed", self.init_error)
@@ -360,6 +402,7 @@ class EngineServer:
                         "ready": self.engine is not None,
                         "init_error": self.init_error,
                         "state": state,
+                        "update": self.updater.snapshot() if self.updater else None,
                     },
                 }
             ),
@@ -443,6 +486,12 @@ class EngineServer:
         else:
             server = await self.listen_unix()
         self.install_signal_handlers()
+        if self.updater_factory is not None:
+            try:
+                self.updater = self.updater_factory(self.emit)
+                self.updater.launch()
+            except Exception:
+                print(traceback.format_exc())
         self.loop.run_in_executor(self.executor, self.init_engine)
         ticker = asyncio.create_task(self.tick_loop())
         try:
@@ -469,6 +518,15 @@ class EngineServer:
             self.executor.shutdown(wait=False, cancel_futures=True)
 
 
+def make_updater(emit):
+    repo_root = os.path.dirname(PROJECT_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from causalvc.update import Updater
+
+    return Updater("realtime", emit)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="CausalVC realtime engine server")
     parser.add_argument(
@@ -483,7 +541,7 @@ def main(argv=None):
         help="Exit after no client has been connected for this long",
     )
     options = parser.parse_args(argv)
-    server = EngineServer(options.socket, exit_when_idle=options.exit_when_idle)
+    server = EngineServer(options.socket, exit_when_idle=options.exit_when_idle, updater_factory=make_updater)
     sys.stdout = LogWriter(server, sys.stdout)
     sys.stderr = LogWriter(server, sys.stderr)
     asyncio.run(server.serve())

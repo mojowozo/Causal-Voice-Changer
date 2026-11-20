@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace CausalVC.Training.Ui.Pages;
 
-public enum PageKind { Voice, Builds, Log }
+public enum PageKind { Voice, Builds, Log, About }
 
 /// What pages need from the window: the trainer and a few window services.
 public interface IHost

@@ -37,6 +37,7 @@ public sealed partial class MainWindow : Window, IHost
     readonly PerformancePage _performancePage;
     readonly RecordingPage _recordingPage;
     readonly LogPage _logPage;
+    readonly Updates _updates;
     readonly ControlBar _controlBar;
     readonly System.Text.StringBuilder _log = new();
     readonly DispatcherQueueTimer _logFlush;
@@ -67,6 +68,8 @@ public sealed partial class MainWindow : Window, IHost
         _performancePage = new PerformancePage(this);
         _recordingPage = new RecordingPage(this);
         _logPage = new LogPage(SaveLog, ClearLog);
+        // The installer waits for this window to close (the engine stops by itself).
+        _updates = new Updates((cmd, args) => Send(cmd, args), () => XamlRoot, Toast, Close);
         _pages[PageKind.Model] = _modelPage;
         _pages[PageKind.Library] = _libraryPage;
         _pages[PageKind.Merge] = _mergePage;
@@ -74,6 +77,7 @@ public sealed partial class MainWindow : Window, IHost
         _pages[PageKind.Performance] = _performancePage;
         _pages[PageKind.Recording] = _recordingPage;
         _pages[PageKind.Log] = _logPage;
+        _pages[PageKind.About] = new AboutPage(this, _updates.Section);
         _controlBar = new ControlBar(Run);
         ControlBarHost.Child = _controlBar;
         DropTitle.Text = S.DropTitle;
@@ -147,6 +151,7 @@ public sealed partial class MainWindow : Window, IHost
             PageKind.Audio => S.PageAudio,
             PageKind.Performance => S.PagePerformance,
             PageKind.Recording => S.PageRecording,
+            PageKind.About => S.PageAbout,
             _ => S.PageLog,
         };
         PageTitle.Text = title;
@@ -162,8 +167,10 @@ public sealed partial class MainWindow : Window, IHost
         string? failure = _failure;
         bool ready = _ready && State is not null && failure is null;
         ConnectionView.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
-        PageHost.Visibility = ready || _page == PageKind.Log ? Visibility.Visible : Visibility.Collapsed;
-        if (_page == PageKind.Log) ConnectionView.Visibility = Visibility.Collapsed; // the log explains failures
+        // The log explains failures; About offers updates, which may be what fixes them.
+        bool always = _page is PageKind.Log or PageKind.About;
+        PageHost.Visibility = ready || always ? Visibility.Visible : Visibility.Collapsed;
+        if (always) ConnectionView.Visibility = Visibility.Collapsed;
         ControlBarHost.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
         ConnectionRing.Visibility = failure is null ? Visibility.Visible : Visibility.Collapsed;
         ConnectionRing.IsActive = failure is null;
@@ -239,7 +246,8 @@ public sealed partial class MainWindow : Window, IHost
                 _failure = reason;
                 ShowConnection();
                 break;
-            case EngineEvent.Hello(var state, var initError):
+            case EngineEvent.Hello(var state, var initError, var update):
+                if (update is not null) _updates.Apply(update);
                 if (initError is not null)
                 {
                     _failure = initError;
@@ -277,6 +285,9 @@ public sealed partial class MainWindow : Window, IHost
                 var errorText = S.ErrorText(error);
                 _controlBar.Status = errorText;
                 Toast(errorText);
+                break;
+            case EngineEvent.UpdateChanged(var info):
+                _updates.Apply(info);
                 break;
             case EngineEvent.Log(var logText):
                 AppendLog(logText);
@@ -404,16 +415,34 @@ public sealed partial class MainWindow : Window, IHost
         if (!args.DataView.Contains(StandardDataFormats.StorageItems)) return;
         var deferral = args.GetDeferral();
         List<string> paths;
+        int items;
         try
         {
-            var items = await args.DataView.GetStorageItemsAsync();
-            paths = items.OfType<IStorageItem>().Select(item => item.Path).Where(path => !string.IsNullOrEmpty(path)).ToList();
+            var dropped = await args.DataView.GetStorageItemsAsync();
+            items = dropped.Count;
+            paths = dropped.OfType<IStorageItem>().Select(item => item.Path).Where(path => !string.IsNullOrEmpty(path)).ToList();
+        }
+        catch (Exception)
+        {
+            items = 1;
+            paths = [];
         }
         finally
         {
             deferral.Complete();
         }
-        if (paths.Count == 0) return;
+        if (items == 0) return;
+        // Items with no file behind them: dragged out of a .zip, a browser's downloads or a chat app.
+        if (paths.Count == 0)
+        {
+            Toast(S.DropNotAFile);
+            return;
+        }
+        ImportModels(paths);
+    }
+
+    public void ImportModels(IReadOnlyList<string> paths)
+    {
         if (!_connected || State is null)
         {
             Toast(S.ErrorText(new ErrorInfo("not_ready", "", new JsonObject())));

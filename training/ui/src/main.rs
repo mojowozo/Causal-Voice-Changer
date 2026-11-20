@@ -4,6 +4,7 @@ mod app;
 mod i18n;
 mod pages;
 mod trainer;
+mod update;
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;

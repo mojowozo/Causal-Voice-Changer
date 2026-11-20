@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CausalVC.Training.Ui;
 
 namespace CausalVC.Training.Trainer;
 
@@ -10,7 +11,9 @@ public abstract record TrainerEvent
 {
     public sealed record Started : TrainerEvent;
     public sealed record Ended(string Reason) : TrainerEvent;
-    public sealed record Hello(Form Form, List<string> Bases) : TrainerEvent;
+    public sealed record Hello(Form Form, List<string> Bases, UpdateInfo? Update) : TrainerEvent;
+    /// The updater's state changed (causalvc/update.py).
+    public sealed record UpdateChanged(UpdateInfo Info) : TrainerEvent;
     public sealed record Gpus(List<Gpu> List) : TrainerEvent;
     public sealed record StateChanged(TrainerState State) : TrainerEvent;
     public sealed record Log(string Text) : TrainerEvent;
@@ -26,7 +29,9 @@ public abstract record TrainerEvent
         var data = message["data"] as JsonObject ?? new JsonObject();
         return name switch
         {
-            "hello" => new Hello(Form.From(data["form"] as JsonObject ?? new JsonObject()), Strings(data["bases"])),
+            "hello" => new Hello(Form.From(data["form"] as JsonObject ?? new JsonObject()), Strings(data["bases"]),
+                data["update"] is JsonObject update ? UpdateInfo.From(update) : null),
+            "update" => new UpdateChanged(UpdateInfo.From(data)),
             "gpus" => new Gpus((data["gpus"] as JsonArray ?? []).OfType<JsonObject>()
                 .Select(gpu => new Gpu(gpu.Str("id"), gpu.StrOrNull("label"))).ToList()),
             "state" => new StateChanged(TrainerState.From(data)),

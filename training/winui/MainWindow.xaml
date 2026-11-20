@@ -39,6 +39,9 @@
                 <NavigationViewItem Content="Log" Tag="Log">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE756;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="About" Tag="About">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE946;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
 
             <Grid>

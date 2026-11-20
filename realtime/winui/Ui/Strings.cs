@@ -9,6 +9,8 @@ static class S
 
     // Drag and drop
     public const string DropTitle = "Drop to add voices";
+    // Windows only: what Explorer hands over for a file inside a .zip, or from a browser or chat app.
+    public const string DropNotAFile = "That isn't a file on disk yet. Extract or save the .cvc to a folder first (it may be inside a .zip), then drop it from there, or use Add voice in the Library.";
     public const string DropDetail = "Each .cvc file becomes a voice. These are written when a voice is built, and by Export in the library.";
     public static string ModelImported(string names) => $"Added model: {names}";
 
@@ -24,6 +26,7 @@ static class S
     public const string PagePerformance = "Performance";
     public const string PageRecording = "Recording";
     public const string PageLog = "Log";
+    public const string PageAbout = "About";
 
     // Engine connection
     public const string EngineStarting = "Starting the engine…";
@@ -34,7 +37,8 @@ static class S
     // Model page
     public const string SectionModels = "Models";
     public const string Model = "Model";
-    public const string ModelsEmpty = "No voices yet. Build one with the training window, or drag a voice's .cvc file onto this window to add it.";
+    public const string LibraryAdd = "Add voice…";
+    public const string ModelsEmpty = "No voices yet. Build one with the training window, or add a voice's .cvc file with Add voice in the Library or by dragging it onto this window.";
     public static string ModelFiles(string model) => $"Voice file: {model}";
     public const string Checkpoint = "Checkpoint";
     public const string CheckpointDescription = "Saved while the voice trained; all of them share the voice's settings";

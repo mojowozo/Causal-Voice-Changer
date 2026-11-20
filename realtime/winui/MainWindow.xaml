@@ -8,7 +8,9 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="CausalVC Realtime">
 
-    <Grid x:Name="Root" AllowDrop="True" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop">
+    <!-- Transparent, not unset: an element with no background takes no drops, so a file dropped
+         on an empty part of the window would be refused. -->
+    <Grid x:Name="Root" Background="Transparent" AllowDrop="True" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop">
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
             <RowDefinition Height="*" />
@@ -50,6 +52,9 @@
                 </NavigationViewItem>
                 <NavigationViewItem Content="Log" Tag="Log">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE756;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="About" Tag="About">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE946;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
 

@@ -16,6 +16,10 @@ const VALUE_WIDTH: f32 = 72.0;
 const METER_WIDTH: f32 = 90.0;
 
 pub fn view(app: &App, page: Page) -> Element<'_, Message> {
+    if page == Page::About {
+        // Shown whether or not the engine runs: an update may be what makes it start again.
+        return padded(about_page(app));
+    }
     let Some(state) = app
         .state
         .as_ref()
@@ -31,7 +35,12 @@ pub fn view(app: &App, page: Page) -> Element<'_, Message> {
         Page::Performance => performance_page(app, state),
         Page::Recording => recording_page(app, state),
         Page::Log => return log_page(app),
+        Page::About => unreachable!(),
     };
+    padded(content)
+}
+
+fn padded(content: Element<'_, Message>) -> Element<'_, Message> {
     widget::scrollable(
         // Room at the end so the last section clears the control bar.
         widget::container(content).max_width(900).padding(
@@ -41,6 +50,10 @@ pub fn view(app: &App, page: Page) -> Element<'_, Message> {
     )
     .width(Length::Fill)
     .into()
+}
+
+fn about_page(app: &App) -> Element<'_, Message> {
+    page_column(vec![app.updates.section().map(Message::Update)])
 }
 
 fn connection_view(app: &App) -> Element<'_, Message> {

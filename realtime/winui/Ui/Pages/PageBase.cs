@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace CausalVC.Realtime.Ui.Pages;
 
-public enum PageKind { Model, Library, Merge, Audio, Performance, Recording, Log }
+public enum PageKind { Model, Library, Merge, Audio, Performance, Recording, Log, About }
 
 /// What pages need from the window: the engine and a few window services.
 public interface IHost
@@ -18,6 +18,8 @@ public interface IHost
     void ShowPage(PageKind page);
     /// Change the output gain by the output-level suggestion.
     void ApplyLoudness();
+    /// Import voice files (as dropping them on the window does).
+    void ImportModels(IReadOnlyList<string> paths);
     XamlRoot? XamlRoot { get; }
     nint Hwnd { get; }
 }

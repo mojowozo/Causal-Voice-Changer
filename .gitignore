@@ -13,3 +13,7 @@ training/ui/target/
 # Local, per-machine files
 .codegraph/
 .~lock.*#
+
+# The updater: its downloads and choices (causalvc/update.py)
+.update/
+update-settings.json

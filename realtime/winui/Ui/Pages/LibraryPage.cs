@@ -23,12 +23,16 @@ public sealed class LibraryPage : PageBase
         toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         toolbar.Children.Add(_search);
         Grid.SetColumn(_sort, 1);
         toolbar.Children.Add(_sort);
         var reload = Build.Button(S.Reload, (_, _) => Host.Send("reload_models"), "\uE72C");
         Grid.SetColumn(reload, 2);
         toolbar.Children.Add(reload);
+        var add = Build.Button(S.LibraryAdd, async (_, _) => await AddVoices(), "\uE710");
+        Grid.SetColumn(add, 3);
+        toolbar.Children.Add(add);
 
         Column.Children.Add(toolbar);
         Column.Children.Add(_count);
@@ -36,6 +40,17 @@ public sealed class LibraryPage : PageBase
     }
 
     public override void Update(EngineState state) => Render();
+
+    /// Voice files chosen in a file picker, imported as if dropped on the window.
+    async Task AddVoices()
+    {
+        var picker = new Windows.Storage.Pickers.FileOpenPicker();
+        foreach (var type in new[] { ".cvc", ".json" }) picker.FileTypeFilter.Add(type);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, Host.Hwnd);
+        var files = await picker.PickMultipleFilesAsync();
+        var paths = files.Select(file => file.Path).Where(path => !string.IsNullOrEmpty(path)).ToList();
+        if (paths.Count > 0) Host.ImportModels(paths);
+    }
 
     void Render()
     {

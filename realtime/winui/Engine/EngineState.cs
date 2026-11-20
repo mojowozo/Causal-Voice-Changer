@@ -2,6 +2,7 @@
 // ignored and missing optional ones take defaults, so an engine a little newer still works.
 
 using System.Text.Json.Nodes;
+using CausalVC.Realtime.Ui;
 
 namespace CausalVC.Realtime.Engine;
 
@@ -12,7 +13,9 @@ public abstract record EngineEvent
     /// The connection dropped or the engine could not be started.
     public sealed record Disconnected(string Reason) : EngineEvent;
     /// Sent once per connection; State is null while the engine starts.
-    public sealed record Hello(EngineState? State, string? InitError) : EngineEvent;
+    public sealed record Hello(EngineState? State, string? InitError, UpdateInfo? Update) : EngineEvent;
+    /// The updater's state changed (causalvc/update.py).
+    public sealed record UpdateChanged(UpdateInfo Info) : EngineEvent;
     public sealed record Ready(EngineState State) : EngineEvent;
     public sealed record Fatal(string Message) : EngineEvent;
     public sealed record StateChanged(EngineState State) : EngineEvent;
@@ -39,7 +42,9 @@ public abstract record EngineEvent
         {
             "hello" => new Hello(
                 data?["state"] is JsonObject state ? EngineState.From(state) : null,
-                data?["init_error"]?.GetValue<string>()),
+                data?["init_error"]?.GetValue<string>(),
+                data?["update"] is JsonObject update ? UpdateInfo.From(update) : null),
+            "update" when data is JsonObject update => new UpdateChanged(UpdateInfo.From(update)),
             "ready" when data is JsonObject state => new Ready(EngineState.From(state)),
             "state" when data is JsonObject state => new StateChanged(EngineState.From(state)),
             "fatal" => new Fatal(data?["message"]?.GetValue<string>() ?? "The engine could not start."),

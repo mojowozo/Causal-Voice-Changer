@@ -19,6 +19,7 @@ pub enum Page {
     Voice,
     Builds,
     Log,
+    About,
 }
 
 /// The form's text fields; their names match the trainer's config keys.
@@ -63,6 +64,8 @@ pub enum Connection {
 #[derive(Clone, Debug)]
 pub enum Message {
     Trainer(Event),
+    /// The update window and settings.
+    Update(crate::update::UpdateMsg),
     Text(Field, String),
     Restart(bool),
     Noise(bool),
@@ -118,6 +121,8 @@ pub struct App {
     /// The queued build being dragged, and the row it would be dropped on.
     pub dragging: Option<usize>,
     pub drop_on: Option<usize>,
+    /// New releases: the trainer's update state and whether the update window is open.
+    pub updates: crate::update::Updates,
 }
 
 impl cosmic::Application for App {
@@ -140,6 +145,7 @@ impl cosmic::Application for App {
             (Page::Voice, fl!("page-voice"), "avatar-default-symbolic"),
             (Page::Builds, fl!("page-builds"), "view-list-symbolic"),
             (Page::Log, fl!("page-log"), "utilities-terminal-symbolic"),
+            (Page::About, fl!("page-about"), "help-about-symbolic"),
         ] {
             nav.insert()
                 .text(title)
@@ -178,6 +184,7 @@ impl cosmic::Application for App {
             field_error: None,
             dragging: None,
             drop_on: None,
+            updates: crate::update::Updates::default(),
         };
         let task = app.update_title();
         (app, task)
@@ -209,6 +216,10 @@ impl cosmic::Application for App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Trainer(event) => return self.handle_trainer(event),
+            Message::Update(msg) => {
+                let effect = self.updates.on_msg(msg);
+                return self.apply_update_effect(effect);
+            }
             Message::Text(field, text) => {
                 if self.field_error.as_ref().is_some_and(|(f, _)| f == field.key()) {
                     self.field_error = None;
@@ -272,6 +283,10 @@ impl cosmic::Application for App {
     fn view(&self) -> Element<'_, Message> {
         let page = self.nav.active_data::<Page>().copied().unwrap_or(Page::Voice);
         widget::toaster(&self.toasts, pages::view(self, page))
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Message>> {
+        self.updates.dialog().map(|dialog| dialog.map(Message::Update))
     }
 
     fn footer(&self) -> Option<Element<'_, Message>> {
@@ -346,7 +361,17 @@ impl App {
                 self.handle = None;
                 self.connection = Connection::Failed(reason);
             }
-            Event::Hello { form, bases } => self.apply_form(form, bases),
+            Event::Hello { form, bases, update } => {
+                self.apply_form(form, bases);
+                if let Some(info) = update {
+                    let effect = self.updates.on_info(info);
+                    return self.apply_update_effect(effect);
+                }
+            }
+            Event::Update(info) => {
+                let effect = self.updates.on_info(info);
+                return self.apply_update_effect(effect);
+            }
             Event::Gpus(gpus) => {
                 self.gpu_labels = gpus
                     .iter()
@@ -412,6 +437,28 @@ impl App {
         }
         if !form.device.is_empty() {
             self.wanted_gpu = form.device;
+        }
+    }
+
+    fn apply_update_effect(&mut self, effect: crate::update::Effect) -> Task<Message> {
+        use crate::update::Effect;
+        match effect {
+            Effect::None => Task::none(),
+            Effect::Send(cmd, args) => {
+                self.send(cmd, args);
+                Task::none()
+            }
+            Effect::Install => {
+                self.send("install_update", json!({ "pid": std::process::id() }));
+                Task::none()
+            }
+            // The installer waits for this window and the trainer (which ends with it).
+            Effect::Exit => cosmic::iced::exit(),
+            Effect::Toast(text) => self.toast(text),
+            Effect::Open(url) => match crate::update::open_url(&url) {
+                Ok(()) => Task::none(),
+                Err(error) => self.toast(error.to_string()),
+            },
         }
     }
 

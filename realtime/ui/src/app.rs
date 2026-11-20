@@ -36,6 +36,7 @@ pub enum Page {
     Performance,
     Recording,
     Log,
+    About,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,6 +230,8 @@ enum Pending {
 #[derive(Clone, Debug)]
 pub enum Message {
     Engine(engine::Event),
+    /// The update window and settings.
+    Update(crate::update::UpdateMsg),
     /// The Merge page: a slot's voice (index into merge_labels) and strength, more or fewer slots,
     /// the new voice's name, and merging.
     MergeVoice(usize, usize),
@@ -287,6 +290,9 @@ pub enum Message {
     /// Files are being dragged over the window (true) or left it (false).
     DragHover(bool),
     FilesDropped(Option<DroppedFiles>),
+    /// Library: choose voice files to add, and the files chosen.
+    AddVoices,
+    VoicesPicked(Vec<String>),
     /// Change the output gain by the output-level suggestion.
     ApplyLoudness,
     OpenLibrary,
@@ -371,6 +377,8 @@ pub struct App {
     blur_pending: Option<(Num, String)>,
     /// The Model page's advanced pitch panel (the pitch offset) is open.
     pub pitch_advanced_open: bool,
+    /// New releases: the backend's state and whether the update window is open.
+    pub updates: crate::update::Updates,
 }
 
 /// Library sort orders: by name, or newest first.
@@ -408,6 +416,7 @@ impl cosmic::Application for App {
                 "media-record-symbolic",
             ),
             (Page::Log, fl!("page-log"), "utilities-terminal-symbolic"),
+            (Page::About, fl!("page-about"), "help-about-symbolic"),
         ] {
             nav.insert()
                 .text(title)
@@ -468,6 +477,7 @@ impl cosmic::Application for App {
             merge_labels: Vec::new(),
             merge_families: Vec::new(),
             merging: false,
+            updates: crate::update::Updates::default(),
         };
         let task = app.update_title();
         (app, task)
@@ -501,6 +511,10 @@ impl cosmic::Application for App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Engine(event) => return self.handle_engine(event),
+            Message::Update(msg) => {
+                let effect = self.updates.on_msg(msg);
+                return self.apply_update_effect(effect);
+            }
             Message::Num(num, value) => {
                 self.dragging = Some(num);
                 if let Some(state) = &mut self.state {
@@ -721,21 +735,10 @@ impl cosmic::Application for App {
             Message::FilesDropped(files) => {
                 self.drag_hover = false;
                 let paths = files.map(|files| files.0).unwrap_or_default();
-                if paths.is_empty() {
-                    return Task::none();
-                }
-                if self.engine.is_none() || self.state.is_none() {
-                    return self.toast(fl!("error-not-ready"));
-                }
-                // Voice files are imported; anything else is not something this app takes.
-                if !paths.iter().any(|path| is_model_file(path)) {
-                    return self.toast(fl!("error-import-no-model-file"));
-                }
-                self.status = fl!("status-importing-model");
-                if let Some(id) = self.send("import_model", json!({"paths": paths})) {
-                    self.pending.insert(id, Pending::Import);
-                }
+                return self.import_models(paths);
             }
+            Message::AddVoices => return pick_voices(fl!("library-add")),
+            Message::VoicesPicked(paths) => return self.import_models(paths),
             Message::OpenLibrary => {
                 let library = self
                     .nav
@@ -874,6 +877,9 @@ impl cosmic::Application for App {
     }
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
+        if let Some(dialog) = self.updates.dialog() {
+            return Some(dialog.map(Message::Update));
+        }
         if self.confirm_hushwire {
             return Some(
                 widget::dialog()
@@ -956,6 +962,50 @@ impl App {
     fn send(&mut self, cmd: &str, args: Value) -> Option<u64> {
         let handle = self.engine.as_ref()?;
         Some(handle.send(cmd, args))
+    }
+
+    fn apply_update_effect(&mut self, effect: crate::update::Effect) -> Task<Message> {
+        use crate::update::Effect;
+        match effect {
+            Effect::None => Task::none(),
+            Effect::Send(cmd, args) => {
+                self.send(cmd, args);
+                Task::none()
+            }
+            Effect::Install => {
+                self.send("install_update", json!({ "pid": std::process::id() }));
+                Task::none()
+            }
+            // The installer waits for this window (and the engine, which stops by itself).
+            Effect::Exit => cosmic::iced::exit(),
+            Effect::Toast(text) => {
+                self.status = text.clone();
+                self.toast(text)
+            }
+            Effect::Open(url) => match crate::update::open_url(&url) {
+                Ok(()) => Task::none(),
+                Err(error) => self.toast(error.to_string()),
+            },
+        }
+    }
+
+    /// Import voice files, dropped on the window or chosen with Add voice.
+    fn import_models(&mut self, paths: Vec<String>) -> Task<Message> {
+        if paths.is_empty() {
+            return Task::none();
+        }
+        if self.engine.is_none() || self.state.is_none() {
+            return self.toast(fl!("error-not-ready"));
+        }
+        // Voice files are imported; anything else is not something this app takes.
+        if !paths.iter().any(|path| is_model_file(path)) {
+            return self.toast(fl!("error-import-no-model-file"));
+        }
+        self.status = fl!("status-importing-model");
+        if let Some(id) = self.send("import_model", json!({"paths": paths})) {
+            self.pending.insert(id, Pending::Import);
+        }
+        Task::none()
     }
 
     fn send_setting(&mut self, key: &str, value: Value) {
@@ -1078,7 +1128,12 @@ impl App {
                 self.state = None;
                 self.connection = Connection::Failed(reason);
             }
-            Event::Hello { state, init_error } => {
+            Event::Hello { state, init_error, update } => {
+                let effect = match update {
+                    Some(info) => self.updates.on_info(info),
+                    None => crate::update::Effect::None,
+                };
+                let task = self.apply_update_effect(effect);
                 if let Some(error) = init_error {
                     self.connection = Connection::Failed(error);
                 } else if let Some(state) = state {
@@ -1087,6 +1142,11 @@ impl App {
                 }
                 // The log history arrives as a plain response.
                 self.log_request = self.send("get_log", json!({}));
+                return task;
+            }
+            Event::Update(info) => {
+                let effect = self.updates.on_info(info);
+                return self.apply_update_effect(effect);
             }
             Event::Ready(state) => {
                 self.connection = Connection::Ready;
@@ -1209,6 +1269,24 @@ fn pick(target: PickTarget, title: String) -> Task<Message> {
             .and_then(|response| response.url().to_file_path().ok())
             .map(|path| path.to_string_lossy().into_owned());
         Message::Picked(target, path)
+    })
+}
+
+/// Voice files to add (cancelling adds none).
+fn pick_voices(title: String) -> Task<Message> {
+    cosmic::task::future(async move {
+        let response = file_chooser::open::Dialog::new().title(title).open_files().await;
+        let paths = response
+            .map(|response| {
+                response
+                    .urls()
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Message::VoicesPicked(paths)
     })
 }
 

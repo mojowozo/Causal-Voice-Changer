@@ -42,6 +42,41 @@ class FakeEngine:
         self.shut_down = True
 
 
+class FakeUpdater:
+    """Stands in for causalvc.update.Updater: records calls, never touches the network."""
+
+    def __init__(self, emit):
+        self.emit, self.calls, self.state = emit, [], {"state": "idle"}
+
+    def launch(self):
+        self.calls.append(("launch",))
+        self.state = {"state": "available", "version": "v9"}
+
+    def snapshot(self):
+        return dict(self.state)
+
+    def check(self, manual):
+        self.calls.append(("check", manual))
+
+    def download(self):
+        from causalvc.update import UpdateError
+
+        raise UpdateError("no_update", "nothing to download")
+
+    def install(self, pid):
+        self.calls.append(("install", pid))
+
+    def skip(self, version):
+        self.calls.append(("skip", version))
+        self.state = {"state": "idle"}
+
+    def later(self):
+        self.calls.append(("later",))
+
+    def set_check_at_launch(self, on):
+        self.calls.append(("set_check_at_launch", on))
+
+
 class HangingShutdownEngine(FakeEngine):
     """Shutdown never returns, like an audio device that will not close."""
 
@@ -56,12 +91,13 @@ class EngineServerTest(unittest.TestCase):
     ADDRESS_PREFIX = ""
     ADDRESS_NAME = "e.sock"
 
-    def start_server(self, engine_factory, exit_when_idle=None):
+    def start_server(self, engine_factory, exit_when_idle=None, updater_factory=None):
         self.directory = tempfile.mkdtemp(prefix="causalvc-")
         self.path = os.path.join(self.directory, self.ADDRESS_NAME)
         self.address = self.ADDRESS_PREFIX + self.path
         self.server = EngineServer(
-            self.address, engine_factory=engine_factory, exit_when_idle=exit_when_idle
+            self.address, engine_factory=engine_factory, exit_when_idle=exit_when_idle,
+            updater_factory=updater_factory,
         )
         self.thread = threading.Thread(target=asyncio.run, args=(self.server.serve(),))
         self.thread.start()
@@ -88,6 +124,31 @@ class EngineServerTest(unittest.TestCase):
             while client.read_message().get("event") != "ready":
                 pass
         return client
+
+    def test_update_commands_work_before_the_engine_is_ready_and_install_stops_it(self):
+        release = threading.Event()
+        updaters = []
+
+        def make(emit):
+            updaters.append(FakeUpdater(emit))
+            return updaters[-1]
+
+        self.start_server(lambda emit: FakeEngine(emit, release), updater_factory=make)
+        client = EngineClient(self.address, timeout=5)
+        self.assertEqual(client.hello["data"]["update"]["state"], "available")  # from the check at launch
+        self.assertEqual(client.call("skip_update", {"version": "v9"})["result"]["state"], "idle")
+        self.assertEqual(updaters[0].calls[-1], ("skip", "v9"))
+        self.assertEqual(client.call("set_update_check", {"on": "yes"})["error"]["code"], "bad_request")
+        client.call("set_update_check", {"on": False})
+        self.assertEqual(updaters[0].calls[-1], ("set_check_at_launch", False))
+        self.assertEqual(client.call("download_update")["error"]["code"], "no_update")
+        self.assertTrue(client.call("install_update", {"pid": 4321})["ok"])
+        self.assertEqual(updaters[0].calls[-1], ("install", 4321))
+        client.close()
+        release.set()
+        self.thread.join(5)  # the engine stops by itself after starting the installer
+        self.assertFalse(self.thread.is_alive())
+        os.rmdir(self.directory)
 
     def test_socket_accepts_commands_before_engine_is_ready(self):
         release = threading.Event()

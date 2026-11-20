@@ -224,7 +224,11 @@ pub enum Event {
     Hello {
         state: Option<Box<State>>,
         init_error: Option<String>,
+        /// The updater's state (None from an older engine).
+        update: Option<crate::update::UpdateInfo>,
     },
+    /// The updater's state changed.
+    Update(crate::update::UpdateInfo),
     Ready(Box<State>),
     Fatal(String),
     State(Box<State>),
@@ -370,7 +374,12 @@ fn parse_line(line: &str) -> Option<Event> {
                 .get("init_error")
                 .and_then(Value::as_str)
                 .map(String::from),
+            update: data
+                .get("update")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
         },
+        "update" => Event::Update(serde_json::from_value(data).ok()?),
         "ready" => Event::Ready(state(data)?),
         "state" => Event::State(state(data)?),
         "fatal" => Event::Fatal(data.get("message")?.as_str()?.to_string()),
@@ -471,7 +480,8 @@ mod tests {
             ),
             Some(Event::Hello {
                 state: None,
-                init_error: None
+                init_error: None,
+                update: None,
             })
         ));
         match parse_line(

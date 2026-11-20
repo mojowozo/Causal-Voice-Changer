@@ -109,6 +109,16 @@ jobs:
             "$folder $packed"
           }
 
+      # What the updater reads (causalvc/update.py): the release this download is, and every file
+      # in it, so the next update can remove files a later release no longer has.
+      - name: Write the version and the file list
+        shell: bash
+        working-directory: stage
+        run: |
+          echo "${RELEASE_TAG:-dev-${GITHUB_SHA::7}}" > "$NAME/VERSION"
+          cd "$NAME"
+          { find . -type f ! -name MANIFEST.txt | sed 's|^\./||'; echo MANIFEST.txt; } | LC_ALL=C sort > MANIFEST.txt
+
       - name: Pack
         working-directory: stage
         run: 7z a -tzip -mx=9 "..\$env:ARCHIVE" "$env:NAME"
@@ -190,6 +200,16 @@ jobs:
             echo "$app/ui $packed"
             [[ $packed == "$built" ]] || { echo "::error::$app/ui in the download differs from the checkout"; exit 1; }
           done
+
+      # What the updater reads (causalvc/update.py): the release this download is, and every file
+      # in it, so the next update can remove files a later release no longer has.
+      - name: Write the version and the file list
+        shell: bash
+        working-directory: stage
+        run: |
+          echo "${RELEASE_TAG:-dev-${GITHUB_SHA::7}}" > "$NAME/VERSION"
+          cd "$NAME"
+          { find . -type f ! -name MANIFEST.txt | sed 's|^\./||'; echo MANIFEST.txt; } | LC_ALL=C sort > MANIFEST.txt
 
       - name: Pack
         working-directory: stage

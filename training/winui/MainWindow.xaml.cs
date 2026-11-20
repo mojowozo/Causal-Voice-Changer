@@ -27,6 +27,8 @@ public sealed partial class MainWindow : Window, IHost
     readonly VoicePage _voicePage;
     readonly BuildsPage _buildsPage;
     readonly LogPage _logPage;
+    readonly AboutPage _aboutPage;
+    readonly Updates _updates;
     readonly ControlBar _controlBar;
     readonly System.Text.StringBuilder _log = new();
     readonly DispatcherQueueTimer _logFlush;
@@ -48,6 +50,9 @@ public sealed partial class MainWindow : Window, IHost
         _voicePage = new VoicePage(this);
         _buildsPage = new BuildsPage(this);
         _logPage = new LogPage(ClearLog);
+        // The installer waits for this window to close (the trainer ends with it).
+        _updates = new Updates((cmd, args) => { Send(cmd, args); return null; }, () => XamlRoot, Toast, Close);
+        _aboutPage = new AboutPage(this, _updates.Section);
         _controlBar = new ControlBar(
             start: () => Send("start", _voicePage.Config()),
             queue: () => Send("queue", _voicePage.Config()),
@@ -116,6 +121,7 @@ public sealed partial class MainWindow : Window, IHost
         {
             PageKind.Voice => S.PageVoice,
             PageKind.Builds => S.PageBuilds,
+            PageKind.About => S.PageAbout,
             _ => S.PageLog,
         };
         PageTitle.Text = title;
@@ -124,6 +130,7 @@ public sealed partial class MainWindow : Window, IHost
         {
             PageKind.Voice => _voicePage,
             PageKind.Builds => _buildsPage,
+            PageKind.About => _aboutPage,
             _ => _logPage,
         };
         if (_page == PageKind.Builds) _buildsPage.Update(State);
@@ -168,6 +175,7 @@ public sealed partial class MainWindow : Window, IHost
                 break;
             case TrainerEvent.Hello hello:
                 _voicePage.ApplyForm(hello.Form, hello.Bases);
+                if (hello.Update is { } update) _updates.Apply(update);
                 _ready = true;
                 ShowConnection();
                 break;
@@ -180,6 +188,9 @@ public sealed partial class MainWindow : Window, IHost
                 _controlBar.Update(State);
                 if (_page == PageKind.Builds) _buildsPage.Update(State);
                 if (finished) Toast(S.Phase(State));
+                break;
+            case TrainerEvent.UpdateChanged changed:
+                _updates.Apply(changed.Info);
                 break;
             case TrainerEvent.Queued queued:
                 Toast(S.BuildQueued(queued.Name, queued.Position));

@@ -242,8 +242,9 @@ def check_config(args: dict, bases: list[str]) -> dict:
 class Service:
     """The queue and the current build, driven by commands; reports through ``emit``."""
 
-    def __init__(self, emit, bases: list[str] | None = None, job: Job | None = None):
+    def __init__(self, emit, bases: list[str] | None = None, job: Job | None = None, updater=None):
         self.emit = emit
+        self.updater = updater  # causalvc.update.Updater; None in tests
         self.bases = custom_bases() if bases is None else bases
         self.job = job or Job()
         self.pending: list[dict] = []
@@ -254,7 +255,8 @@ class Service:
         self.next: dict | None = None  # build_now: starts once the current build has stopped
 
     def hello(self) -> None:
-        self.emit("hello", {"form": load_form(), "bases": ["default", *self.bases], "gpus": []})
+        self.emit("hello", {"form": load_form(), "bases": ["default", *self.bases], "gpus": [],
+                            "update": self.updater.snapshot() if self.updater else None})
         self.emit_state()
 
     def emit_state(self) -> None:
@@ -268,8 +270,43 @@ class Service:
             "next": brief(self.next) if self.next else None,
         })
 
+    UPDATE_COMMANDS = ("check_update", "download_update", "install_update", "skip_update", "later_update",
+                       "set_update_check")
+
+    def update_command(self, cmd: str, args: dict) -> None:
+        from causalvc.update import UpdateError
+
+        u = self.updater
+        if u is None:
+            raise ConfigError("unavailable", "Updates are not available here")
+        try:
+            if cmd == "check_update":
+                u.check(bool(args.get("manual", True)))
+            elif cmd == "download_update":
+                u.download()
+            elif cmd == "install_update":
+                if self.job.running() or self.pending:
+                    raise ConfigError("busy", "Stop the running build (and clear the queue) before updating")
+                pid = args.get("pid")
+                u.install(pid if isinstance(pid, int) and not isinstance(pid, bool) else None)
+            elif cmd == "skip_update":
+                if not isinstance(args.get("version"), str):
+                    raise ConfigError("bad_request", "'version' is required")
+                u.skip(args["version"])
+            elif cmd == "later_update":
+                u.later()
+            elif cmd == "set_update_check":
+                if not isinstance(args.get("on"), bool):
+                    raise ConfigError("bad_request", "'on' is required")
+                u.set_check_at_launch(args["on"])
+        except UpdateError as error:
+            raise ConfigError(error.code, str(error)) from error
+
     def command(self, cmd: str, args: dict) -> None:
         try:
+            if cmd in self.UPDATE_COMMANDS:
+                self.update_command(cmd, args if isinstance(args, dict) else {})
+                return
             if cmd in ("start", "queue"):
                 config = check_config(args, self.bases)
                 if cmd == "start" and self.job.running():
@@ -399,8 +436,17 @@ def main() -> None:
                 commands.put((message["cmd"], message.get("args") or {}))
         commands.put(None)  # the window closed
 
-    service = Service(emit)
+    try:
+        from causalvc.update import Updater
+
+        updater = Updater("training", emit)
+    except Exception as error:  # never let the updater keep the trainer from starting
+        print(f"updates unavailable: {error}", file=sys.stderr)
+        updater = None
+    service = Service(emit, updater=updater)
     service.hello()
+    if updater is not None:
+        updater.launch()
     threading.Thread(target=lambda: emit("gpus", {"gpus": torch_gpus()}), daemon=True).start()
     threading.Thread(target=read_commands, daemon=True).start()
     while True:

@@ -167,7 +167,7 @@ pub fn page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
     let converting_with =
         (state.running && state.function == "vc").then_some(state.settings.model_name.as_str());
 
-    let toolbar = widget::row::with_capacity(4)
+    let toolbar = widget::row::with_capacity(5)
         .push(
             widget::search_input(fl!("library-search"), app.library_query.as_str())
                 .on_input(Message::LibrarySearch)
@@ -183,6 +183,11 @@ pub fn page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
             widget::button::standard(fl!("reload"))
                 .leading_icon(widget::icon::from_name("view-refresh-symbolic"))
                 .on_press(Message::ReloadModels),
+        )
+        .push(
+            widget::button::standard(fl!("library-add"))
+                .leading_icon(widget::icon::from_name("list-add-symbolic"))
+                .on_press(Message::AddVoices),
         )
         .spacing(space.space_xs)
         .align_y(Alignment::Center);

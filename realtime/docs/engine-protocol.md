@@ -75,6 +75,13 @@ translate by `code`.
 | `clear_log` | | `null` |
 | `save_log` | | `{"path": "logs/RuntimeLog_….txt"}` |
 | `shutdown` | | `null`, then the server stops the engine and exits |
+| `get_update` | | [Update](#updates) (works before ready, and when the engine failed to start) |
+| `check_update` | `{"manual": bool}` (default true) | Update; checks GitHub in the background. A manual check reports every outcome; the one at launch only a newer release that was not skipped |
+| `download_update` | | Update; downloads and unpacks the release (`downloading`, then `ready`). `git_checkout` in a git checkout, `no_update` when none is available |
+| `install_update` | `{"pid": int}` (the window's process) | Update (`installing`); starts the installer (scripts/apply_update.py), which waits for this engine and that process to exit. The engine stops by itself half a second later; the window should close. `not_ready` before `download_update` finished |
+| `skip_update` | `{"version": "v0.4.0"}` | Update; a check at launch no longer offers that version |
+| `later_update` | | Update; closes the offer until the next launch |
+| `set_update_check` | `{"on": bool}` | Update; whether to check at launch (default on). Shared with the training app (`update-settings.json`) |
 
 `update_settings` validates every key before applying any. Changing a
 *restart* setting while running stops the stream (with status
@@ -166,7 +173,7 @@ WASAPI converts to the model's 48 kHz when the Windows mixer runs at another rat
 
 | Event | Data |
 | --- | --- |
-| `hello` | `{"protocol": 1, "ready": bool, "init_error": string\|null, "state": State\|null}`, sent once on connect |
+| `hello` | `{"protocol": 1, "ready": bool, "init_error": string\|null, "state": State\|null, "update": Update\|null}`, sent once on connect |
 | `ready` | State; the engine finished starting |
 | `fatal` | `{"code": "init_failed", "message": traceback}`; the engine could not start |
 | `state` | State, after anything changes |
@@ -174,6 +181,7 @@ WASAPI converts to the model's 48 kHz when the Windows mixer runs at another rat
 | `status` | `{"code": …, …}`: progress and results, listed below |
 | `error` | `{"code", "message"}`: a problem not tied to a request (e.g. `monitor_failed`, `file_error`) |
 | `log` | `{"text": "…"}`: engine stdout/stderr as it is written |
+| `update` | [Update](#updates), after every change |
 
 Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`name`, `path`), `merging_models`, `model_merged` (`name`), `hushwire_downloaded`, `model_deleted` (`name`), `model_renamed` (`name`, `new_name`), `preparing`, `loading_model`, `checkpoint_switched` (`name`), `preparing_inference`,
 `starting_audio`, `conversion_started`, `passthrough_started`,
@@ -181,6 +189,21 @@ Status codes: `importing_model`, `model_imported` (`names`), `model_exported` (`
 `stream_stopped` (the audio device went away), `file_selected` (`name`),
 `playing`, `paused`, `playback_stopped`, `recording_started`,
 `recording_saved` (`paths`).
+
+## Updates
+
+The engine (and the trainer, with the same commands and events) checks GitHub for a newer release
+at start when `check_at_launch` is on; see causalvc/update.py. Update:
+
+```jsonc
+{"state": "available", // idle, checking, none (up to date), available, downloading, ready, installing,
+                       // error (a check or download failed), failed (the last install did not finish)
+ "current": "v0.3.0", "version": "v0.4.0", "name": "…", "notes": "release notes (Markdown)",
+ "url": "https://github.com/…/releases/tag/v0.4.0", "progress": 0.0, // 0-1 while downloading
+ "error": "", "manual": false, // the last check was asked for
+ "git": false,                 // a git checkout: offer the release page, never install
+ "check_at_launch": true}
+```
 
 ## Error codes
 

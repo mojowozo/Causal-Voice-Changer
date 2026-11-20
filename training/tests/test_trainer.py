@@ -69,6 +69,32 @@ class ServiceTest(unittest.TestCase):
     def errors(self):
         return [data for event, data in self.events if event == "error"]
 
+    def test_update_commands_go_to_the_updater_and_wait_for_builds(self):
+        updater = mock.Mock()
+        updater.snapshot.return_value = {"state": "available", "version": "v9"}
+        service = trainer.Service(lambda event, data: self.events.append((event, data)), bases=[], job=self.job,
+                                  updater=updater)
+        service.hello()
+        self.assertEqual(self.events[0][1]["update"]["version"], "v9")
+        service.command("skip_update", {"version": "v9"})
+        updater.skip.assert_called_once_with("v9")
+        service.command("set_update_check", {"on": False})
+        updater.set_check_at_launch.assert_called_once_with(False)
+        service.command("set_update_check", {"on": "no"})
+        self.assertEqual(self.errors()[-1]["code"], "bad_request")
+        service.command("start", self.config())
+        service.command("install_update", {"pid": 7})
+        self.assertEqual(self.errors()[-1]["code"], "busy")
+        updater.install.assert_not_called()
+        self.job.finish()
+        service.pump()
+        service.command("install_update", {"pid": 7})
+        updater.install.assert_called_once_with(7)
+
+    def test_without_an_updater_update_commands_say_so(self):
+        self.service.command("check_update", {})
+        self.assertEqual(self.errors()[-1]["code"], "unavailable")
+
     def test_hello_offers_the_saved_form_and_the_bases(self):
         trainer.save_form(self.config(name="Saved", steps=777))
         self.service.hello()

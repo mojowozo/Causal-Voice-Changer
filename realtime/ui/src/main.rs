@@ -6,6 +6,7 @@ mod engine;
 mod i18n;
 mod library;
 mod pages;
+mod update;
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;

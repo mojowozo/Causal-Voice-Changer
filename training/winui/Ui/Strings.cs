@@ -12,6 +12,7 @@ static class S
     public const string PageVoice = "New voice";
     public const string PageBuilds = "Builds";
     public const string PageLog = "Log";
+    public const string PageAbout = "About";
 
     public const string ServiceStarting = "Starting…";
     public const string ServiceStartingDetail = "Loading the training tools.";

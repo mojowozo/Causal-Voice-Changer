@@ -114,7 +114,14 @@ pub enum Event {
     Started(Handle),
     /// It could not be started, or it ended.
     Ended(String),
-    Hello { form: Form, bases: Vec<String> },
+    Hello {
+        form: Form,
+        bases: Vec<String>,
+        /// The updater's state (None from an older trainer).
+        update: Option<crate::update::UpdateInfo>,
+    },
+    /// The updater's state changed.
+    Update(crate::update::UpdateInfo),
     Gpus(Vec<Gpu>),
     State(State),
     Log(String),
@@ -182,7 +189,9 @@ pub fn parse_line(line: &str) -> Option<Event> {
         "hello" => Event::Hello {
             form: serde_json::from_value(data.get("form")?.clone()).ok()?,
             bases: serde_json::from_value(data.get("bases")?.clone()).ok()?,
+            update: data.get("update").cloned().and_then(|value| serde_json::from_value(value).ok()),
         },
+        "update" => Event::Update(serde_json::from_value(data).ok()?),
         "gpus" => Event::Gpus(serde_json::from_value(data.get("gpus")?.clone()).ok()?),
         "state" => Event::State(serde_json::from_value(data).ok()?),
         "log" => Event::Log(data.get("text")?.as_str()?.to_string()),
@@ -252,7 +261,7 @@ mod tests {
         match parse_line(
             r#"{"event":"hello","data":{"form":{"audio":"/a","name":"Kira","batch":8,"steps":100,"save_every":50,"base":"default","device":"cuda:0","fixes":true,"app_models":""},"bases":["default","Mine"],"gpus":[]}}"#,
         ) {
-            Some(Event::Hello { form, bases }) => {
+            Some(Event::Hello { form, bases, .. }) => {
                 assert_eq!(form.name, "Kira");
                 assert_eq!(form.save_every, 50);
                 assert_eq!(bases, ["default", "Mine"]);

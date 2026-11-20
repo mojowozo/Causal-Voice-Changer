@@ -30,6 +30,11 @@ Windows may ask whether to run them ("More info", then "Run anyway"). With the s
 (a git clone, or the release's source download), the windows are built on first launch as described below,
 and they are built again whenever their source files change.
 
+Both apps check for a new release when they start (turn this off under About, which also has
+Check now). Update downloads it, closes the app, installs it over the folder and opens the app again,
+keeping your voices, builds, settings and Python environment. A git clone is not updated this way:
+use `git pull`.
+
 Run `run-training.sh` (Linux) or `run-training.bat` (Windows). On first run, it installs the Python
 packages with [uv](https://astral.sh/uv), downloads the pretrained files (the base
 model and RMVPE, about 900 MB) into `weights/`, and opens the training window. This will also handle
@@ -92,6 +97,7 @@ Linux GUI:
 | `causalvc/gui.py` | The small fallback training window (Tk) |
 | `training/` | The training windows: COSMIC (`ui/`) and WinUI 3 (`winui/`) |
 | `causalvc/weights.py` | Downloads of the pretrained files |
+| `causalvc/update.py`, `scripts/apply_update.py` | Checking for, downloading and installing a new release |
 
 The harness and its metric models are an optional extra: `uv sync --extra bench`.
 

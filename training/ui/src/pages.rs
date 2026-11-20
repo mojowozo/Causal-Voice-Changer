@@ -12,13 +12,14 @@ const NUMBER_WIDTH: f32 = 120.0;
 const PATH_WIDTH: f32 = 320.0;
 
 pub fn view(app: &App, page: Page) -> Element<'_, Message> {
-    if !matches!(app.connection, Connection::Ready) {
+    if !matches!(app.connection, Connection::Ready) && page != Page::About {
         return connection_view(app);
     }
     let content = match page {
         Page::Voice => voice_page(app),
         Page::Builds => builds_page(app),
         Page::Log => return log_page(app),
+        Page::About => settings::view_column(vec![app.updates.section().map(Message::Update)]).into(),
     };
     widget::scrollable(
         // Room at the end so the last section clears the control bar.
