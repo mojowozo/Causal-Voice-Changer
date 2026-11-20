@@ -59,18 +59,24 @@ def smooth_f0(f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torc
 def smooth_loud(loud: torch.Tensor, raw_f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal anti-flutter on 10 ms loudness [m] gated to sustained low pitches (0 < raw_f0 < 130 Hz).
 
-    Every consonant burst, stop closure, pause, >=3.5 dB edge, and >=130 Hz frame keeps exact 0 ms timing."""
-    cur = loud.new_full((1,), -100.0) if state is None else state.clone()
+    At <115 Hz one glottal period exceeds 10 ms, so every 3rd-4th frame falls between glottal snaps (-9 dB hole);
+    holding across a single inter-pulse gap (`prev_raw - 1.0 dB`) eliminates the 20-30 Hz strobe while keeping
+    exact 0 ms timing on attacks, stop closures, fast fade-outs, and >=130 Hz voices."""
+    st = loud.new_full((2,), -100.0) if state is None else state.clone()
+    cur, prev_raw = st[0:1], st[1:2]
     out = []
     for i in range(loud.shape[0]):
         li = loud[i : i + 1]
         fi = raw_f0[i : i + 1]
+        gap_bridge = (fi > 0) & (fi < 115.0) & (prev_raw > -70.0) & ((prev_raw - li) < 16.0)
+        held = torch.where(gap_bridge, torch.maximum(li, prev_raw - 0.6), li)
         low_voiced = (fi > 0) & (fi < 130.0) & (cur > -70.0)
-        t = (((li - cur).abs() - 1.8) / 2.2).clamp(0.0, 1.0)
-        alpha = 0.22 + 0.78 * (t * t)
-        cur = torch.where(low_voiced, cur + alpha * (li - cur), li)
+        t = (((held - cur).abs() - 3.5) / 4.5).clamp(0.0, 1.0)
+        alpha = 0.18 + 0.82 * (t * t)
+        cur = torch.where(low_voiced, cur + alpha * (held - cur), li)
+        prev_raw = li
         out.append(cur[0])
-    return (torch.stack(out) if out else loud), cur
+    return (torch.stack(out) if out else loud), torch.cat([cur, prev_raw])
 
 
 def normalize_tone(
@@ -163,7 +169,7 @@ class StreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
-        self.loud_state = torch.full((1,), -100.0, device=d)
+        self.loud_state = torch.full((2,), -100.0, device=d)
         self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)  # newest pitch frame, whose excitation waits for the next one
         self.pending_v = torch.zeros(1, device=d)
@@ -260,7 +266,7 @@ class StreamingVC:
         self.voicing = torch.cat([self.voicing[m:], v])
         self.loud = torch.cat([self.loud[m:], loud])
         if self.dec.tone is not None:
-            tn_new, self.tone_state = normalize_tone(tone(self.buf[None])[0, frames], raw_loud, raw_f0, self.tone_state)
+            tn_new, self.tone_state = normalize_tone(tone(self.buf[None])[0, frames], loud, raw_f0, self.tone_state)
             self.tone = torch.cat([self.tone[m:], tn_new])
         self.exc = torch.cat([self.exc[:, m * FRAME :], exc], dim=1)
 

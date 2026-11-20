@@ -132,7 +132,7 @@ class FastStreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
-        self.loud_state = torch.full((1,), -100.0, device=d)
+        self.loud_state = torch.full((2,), -100.0, device=d)
         self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)
         self.pending_v = torch.zeros(1, device=d)
@@ -434,7 +434,7 @@ class FastStreamingVC:
         tn = None
         if self.dec.tone is not None:  # each frame's tone is measured over it and the frame before
             raw_tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
-            tn, self.tone_state = normalize_tone(raw_tn, raw_loud, raw_f0, self.tone_state)
+            tn, self.tone_state = normalize_tone(raw_tn, loud, raw_f0, self.tone_state)
         use_v = self.dec.expressive
         h = self._features(content, f0, loud, g, tn, v if use_v else None)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind

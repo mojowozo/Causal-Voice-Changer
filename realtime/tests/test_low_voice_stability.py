@@ -64,6 +64,29 @@ class LoudnessStabilityAndClarityTest(unittest.TestCase):
             parts.append(part)
         self.assertTrue(torch.allclose(torch.cat(parts), sm_db, atol=1e-5))
 
+    def test_smooth_loud_bridges_76hz_inter_glottal_pulse_gaps_without_23hz_strobe(self):
+        t = torch.arange(SR) / SR
+        # Realistic 76 Hz glottal pulse train (13.16 ms period > 10 ms frame): ~3 ms decaying glottal snap per cycle,
+        # so every 4th 10 ms frame falls between glottal closures and plunges ~9 dB in raw loudness().
+        phase = (76.0 * t) % 1.0
+        glottal76 = torch.exp(-phase * 5.5) * torch.sin(2 * math.pi * 650.0 * t)
+        glottal76 = glottal76 / glottal76.pow(2).mean().sqrt() * (10 ** (-22.0 / 20.0))
+        raw_db = loudness(glottal76[None])[0]
+        raw_step_max = (raw_db[8:] - raw_db[7:-1]).abs().max().item()
+        self.assertGreater(raw_step_max, 6.0)
+
+        f76 = torch.full_like(raw_db, 76.0)
+        sm_db, _ = stream.smooth_loud(raw_db, f76)
+        sm_step_max = (sm_db[8:] - sm_db[7:-1]).abs().max().item()
+        self.assertLess(sm_step_max, 0.75)
+
+        # Even if raw_f0 lingers voiced for one frame during a real >20 dB stop closure, release still snaps cleanly.
+        stop_env = torch.tensor([-22.0] * 6 + [-80.0, -100.0])
+        stop_f0 = torch.tensor([76.0] * 7 + [0.0])
+        sm_stop, _ = stream.smooth_loud(stop_env, stop_f0)
+        self.assertLess(sm_stop[6].item(), -75.0)
+        self.assertAlmostEqual(sm_stop[7].item(), -100.0, places=3)
+
 
 class SmoothF0AndToneTest(unittest.TestCase):
     def test_smooth_f0_damps_low_voice_jitter_without_lagging_glides_or_higher_pitches(self):
