@@ -121,7 +121,7 @@ class Crops(torch.utils.data.Dataset):
             if wav[-n // 3 :].pow(2).mean().sqrt() > 2e-3:  # the reconstructed part must contain sound
                 break
         peak = wav.abs().max().clamp_min(1e-4)
-        gain = min(10 ** (random.uniform(-12.0, 3.0) / 20), 0.99 / peak.item())
+        gain = min(10 ** (random.uniform(-24.0, 3.0) / 20), 0.99 / peak.item())
         return wav * gain, s
 
 
@@ -154,15 +154,15 @@ def detect_fmax(files: list[str]) -> float | None:
         S = torch.stack(powers).mean(0)
         fr = torch.arange(len(S)) * SR / 2048.0
         ref = S[(fr >= 500) & (fr < 6000)].mean().clamp_min(1e-12)
-        # Detect hard codec/livestream brickwalls (e.g. MP3/AAC 16 kHz cutoff where power plunges <-72 dB re midband
-        # and drops >22 dB below the band right beneath it), without clipping natural 48 kHz speech air.
+        # Detect hard codec/livestream brickwalls (e.g. MP3/AAC 16-20 kHz cutoff where power plunges <-68 dB re midband
+        # and drops >18 dB below the band right beneath it), without clipping natural 48 kHz speech air.
         for hi in (16500, 18500, 20500):
             above = 10.0 * torch.log10(S[(fr >= hi) & (fr < min(23500, hi + 3000))].mean() / ref + 1e-12)
-            below = 10.0 * torch.log10(S[(fr >= hi - 3500) & (fr < hi - 500)].mean() / ref + 1e-12)
-            if above < -72.0 and (below - above) > 22.0:
+            below = 10.0 * torch.log10(S[(fr >= hi - 5500) & (fr < hi - 1500)].mean() / ref + 1e-12)
+            if above < -65.0 and (below - above) > 22.0:
                 nyq = min(nyq, float(hi - 500))
                 break
-    return round(max(15500.0, nyq), 1) if nyq < 19000.0 else None
+    return round(max(15500.0, nyq), 1) if nyq < 22000.0 else None
 
 
 def split_outputs(outputs, n: int):
@@ -216,26 +216,47 @@ def build_bank(spk: dict[str, list[str]], enc, frames: int, dev: str, cache: Pat
 
 
 WARP_STEPS = (14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26)
-_WARP_RESAMPLERS: dict[tuple[str, int], torchaudio.transforms.Resample] = {}
+_WARP_RESAMPLERS: dict[tuple[str, int, int], torchaudio.transforms.Resample] = {}
+
+
+def _warp_resampler(device: torch.device, orig: int, new: int) -> torchaudio.transforms.Resample:
+    key = (str(device), orig, new)
+    res = _WARP_RESAMPLERS.get(key)
+    if res is None:
+        res = torchaudio.transforms.Resample(orig, new).to(device)
+        _WARP_RESAMPLERS[key] = res
+    return res
 
 
 @torch.no_grad()
-def warped_content(enc, wav48: torch.Tensor, frames: int) -> torch.Tensor:
+def warped_content(enc, wav48: torch.Tensor, frames: int, k: int | None = None) -> torch.Tensor:
     """Content of a copy whose spectrum (formants and pitch) is stretched by a random factor
-    of 0.6-1.5, put back on the original frame clock. Training on it stops the decoder
+    of 0.77-1.43, put back on the original frame clock. Training on it stops the decoder
     reading the voice's tone off speaker traces left in the content features, even across
     large (+10..+14 st) pitch shifts."""
-    k = random.choice(WARP_STEPS)
-    key = (str(wav48.device), k)
-    res = _WARP_RESAMPLERS.get(key)
-    if res is None:
-        res = torchaudio.transforms.Resample(3 * k, 20).to(wav48.device)
-        _WARP_RESAMPLERS[key] = res
-    wav16 = res(wav48)  # to 16 kHz and warped by k/20 in one step
+    k = random.choice(WARP_STEPS) if k is None else k
+    wav16 = _warp_resampler(wav48.device, 3 * k, 20)(wav48)  # to 16 kHz and warped by 20/k in one step
     wav16 = torch.nn.functional.pad(wav16, (0, (-wav16.shape[-1]) % 320))
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=wav48.is_cuda):
         c = enc.encode(wav16).float()
     return torch.nn.functional.interpolate(c.transpose(1, 2), size=frames, mode="linear", align_corners=False).transpose(1, 2)
+
+
+@torch.no_grad()
+def training_tone(wav48: torch.Tensor, spread: float = 0.0, warp_k: int | None = None) -> torch.Tensor:
+    """Per-frame tone [B, T, 2] computed from uncoloured `wav48` (and spectrally warped by `warp_k` whenever
+    `warped_content` runs), so `self.tone` never acts as a shortcut around `colour()` or `perturb`."""
+    frames = wav48.shape[-1] // FRAME
+    if warp_k is None:
+        tn = tone_of(wav48)
+    else:
+        warped48 = _warp_resampler(wav48.device, warp_k, 20)(wav48)
+        warped48 = torch.nn.functional.pad(warped48, (0, max(0, 2 * FRAME - warped48.shape[-1])))
+        tn_w = tone_of(warped48)
+        tn = torch.nn.functional.interpolate(tn_w.transpose(1, 2), size=frames, mode="linear", align_corners=False).transpose(1, 2)
+    if spread > 0:
+        tn = tn + spread * torch.randn(wav48.shape[0], 1, 2, device=wav48.device)
+    return tn
 
 
 def looked_up(content: torch.Tensor, bank: torch.Tensor, s: torch.Tensor, k: int = 8) -> torch.Tensor:
@@ -512,11 +533,13 @@ def main(on_save=None) -> None:
         if args.colour_aug:
             src = colour(src, args.colour_aug)
         content, f0, voicing, loud = extract_all(enc, rmvpe, src)
+        warp_k = None
         if args.perturb and random.random() < args.perturb:
-            content = warped_content(enc, src, content.shape[1])
+            warp_k = random.choice(WARP_STEPS)
+            content = warped_content(enc, src, content.shape[1], k=warp_k)
         elif bank is not None:
             content = looked_up(content, bank, s)
-        tn = tone_of(src) + args.tone * torch.randn(wav.shape[0], 1, 2, device=dev) if args.tone else None
+        tn = training_tone(wav, args.tone, warp_k=warp_k) if args.tone else None
         v_in = voicing if args.expressive else None
         with amp():
             h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn, voicing=v_in)

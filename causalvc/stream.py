@@ -23,26 +23,74 @@ DELAY = 5  # 100 Hz frames between the newest input and the newest output
 HIST = 128  # frames of features kept for the decoder
 GEN = 32  # frames of context the waveform generator is given
 F0_RANGE = (32.0, 1400.0)  # Hz: sub-50 Hz vocal fry up to high soprano/whistle
+REF_TONE = (-14.5, -6.5)  # dB (brightness, openness) of clean studio modal speech
+_REF_TONE_BUF: dict[str, torch.Tensor] = {}
+
+
+def _ref_tone(device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+    key = f"{device}:{dtype}"
+    buf = _REF_TONE_BUF.get(key)
+    if buf is None:
+        buf = torch.tensor(REF_TONE, device=device, dtype=dtype)
+        _REF_TONE_BUF[key] = buf
+    return buf
 
 
 def smooth_f0(f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """Causal zero-latency micro-jitter smoother on F0 [m] (Hz, 0 unvoiced), returning (smoothed [m], state [1]).
+    """Causal zero-latency micro-jitter smoother on low-pitched F0 [m] (Hz, 0 unvoiced) -> (smoothed [m], state [1]).
 
-    Small 10 ms frame-to-frame jitter (<25 cents, common on <120 Hz voices and amplified at upper harmonics
-    when pitch-shifted up) is smoothed in log-Hz, while real pitch glides and jumps (>=60 cents / 10 ms) and
-    unvoiced-to-voiced onsets pass through without lag. Pure tensor ops so CUDA graphs can record it."""
+    Only damps <25-cent 10 ms glottal-window jitter when 0 < F0 < 145 Hz; real intonation glides (>=32 cents / 10 ms),
+    unvoiced-to-voiced onsets, and higher-pitched voices pass through with zero lag. CUDA-graph safe."""
     cur = f0.new_zeros(1) if state is None else state.clone()
     out = []
     for i in range(f0.shape[0]):
         fi = f0[i : i + 1]
         both = (fi > 0) & (cur > 0)
+        low_w = ((145.0 - fi) / 35.0).clamp(0.0, 1.0)
         cents = 1200.0 * torch.abs(torch.log2(fi.clamp_min(1.0) / cur.clamp_min(1.0)))
-        t = ((cents - 18.0) / 42.0).clamp(0.0, 1.0)
-        alpha = 0.25 + 0.75 * (t * t)
+        t = ((cents - 10.0) / 22.0).clamp(0.0, 1.0)
+        alpha = 1.0 - low_w * (1.0 - (0.28 + 0.72 * (t * t)))
         blended = cur * (fi.clamp_min(1.0) / cur.clamp_min(1.0)) ** alpha
         cur = torch.where(fi <= 0, torch.zeros_like(fi), torch.where(both, blended, fi))
         out.append(cur[0])
     return (torch.stack(out) if out else f0), cur
+
+
+def smooth_loud(loud: torch.Tensor, raw_f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Causal anti-flutter on 10 ms loudness [m] gated to sustained low pitches (0 < raw_f0 < 130 Hz).
+
+    Every consonant burst, stop closure, pause, >=3.5 dB edge, and >=130 Hz frame keeps exact 0 ms timing."""
+    cur = loud.new_full((1,), -100.0) if state is None else state.clone()
+    out = []
+    for i in range(loud.shape[0]):
+        li = loud[i : i + 1]
+        fi = raw_f0[i : i + 1]
+        low_voiced = (fi > 0) & (fi < 130.0) & (cur > -70.0)
+        t = (((li - cur).abs() - 1.8) / 2.2).clamp(0.0, 1.0)
+        alpha = 0.22 + 0.78 * (t * t)
+        cur = torch.where(low_voiced, cur + alpha * (li - cur), li)
+        out.append(cur[0])
+    return (torch.stack(out) if out else loud), cur
+
+
+def normalize_tone(
+    tn: torch.Tensor,
+    loud: torch.Tensor,
+    raw_f0: torch.Tensor,
+    state: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Lift dark/chest-heavy microphone baselines toward studio vocal presence while keeping sibilant & laugh dynamics."""
+    ref = _ref_tone(tn.device, tn.dtype)
+    avg = ref.clone() if state is None else state.clone()
+    out = []
+    for i in range(tn.shape[0]):
+        ti = tn[i]
+        voiced_act = ((raw_f0[i] > 0) & (loud[i] > -55.0)).float()
+        avg = avg + (0.04 * voiced_act) * (ti - avg)
+        lift = (ref - avg).clamp(-2.0, 8.5)
+        conf = ((loud[i] + 58.0) / 14.0).clamp(0.0, 1.0)
+        out.append(ref + conf * ((ti + lift) - ref))
+    return (torch.stack(out) if out else tn), avg
 
 
 def map_f0(f0: torch.Tensor, ratio: float, offset: float = 0.0, ceiling: float = 0.0, keep: float = 1.0) -> torch.Tensor:
@@ -115,6 +163,8 @@ class StreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
+        self.loud_state = torch.full((1,), -100.0, device=d)
+        self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)  # newest pitch frame, whose excitation waits for the next one
         self.pending_v = torch.zeros(1, device=d)
         self.level, self.level_pow, self.level_n, self.gain = -23.0, 0.0, 0, 1.0  # running speech level (dB, power), frames seen, gain
@@ -188,11 +238,13 @@ class StreamingVC:
 
                     content = torch.lerp(content, lookup(content, self.index, self.index_unit), self.rate)
         sal = torch.sigmoid(self.pitch.forward(wav16).float())  # step t is pitch frame t - lookahead
-        raw_f0, raw_v = self.pitch.decode_with_voicing(sal)
-        f0_s, self.smooth_state = smooth_f0(raw_f0[0, frames + self.pitch.lookahead], self.smooth_state)
+        raw_f0_all, raw_v = self.pitch.decode_with_voicing(sal)
+        raw_f0 = raw_f0_all[0, frames + self.pitch.lookahead]
+        f0_s, self.smooth_state = smooth_f0(raw_f0, self.smooth_state)
         f0 = map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep)
         v = raw_v[0, frames + self.pitch.lookahead]
-        loud = loudness(self.buf[None])[0, frames]
+        raw_loud = loudness(self.buf[None])[0, frames]
+        loud, self.loud_state = smooth_loud(raw_loud, raw_f0, self.loud_state)
 
         use_v = self.dec.expressive
         if self.late:  # excitation for the frame before each new one, now that its following pitch is known
@@ -208,7 +260,8 @@ class StreamingVC:
         self.voicing = torch.cat([self.voicing[m:], v])
         self.loud = torch.cat([self.loud[m:], loud])
         if self.dec.tone is not None:
-            self.tone = torch.cat([self.tone[m:], tone(self.buf[None])[0, frames]])
+            tn_new, self.tone_state = normalize_tone(tone(self.buf[None])[0, frames], raw_loud, raw_f0, self.tone_state)
+            self.tone = torch.cat([self.tone[m:], tn_new])
         self.exc = torch.cat([self.exc[:, m * FRAME :], exc], dim=1)
 
         dec = self.dec

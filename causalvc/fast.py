@@ -24,12 +24,12 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, _loud_buffers, _tone_buffers, loudness, tone
+from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, _tone_buffers, loudness, tone
 from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
-from causalvc.stream import DELAY, F0_RANGE, map_f0, smooth_f0
+from causalvc.stream import DELAY, F0_RANGE, REF_TONE, _ref_tone, map_f0, normalize_tone, smooth_f0, smooth_loud
 
 TAIL = 3840  # 48 kHz samples of input kept between blocks (80 ms): covers every front end's history
 
@@ -86,9 +86,9 @@ class FastStreamingVC:
         # The voice's index (causalvc.index), if it has one, and how strongly it is blended in (0-1).
         self.index = self.index_unit = None
         self.index_rate, self.rate = torch.zeros((), device=device), 0.0
-        _loud_buffers(torch.device(device))
         if self.dec.tone is not None:
             _tone_buffers(torch.device(device))
+            _ref_tone(torch.device(device))
         self.graphs = bool(graphs) and str(device).startswith("cuda")
         self.graph = None
         self.reset()
@@ -132,6 +132,8 @@ class FastStreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
+        self.loud_state = torch.full((1,), -100.0, device=d)
+        self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)
         self.pending_v = torch.zeros(1, device=d)
         self.pending_h = None  # features of the newest frame, waiting for its excitation (glide="next")
@@ -287,13 +289,19 @@ class FastStreamingVC:
     def _slots(self) -> list[torch.Tensor]:
         """Every tensor the stream carries from one block to the next."""
         late = [] if self.pending_h is None else [self.pending_h]
-        return [self.tail, self.phase, self.prev_f0, self.smooth_state, self.pending_f0, self.pending_v, *late, *self.steps, *(self.st[k] for k in self.keys)]
+        return [
+            self.tail, self.phase, self.prev_f0, self.smooth_state, self.loud_state, self.tone_state,
+            self.pending_f0, self.pending_v, *late, *self.steps, *(self.st[k] for k in self.keys),
+        ]
 
     def _put(self, slots: list[torch.Tensor]) -> None:
-        self.tail, self.phase, self.prev_f0, self.smooth_state, self.pending_f0, self.pending_v = slots[:6]
-        i = 6
+        (
+            self.tail, self.phase, self.prev_f0, self.smooth_state,
+            self.loud_state, self.tone_state, self.pending_f0, self.pending_v,
+        ) = slots[:8]
+        i = 8
         if self.pending_h is not None:
-            self.pending_h, i = slots[6], 7
+            self.pending_h, i = slots[8], 9
         n = len(self.steps)
         self.steps = list(slots[i : i + n])
         for k, t in zip(self.keys, slots[i + n :]):
@@ -412,19 +420,21 @@ class FastStreamingVC:
                     content.append(c50_t[f // 2 - s_lo])
             content = torch.stack(content)
 
-        f0, v = self._pitch_with_voicing(wav16[-(1120 + 160 * m) :], m)
+        raw_f0, v = self._pitch_with_voicing(wav16[-(1120 + 160 * m) :], m)
         if first < 0:  # before any real frame is final the old runtime's history is silence too
-            valid = torch.arange(first, first + m, device=f0.device) >= 0
-            f0 = torch.where(valid, f0, torch.zeros_like(f0))
+            valid = torch.arange(first, first + m, device=raw_f0.device) >= 0
+            raw_f0 = torch.where(valid, raw_f0, torch.zeros_like(raw_f0))
             v = torch.where(valid, v, torch.zeros_like(v))
-        f0, self.smooth_state = smooth_f0(f0, self.smooth_state)
-        f0 = map_f0_tensor(f0, self.pmap) if self.graphs else map_f0(f0, self.ratio, self.offset, self.ceiling, self.keep)
-        loud = loudness(buf[None, buf.shape[0] - (D + m + 3) * FRAME : buf.shape[0] - D * FRAME])[0, 3:]
+        f0_s, self.smooth_state = smooth_f0(raw_f0, self.smooth_state)
+        f0 = map_f0_tensor(f0_s, self.pmap) if self.graphs else map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep)
+        raw_loud = loudness(buf[None, buf.shape[0] - (D + m) * FRAME : buf.shape[0] - D * FRAME])[0]
+        loud, self.loud_state = smooth_loud(raw_loud, raw_f0, self.loud_state)
 
         g = self.dec.speaker(self.spk)
         tn = None
         if self.dec.tone is not None:  # each frame's tone is measured over it and the frame before
-            tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
+            raw_tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
+            tn, self.tone_state = normalize_tone(raw_tn, raw_loud, raw_f0, self.tone_state)
         use_v = self.dec.expressive
         h = self._features(content, f0, loud, g, tn, v if use_v else None)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind
