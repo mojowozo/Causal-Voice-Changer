@@ -460,11 +460,37 @@ class Decoder(nn.Module):
         return self.generate(h, g, self.source(f0[:, : h.shape[-1]]))
 
 
+_LOUD_BANKS: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _loud_buffers(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    key = str(device)
+    bufs = _LOUD_BANKS.get(key)
+    if bufs is None:
+        nw = 4 * FRAME  # 40 ms causal Hann window (~20 ms effective width): >3 cycles down to 75 Hz
+        win = torch.hann_window(nw, device=device)
+        nb = nw // 2 + 1
+        f = torch.arange(nb, device=device, dtype=torch.float32) * (SR / nw)
+        # Parseval weights with a steep high-pass under ~80 Hz so DC and desk/mic rumble do not drive loudness.
+        w = torch.full((nb,), 2.0, device=device)
+        w[0] = 0.0
+        w[-1] = 1.0
+        hp = (f ** 6) / (f ** 6 + 75.0 ** 6)
+        weights = (w * hp) / (nw * win.pow(2).sum())
+        bufs = (win, weights)
+        _LOUD_BANKS[key] = bufs
+    return bufs
+
+
 def loudness(wav: torch.Tensor) -> torch.Tensor:
-    """[B, N] at 48 kHz -> dB RMS of each 10 ms frame, [B, N // FRAME]."""
+    """[B, N] at 48 kHz -> dB RMS of each 10 ms frame [B, N // FRAME], measured over a causal 40 ms Hann
+    window (~20 ms effective width) with sub-80 Hz rumble rejected so low glottal pulses do not flutter."""
     n = wav.shape[1] // FRAME
-    frames = wav[:, : n * FRAME].reshape(wav.shape[0], n, FRAME)
-    return 20 * torch.log10(frames.pow(2).mean(-1).sqrt() + 1e-5)
+    win, weights = _loud_buffers(wav.device)
+    x = F.pad(wav[:, : n * FRAME].float(), (3 * FRAME, 0)).unfold(1, 4 * FRAME, FRAME)
+    S = torch.fft.rfft(x * win).abs().pow(2)
+    ms = (S * weights).sum(dim=-1).clamp_min(0.0)
+    return 20.0 * torch.log10(ms.sqrt() + 1e-5)
 
 
 TONE_BANDS = ((2000, 8000, 250, 2000), (700, 2000, 250, 700))  # brightness, vowel openness

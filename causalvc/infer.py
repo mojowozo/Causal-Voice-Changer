@@ -93,7 +93,9 @@ class CausalVC:
             near = self.lookup(content[0], self.bank(speaker))
             content = (1 - self.index) * content + self.index * near[None]
         spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
-        f0 = f0 * 2.0 ** (semitones / 12.0)
+        from causalvc.stream import smooth_f0
+
+        f0 = smooth_f0(f0[0])[0][None] * 2.0 ** (semitones / 12.0)
         enc_hz = 100 if getattr(self.enc, "hop", 320) == 160 else 50
         v_in = voicing if self.dec.expressive else None
         h, g = self.dec.features(content, f0, loud, spk, tone=tone(x) if self.dec.tone is not None else None, content_hz=enc_hz, voicing=v_in)
