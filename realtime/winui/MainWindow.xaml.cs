@@ -387,13 +387,23 @@ public sealed partial class MainWindow : Window, IHost
     public void Toast(string text)
     {
         var bar = new InfoBar { Message = text, IsOpen = true, IsClosable = true, Severity = InfoBarSeverity.Informational };
-        bar.Closed += (_, _) => Toasts.Children.Remove(bar);
-        Toasts.Children.Add(bar);
+        // An InfoBar's own background is a light tint meant for a solid page: floating over the
+        // page, the text below shows through it. A solid card under it keeps the toast readable.
+        var card = new Border
+        {
+            Child = bar,
+            CornerRadius = new CornerRadius(4),
+            Background = (Brush)Application.Current.Resources["SolidBackgroundFillColorBaseBrush"],
+            Translation = new System.Numerics.Vector3(0, 0, 16),
+            Shadow = new ThemeShadow(),
+        };
+        bar.Closed += (_, _) => Toasts.Children.Remove(card);
+        Toasts.Children.Add(card);
         while (Toasts.Children.Count > 4) Toasts.Children.RemoveAt(0);
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(ToastSeconds);
         timer.IsRepeating = false;
-        timer.Tick += (_, _) => Toasts.Children.Remove(bar);
+        timer.Tick += (_, _) => Toasts.Children.Remove(card);
         timer.Start();
     }
 

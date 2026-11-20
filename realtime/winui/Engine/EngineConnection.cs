@@ -31,9 +31,23 @@ public sealed class EngineConnection : IAsyncDisposable
     /// <param name="post">Receives every event; called on a background thread.</param>
     public EngineConnection(Action<EngineEvent> post) => _post = post;
 
-    public static string EndpointFile => Path.Combine(
+    /// This copy of the app's endpoint file: one per app folder, so a window never talks to the
+    /// engine of another copy (an older release unpacked elsewhere, say, whose engine is still
+    /// running). Matches engine.protocol.default_endpoint_file().
+    public static string EndpointFile { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "CausalVC", "realtime-engine.json");
+        "CausalVC", ProjectDir() is { } dir ? $"realtime-engine-{AppKey(dir)}.json" : "realtime-engine.json");
+
+    /// engine.protocol.app_key: 64-bit FNV-1a of the folder's full path in UTF-8, lowercased
+    /// (as Windows paths are compared), as 16 hex digits.
+    public static string AppKey(string dir)
+    {
+        var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)).ToLowerInvariant();
+        ulong hash = 0xcbf29ce484222325;
+        foreach (var b in Encoding.UTF8.GetBytes(path))
+            hash = (hash ^ b) * 0x100000001b3;
+        return hash.ToString("x16");
+    }
 
     public void Start() => _loop = Task.Run(() => RunAsync(_stop.Token));
 
@@ -216,7 +230,7 @@ public sealed class EngineConnection : IAsyncDisposable
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        foreach (var arg in new[] { "-m", "engine.server", "--exit-when-idle", EngineIdleExitSeconds })
+        foreach (var arg in new[] { "-m", "engine.server", "--exit-when-idle", EngineIdleExitSeconds, "--socket", "tcp:" + EndpointFile })
             start.ArgumentList.Add(arg);
         // Device names and log text are Unicode; the hidden console's code page is not.
         start.Environment["PYTHONUTF8"] = "1";

@@ -27,22 +27,48 @@ ENDPOINT_NAME = "realtime-engine.json"
 TCP_PREFIX = "tcp:"
 
 
-def default_socket_path():
+#: The realtime/ folder this engine belongs to.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def app_key(app_dir):
+    """A short name for one copy of the app, so every copy has an engine address of its own.
+
+    Without it a window from one copy (say a new release unpacked beside an old one) would talk
+    to another copy's engine, which may be an older version with other settings and voices.
+    The windows compute the same key (ui/src/engine.rs, winui/Engine/EngineConnection.cs):
+    64-bit FNV-1a of the folder's full path in UTF-8, lowercased on Windows, as 16 hex digits.
+    """
+    path = os.path.normpath(os.path.abspath(app_dir))
+    if os.name == "nt":
+        path = path.lower()
+    h = 0xCBF29CE484222325
+    for byte in path.encode("utf-8"):
+        h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def _named(name, app_dir):
+    stem, ext = os.path.splitext(name)
+    return f"{stem}-{app_key(app_dir)}{ext}"
+
+
+def default_socket_path(app_dir=APP_DIR):
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/causalvc-realtime-{os.getuid()}"
-    return os.path.join(runtime_dir, SOCKET_NAME)
+    return os.path.join(runtime_dir, _named(SOCKET_NAME, app_dir))
 
 
-def default_endpoint_file():
+def default_endpoint_file(app_dir=APP_DIR):
     """Where a TCP engine writes its port and token: per user, under %LOCALAPPDATA% on Windows."""
     base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(base, "CausalVC", ENDPOINT_NAME)
+    return os.path.join(base, "CausalVC", _named(ENDPOINT_NAME, app_dir))
 
 
-def default_address():
-    """The Unix socket on Linux and macOS; the TCP endpoint file on Windows."""
+def default_address(app_dir=APP_DIR):
+    """This copy's Unix socket on Linux and macOS; its TCP endpoint file on Windows."""
     if os.name == "nt":
-        return TCP_PREFIX + default_endpoint_file()
-    return default_socket_path()
+        return TCP_PREFIX + default_endpoint_file(app_dir)
+    return default_socket_path(app_dir)
 
 
 def is_tcp(address):

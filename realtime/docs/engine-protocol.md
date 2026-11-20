@@ -11,11 +11,15 @@ and the tests all use this protocol.
 .venv/bin/python -m engine.cli state          # current state as JSON
 ```
 
-- **Socket (Linux):** `$XDG_RUNTIME_DIR/causalvc-realtime.sock` by default (mode `0600`).
+- **One engine per copy of the app:** the address carries `<key>`, 16 hex digits of
+  64-bit FNV-1a over the `realtime/` folder's full path in UTF-8 (lowercased on Windows;
+  `engine.protocol.app_key`). Two copies of the app (an old release beside a new one) so
+  never share an engine. The windows compute the same address and pass it with `--socket`.
+- **Socket (Linux):** `$XDG_RUNTIME_DIR/causalvc-realtime-<key>.sock` by default (mode `0600`).
   The server refuses to start if another engine already listens there.
 - **TCP (Windows):** asyncio has no Unix sockets there, so the engine listens on
   `127.0.0.1` on a free port and writes `{"port", "token", "pid"}` to
-  `%LOCALAPPDATA%\CausalVC\realtime-engine.json` (per user). A client's first
+  `%LOCALAPPDATA%\CausalVC\realtime-engine-<key>.json` (per user). A client's first
   line must be `{"auth": "<token>"}`; a client that sends anything else, or
   nothing within 5 s, is disconnected without a `hello`. Pass
   `--socket tcp:<endpoint file>` to use this transport elsewhere (the tests do).

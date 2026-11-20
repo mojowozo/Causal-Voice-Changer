@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 
+from engine import protocol
 from engine.cli import EngineClient
 from engine.server import CommandError, EngineServer
 
@@ -83,6 +84,14 @@ class HangingShutdownEngine(FakeEngine):
     def shutdown(self):
         self.shut_down = True
         threading.Event().wait(2)
+
+
+class EngineAddressTest(unittest.TestCase):
+    def test_each_copy_of_the_app_has_its_own_address(self):
+        # The windows compute the same key: ui/src/engine.rs and winui/Engine/EngineConnection.cs.
+        self.assertEqual(protocol.app_key("/opt/causalvc/realtime"), "8f89d62bd5c3af82")
+        self.assertNotEqual(protocol.default_address("/a/realtime"), protocol.default_address("/b/realtime"))
+        self.assertIn(protocol.app_key(protocol.APP_DIR), protocol.default_address())
 
 
 class EngineServerTest(unittest.TestCase):

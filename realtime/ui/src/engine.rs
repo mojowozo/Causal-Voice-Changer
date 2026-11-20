@@ -264,15 +264,47 @@ impl Handle {
     }
 }
 
+/// This copy of the app's engine socket: one per app folder, so a window never talks to the
+/// engine of another copy (an older release unpacked elsewhere, say). Matches
+/// engine.protocol.default_socket_path().
 pub fn socket_path() -> PathBuf {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            // Matches engine.protocol.default_socket_path().
             let uid = current_uid();
             PathBuf::from(format!("/tmp/causalvc-realtime-{uid}"))
         });
-    runtime_dir.join("causalvc-realtime.sock")
+    let name = match project_dir() {
+        Some(dir) => format!("causalvc-realtime-{}.sock", app_key(&absolute(&dir))),
+        None => String::from("causalvc-realtime.sock"),
+    };
+    runtime_dir.join(name)
+}
+
+/// The folder as a full path, without `.` or `..` parts (like Python's os.path.abspath and
+/// normpath: symlinks are kept, so both sides see the same text).
+fn absolute(dir: &Path) -> PathBuf {
+    let full = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut out = PathBuf::new();
+    for part in full.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// engine.protocol.app_key: 64-bit FNV-1a of the folder's path in UTF-8, as 16 hex digits.
+fn app_key(dir: &Path) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in dir.to_string_lossy().as_bytes() {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn current_uid() -> u32 {
@@ -445,6 +477,13 @@ pub fn connection() -> impl Stream<Item = Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_key_matches_the_engine() {
+        // engine.protocol.app_key("/opt/causalvc/realtime"); also in realtime/tests/test_engine_server.py.
+        assert_eq!(app_key(Path::new("/opt/causalvc/realtime")), "8f89d62bd5c3af82");
+        assert_eq!(absolute(Path::new("/opt/causalvc/x/../realtime/.")), Path::new("/opt/causalvc/realtime"));
+    }
 
     #[test]
     fn parses_responses() {
