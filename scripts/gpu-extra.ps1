@@ -1,7 +1,8 @@
-# Prints which Windows build of PyTorch to install: "cuda" (NVIDIA), "rocm" (AMD, newer Radeons) or
-# "rocm-rdna2" (AMD's nightly build, for the Radeon RX 6000 series).
-# Used by run-training.bat and run-realtime.bat; set CAUSALVC_GPU=cuda, rocm or
-# rocm-rdna2 to choose yourself.
+# Prints which Windows build of PyTorch to install: "cuda" (NVIDIA), "cuda-pascal" (NVIDIA GTX 900/10
+# series and other cards CUDA 13 dropped), "rocm" (AMD, newer Radeons) or "rocm-rdna2" (AMD's nightly
+# build, for the Radeon RX 6000 series).
+# Used by run-training.bat and run-realtime.bat; set CAUSALVC_GPU=cuda, cuda-pascal, rocm or
+# rocm-rdna2 to choose yourself (run-realtime-gtx10.bat and run-training-gtx10.bat do that for cuda-pascal).
 #
 # NVIDIA wins when both are present (a laptop with an AMD processor's graphics and an NVIDIA card).
 # AMD's ROCm build supports Radeon RX 7000 and 9000, Radeon PRO W7000 and Ryzen AI Max / AI 300
@@ -11,8 +12,17 @@
 $names = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
 # Shown in the launcher's window (stderr: only stdout is the answer), so a wrong pick is easy to spot.
 [Console]::Error.WriteLine("Graphics found: $(if ($names) { $names -join ', ' } else { 'none reported' })")
-if ($names -match 'NVIDIA') {
-    'cuda'
+$nvidia = @($names | Where-Object { $_ -match 'NVIDIA' })
+# GeForce GTX 900/10 series, TITAN X/Xp/V, Quadro M/P, MX100-300 (Maxwell, Pascal, Volta): the CUDA 13
+# build of PyTorch no longer runs on them, so they get the last one built for CUDA 12.6.
+$older = 'GTX (9\d{2}|10\d{2})\b|GTX 750|TITAN (X|V)|Quadro [MP]\d|Quadro GV|Tesla [MPV]\d|MX ?[1-3]\d{2}\b'
+if ($nvidia) {
+    if (@($nvidia | Where-Object { $_ -notmatch $older }).Count -eq 0) {
+        [Console]::Error.WriteLine("Older NVIDIA card (GTX 900/10 series or similar): using PyTorch built for CUDA 12.6, which still supports it.")
+        'cuda-pascal'
+    } else {
+        'cuda'
+    }
 } elseif ($names -match 'AMD|Radeon') {
     $supported = 'RX 7\d{3}|RX 9\d{3}|PRO W7\d{3}|Radeon 8\d{2}0S|Radeon 8\d0M'
     if ($names -match $supported) {

@@ -46,8 +46,11 @@ can't be built, a small Tk window opens instead. See [training/README.md](traini
 
 On Windows it installs the PyTorch build for your graphics card: CUDA for NVIDIA, ROCm for AMD
 (Radeon RX 7000/9000 and Ryzen AI graphics; the RX 6000 series gets AMD's newer nightly build).
-Set `CAUSALVC_GPU=cuda`, `rocm` or `rocm-rdna2` to choose yourself; when running `uv` commands by
-hand on Windows, add `--extra cuda`, `--extra rocm` or `--extra rocm-rdna2`.
+Older NVIDIA cards that CUDA 13 dropped (GeForce GTX 900/10 series such as a GTX 1080, TITAN X/Xp/V,
+Quadro M/P) get the last PyTorch built for CUDA 12.6; if one isn't recognised, open the app with
+`run-realtime-gtx10.bat` or `run-training-gtx10.bat` instead.
+Set `CAUSALVC_GPU=cuda`, `cuda-pascal`, `rocm` or `rocm-rdna2` to choose yourself; when running `uv`
+commands by hand on Windows, add the same name with `--extra` (`--extra cuda`, say).
 
 ## Building a voice
 
