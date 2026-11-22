@@ -88,8 +88,7 @@ public sealed class ModelPage : PageBase
             .Add(Slider(S.InputGain, Num.InputGain))
             .Add(Slider(S.OutputGain, Num.OutputGain))
             .Add(_levelRow)
-            .Add(Slider(S.MonitorGain, Num.MonitorGain))
-            .Add(Slider(S.NoiseGate, Num.NoiseGate));
+            .Add(Slider(S.MonitorGain, Num.MonitorGain));
 
         Column.Children.Add(_models);
         Column.Children.Add(_voice);

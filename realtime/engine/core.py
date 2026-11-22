@@ -716,7 +716,7 @@ class RealtimeEngine:
         else:
             raise EngineError("bad_request", "group must be general, performance or cleanup")
         self.update_settings({key: getattr(defaults, key) for key in keys})
-        if group == "general":
+        if group in ("general", "cleanup"):  # both reset settings saved per voice
             self.flush_model_settings_save(force=True)
 
     def schedule_model_settings_save(self):

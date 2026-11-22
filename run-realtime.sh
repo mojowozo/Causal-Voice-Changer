@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Launch the CausalVC realtime voice changer (the COSMIC front end; it starts the Python engine itself).
+# Sets up everything on first run (Python packages, the base voices run on), then opens the voice
+# changer (the COSMIC front end; it starts the Python engine itself).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-if [[ ! -x .venv/bin/python ]]; then
-    echo "The project's Python environment is missing. Run ./run-training.sh once first: it installs everything." >&2
-    exit 1
-fi
+# Python packages and pretrained files, shared with the training app (run-training.sh does the same).
+bash scripts/setup.sh realtime
 binary=ui/target/release/causalvc-realtime
 stamp=realtime/$binary.source-hash
 # A front end that came built in a release download holds a fingerprint of the sources it was

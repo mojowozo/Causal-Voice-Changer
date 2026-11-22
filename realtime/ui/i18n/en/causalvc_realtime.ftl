@@ -146,7 +146,7 @@ output-gain-detail = Volume of the converted voice on the output device, which i
 monitor-gain = Monitor gain
 monitor-gain-detail = Volume of the copy you hear yourself on the monitor device. Doesn't change what others hear.
 noise-gate = Noise gate
-noise-gate-detail = Mutes your mic whenever it's quieter than this, so background sound between words isn't converted. Off at -60 dB.
+noise-gate-detail = Mutes your mic whenever it's quieter than this, so background sound between words isn't converted. Off at -60 dB. Kept per voice.
 off = Off
 reset-model-settings = Reset model settings
 

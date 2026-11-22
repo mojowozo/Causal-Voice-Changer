@@ -124,9 +124,11 @@ class StreamLatencyTest(unittest.TestCase):
 
     def test_linux_launch_scripts_request_10ms_pipewire_quantum(self):
         repo = Path(__file__).resolve().parents[2]
-        for rel in ("run-realtime.sh", "realtime/run-realtime.sh"):
-            text = (repo / rel).read_text(encoding="utf-8")
-            self.assertIn('PIPEWIRE_QUANTUM="${PIPEWIRE_QUANTUM:-480/48000}"', text, rel)
+        text = (repo / "run-realtime.sh").read_text(encoding="utf-8")
+        self.assertIn('PIPEWIRE_QUANTUM="${PIPEWIRE_QUANTUM:-480/48000}"', text)
+        # realtime/run-realtime.sh only starts the main launcher, so it gets the same quantum.
+        inner = (repo / "realtime/run-realtime.sh").read_text(encoding="utf-8")
+        self.assertIn('/../run-realtime.sh"', inner)
 
     def test_native_inflight_inference_block_keeps_queued_ms_steady(self):
         import threading

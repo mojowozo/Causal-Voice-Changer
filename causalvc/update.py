@@ -99,6 +99,31 @@ def _get(url: str, accept: str = "application/vnd.github+json"):
                                   timeout=TIMEOUT)
 
 
+def notes_text(markdown: str) -> str:
+    """Release notes (GitHub Markdown) as plain text the update window can show as it is: list
+    items get a bullet, headings lose their #, links keep their text, and **bold**, *italics*
+    and `code` lose their marks."""
+    lines = []
+    for line in markdown.replace("\r\n", "\n").split("\n"):
+        indent = len(line) - len(line.lstrip(" \t"))
+        body = line.strip()
+        if re.fullmatch(r"(?:[-*_]\s*){3,}", body):  # a horizontal rule
+            lines.append("")
+            continue
+        heading = re.match(r"#{1,6}\s+(.*?)\s*#*$", body)
+        item = re.match(r"[-*+]\s+(.*)", body)
+        if heading:
+            body = heading.group(1)
+        elif item:
+            body = "  " * (indent // 2) + "• " + item.group(1)
+        body = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", body)  # [text](url) and images
+        body = re.sub(r"(\*\*|__)(.+?)\1", r"\2", body)
+        body = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", body)
+        body = re.sub(r"`([^`]*)`", r"\1", body)
+        lines.append(body)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def release_info(data: dict, suffix: str | None = None) -> dict:
     """What we need from GitHub's release JSON; ``asset`` is None when there is no download for this system."""
     suffix = asset_suffix() if suffix is None else suffix
@@ -109,7 +134,7 @@ def release_info(data: dict, suffix: str | None = None) -> dict:
             asset = {"name": a["name"], "url": a.get("browser_download_url"), "size": int(a.get("size") or 0),
                      "sha256": digest[7:] if digest.startswith("sha256:") else ""}
             break
-    notes = (data.get("body") or "").replace("\r\n", "\n").strip()
+    notes = notes_text(data.get("body") or "")
     if len(notes) > NOTES_CHARS:
         notes = notes[:NOTES_CHARS].rsplit("\n", 1)[0] + "\n…"
     return {"version": data.get("tag_name") or "", "name": data.get("name") or "", "notes": notes,

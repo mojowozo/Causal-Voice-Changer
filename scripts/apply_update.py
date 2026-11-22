@@ -199,7 +199,7 @@ def main(argv=None) -> int:
                 log("updating the Python packages")
                 subprocess.run([uv, "sync"], cwd=str(root))
             else:
-                log("uv not found; run ./run-training.sh once to update the Python packages")
+                log("uv not found; the app's launcher updates the Python packages when it next starts")
         # The unpacked download (causalvc.update unpacks into .update/release-<tag>/<top folder>).
         shutil.rmtree(staged.parent if staged.parent.name.startswith("release-") else staged, ignore_errors=True)
     if not a.no_relaunch:

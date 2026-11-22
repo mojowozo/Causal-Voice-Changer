@@ -3,16 +3,9 @@
 set -e
 cd "$(dirname "$(readlink -f "$0")")"
 
-if ! command -v uv >/dev/null 2>&1; then
-    echo "uv (the Python package manager this project uses) was not found. Installing it from https://astral.sh/uv ..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-fi
-
-echo "Checking Python packages..."
-uv sync
-echo "Checking pretrained files..."
-uv run --no-sync python -m causalvc.weights
+# Python packages and pretrained files, shared with the voice changer (run-realtime.sh does the same).
+bash scripts/setup.sh training
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"  # where setup.sh may have just installed uv
 
 # The COSMIC window (training/ui), built on first run; it shares compiled libraries with the
 # voice changer's. Without Rust, or if the build fails, the small Tk window opens instead.

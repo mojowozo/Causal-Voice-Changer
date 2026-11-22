@@ -146,7 +146,7 @@ output-gain-detail = 出力デバイスに送る変換後の声の音量（相�
 monitor-gain = モニターゲイン
 monitor-gain-detail = モニターデバイスで自分が聞く音量です。相手に聞こえる音量は変わりません。
 noise-gate = ノイズゲート
-noise-gate-detail = マイクがこの値より小さいときは無音にし、言葉の合間の環境音を変換しないようにします。-60 dB でオフです。
+noise-gate-detail = マイクがこの値より小さいときは無音にし、言葉の合間の環境音を変換しないようにします。-60 dB でオフです。ボイスごとに保存されます。
 off = オフ
 reset-model-settings = モデル設定をリセット
 

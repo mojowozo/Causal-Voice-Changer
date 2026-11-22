@@ -28,6 +28,7 @@ public sealed class AudioPage : PageBase
     readonly Slider _seek = new() { Minimum = 0, Maximum = 1, StepFrequency = 0.1, IsThumbToolTipEnabled = false };
     readonly TextBlock _time = Build.Text("00:00 / 00:00");
     readonly SliderSetting _fileVolume;
+    readonly SliderSetting _noiseGate;
     readonly SettingRow _inputRow;
     readonly Action<IReadOnlyList<string>, int> _setInput;
     readonly Action<IReadOnlyList<string>, int> _setOutput;
@@ -77,6 +78,7 @@ public sealed class AudioPage : PageBase
         _seek.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, _) => EndSeek()), true);
         _seek.ValueChanged += OnSeekChanged;
         _fileVolume = new SliderSetting(S.FileVolume, Num.FileVolume, SendNum);
+        _noiseGate = new SliderSetting(S.NoiseGate, Num.NoiseGate, SendNum);
 
         _inputRow = new SettingRow(S.InputDevice, S.InputDeviceDetail,
             Choice(index => Host.SendSetting("input_device", _inputs[index]), out _setInput));
@@ -113,6 +115,7 @@ public sealed class AudioPage : PageBase
         _download = Build.Button(S.DenoiseHushwireDownload, async (_, _) => await ConfirmHushwireDownload(), "", "AccentButtonStyle");
         _methodRow = new SettingRow(S.DenoiseMethod, S.DenoiseHushwireReady, Build.Row(_download, method));
         Column.Children.Add(new SettingsSection(S.SectionCleanup)
+            .Add(_noiseGate.Row)
             .Add(new SettingRow(S.InputDenoise, S.InputDenoiseDetail, _denoise))
             .Add(_methodRow)
             .Add(new SettingRow(S.SoftenTreble, S.SoftenTrebleDetail, _treble)));
@@ -149,6 +152,7 @@ public sealed class AudioPage : PageBase
         _setSource([S.SourceMicrophone, S.SourceFile], Array.IndexOf(InputSources, settings.InputSource));
         _fileName.Text = state.FilePath is null ? S.NoFile : Path.GetFileName(state.FilePath);
         _fileVolume.Update(settings.FileInputVolume);
+        _noiseGate.Update(settings.NoiseGateDb);
 
         _inputs = state.Inputs;
         _outputs = state.Outputs;

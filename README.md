@@ -35,10 +35,11 @@ Check now). Update downloads it, closes the app, installs it over the folder and
 keeping your voices, builds, settings and Python environment. A git clone is not updated this way:
 use `git pull`.
 
-Run `run-training.sh` (Linux) or `run-training.bat` (Windows). On first run, it installs the Python
-packages with [uv](https://astral.sh/uv), downloads the pretrained files (the base
-model and RMVPE, about 900 MB) into `weights/`, and opens the training window. This will also handle
-installing the perquisites for the realtime portion, so please run this first! 
+Run `run-training.sh` (Linux) or `run-training.bat` (Windows) to build voices, or `run-realtime.sh` /
+`run-realtime.bat` to use them; either can be run first. On first run, the launcher installs the Python
+packages both apps share with [uv](https://astral.sh/uv) and downloads the pretrained files into
+`weights/`: the base every voice runs on (about 730 MB) and, for training, RMVPE (about 180 MB). Then it
+opens its window. The shared setup is `scripts/setup.sh` (or `setup.bat`), and both launchers run it.
 
 The training window is a COSMIC app on Linux (built with Rust's `cargo` on first run) and a WinUI 3
 app on acrylic on Windows (built with the .NET 10 SDK, installed into `.dotnet` when missing). If it
@@ -75,8 +76,8 @@ as folders by older versions convert with `python -m causalvc.voice cvc FOLDER`,
 under `custom-base/`, or a path.
 
 ## Using a voice live
-Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. Both open the full app in `realtime/`: a COSMIC window on Linux, a WinUI 3 window with acrylic on Windows (built on first launch with the .NET 10 SDK, which is installed into `.dotnet` if missing; if that fails, a smaller window with the basic controls opens instead). You need to ensure you've
-run the training GUI first so the prerequisites can be installed. 
+Use `run-realtime.sh` (Linux) or `run-realtime.bat` (Windows) to launch the GUI. Both open the full app in `realtime/`: a COSMIC window on Linux, a WinUI 3 window with acrylic on Windows (built on first launch with the .NET 10 SDK, which is installed into `.dotnet` if missing; if that fails, a smaller window with the basic controls opens instead). On first run it sets
+the project up just as the training launcher does (see Quick start). 
 
 Windows GUI:
 <img width="1897" height="1515" alt="gui-windows" src="https://github.com/user-attachments/assets/a20cfe23-5b69-4ffb-a4fd-078c1e36dcaf" />

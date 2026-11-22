@@ -108,7 +108,15 @@ def ensure_base() -> Path:
     return folder
 
 
-if __name__ == "__main__":  # python -m causalvc.weights : fetch everything now (setup)
-    for name in FILES:
+#: What each app needs (scripts/setup.sh and setup.bat pass the app's name). Every voice runs on the
+#: base's encoder and pitch tracker; RMVPE only labels training audio.
+NEEDS = {"realtime": (), "training": tuple(FILES)}
+
+
+if __name__ == "__main__":  # python -m causalvc.weights [realtime|training] : fetch them now (setup)
+    app = sys.argv[1] if len(sys.argv) > 1 else "training"
+    if app not in NEEDS:
+        sys.exit(f"usage: python -m causalvc.weights [{'|'.join(NEEDS)}]")
+    for name in NEEDS[app]:
         print(ensure(name))
     print(ensure_base())

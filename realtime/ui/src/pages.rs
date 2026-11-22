@@ -279,19 +279,6 @@ fn model_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
                 state,
                 decibels,
             ))
-            .add(slider_item(
-                app,
-                fl!("noise-gate"),
-                Num::NoiseGate,
-                state,
-                |value| {
-                    if value <= -60.0 {
-                        fl!("off")
-                    } else {
-                        format!("{value:.0} dB")
-                    }
-                },
-            ))
             .into(),
         reset_row(fl!("reset-model-settings"), "general"),
     ]);
@@ -564,6 +551,13 @@ fn cleanup_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
     let settings_ = &state.settings;
     settings::section()
         .title(fl!("section-cleanup"))
+        .add(slider_item(app, fl!("noise-gate"), Num::NoiseGate, state, |value| {
+            if value <= -60.0 {
+                fl!("off")
+            } else {
+                format!("{value:.0} dB")
+            }
+        }))
         .add(
             settings::item::builder(fl!("input-denoise"))
                 .description(fl!("input-denoise-detail"))

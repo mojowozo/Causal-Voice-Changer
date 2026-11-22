@@ -44,10 +44,28 @@ class VersionRules(unittest.TestCase):
         linux = update.release_info(RELEASE_JSON, "-linux-x86_64.tar.gz")
         self.assertEqual(linux["asset"]["url"], "https://example/l.tgz")
         self.assertEqual(linux["asset"]["sha256"], "a" * 64)
-        self.assertEqual(linux["notes"], "# V0.4.0\n- better")
+        self.assertEqual(linux["notes"], "V0.4.0\n• better")
         win = update.release_info(RELEASE_JSON, "-windows-x64.zip")
         self.assertEqual(win["asset"]["sha256"], "")
         self.assertIsNone(update.release_info(RELEASE_JSON, "-macos.zip")["asset"])
+
+
+class ReleaseNotes(unittest.TestCase):
+    def test_markdown_becomes_readable_text(self):
+        notes = ("## What's new\r\n"
+                 "* Added the ability to go down to 10ms block size\r\n"
+                 "* A **pitch floor** (defaults to *off*)\r\n"
+                 "  - nested, see [the docs](https://example/docs) and `pitch_floor_hz`\r\n"
+                 "- Better handling for low voices\r\n"
+                 "---\r\n\r\n\r\n"
+                 "No retraining is needed: 2*3*4 stays.")
+        self.assertEqual(update.notes_text(notes),
+                         "What's new\n"
+                         "• Added the ability to go down to 10ms block size\n"
+                         "• A pitch floor (defaults to off)\n"
+                         "  • nested, see the docs and pitch_floor_hz\n"
+                         "• Better handling for low voices\n\n"
+                         "No retraining is needed: 2*3*4 stays.")
 
 
 def fake_project(root: Path, version: str, files: dict) -> None:

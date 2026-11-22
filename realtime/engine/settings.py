@@ -51,7 +51,9 @@ MODEL_SETTING_FILE_KEYS = {
     "index_rate": "index_rate",
 }
 MODEL_SETTING_KEYS = tuple(MODEL_SETTING_FILE_KEYS)
-RESETTABLE_MODEL_SETTING_KEYS = MODEL_SETTING_KEYS
+#: The Model page's reset. The noise gate is saved per voice too, but its slider (and reset) is
+#: under Sound cleanup on the Audio page.
+RESETTABLE_MODEL_SETTING_KEYS = tuple(key for key in MODEL_SETTING_KEYS if key != "noise_gate_db")
 
 # Settings that only matter when the next stream starts; changing one stops
 # a running stream.
@@ -149,6 +151,7 @@ PERFORMANCE_DEFAULT_KEYS = (
     "cuda_graphs",
 )
 CLEANUP_DEFAULT_KEYS = (
+    "noise_gate_db",
     "input_denoise",
     "input_denoise_method",
     "soften_treble",

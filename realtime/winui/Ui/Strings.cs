@@ -90,7 +90,7 @@ static class S
     public const string MonitorGain = "Monitor gain";
     public const string MonitorGainDetail = "Volume of the copy you hear yourself on the monitor device. Doesn't change what others hear.";
     public const string NoiseGate = "Noise gate";
-    public const string NoiseGateDetail = "Mutes your mic whenever it's quieter than this, so background sound between words isn't converted. Off at -60 dB.";
+    public const string NoiseGateDetail = "Mutes your mic whenever it's quieter than this, so background sound between words isn't converted. Off at -60 dB. Kept per voice.";
     public const string Off = "Off";
     public const string ResetModelSettings = "Reset model settings";
 

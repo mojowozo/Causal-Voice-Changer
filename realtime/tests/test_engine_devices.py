@@ -26,6 +26,8 @@ class BuildEndpointsTest(unittest.TestCase):
             list(inputs),
             [
                 "[JACK] Creative BT-W6 Analog Stereo",
+                "[JACK] Creative BT-W6 Analog Stereo — 1",
+                "[JACK] Creative BT-W6 Analog Stereo — 2",
                 "[JACK] Elgato Wave XLR Mono",
                 "[ALSA] default",
                 "[ALSA] pipewire",
@@ -126,17 +128,31 @@ class WindowsDevicesTest(unittest.TestCase):
         inputs, outputs = build_endpoints(WINDOWS_DEVICES, WINDOWS_HOSTAPIS)
 
         self.assertEqual(
-            list(inputs), ["[ASIO] Focusrite USB ASIO", "[WASAPI] Microphone (Wave XLR)"]
+            list(inputs),
+            [
+                "[ASIO] Focusrite USB ASIO",
+                "[ASIO] Focusrite USB ASIO — 1",
+                "[ASIO] Focusrite USB ASIO — 2",
+                "[WASAPI] Microphone (Wave XLR)",
+            ],
         )
         self.assertEqual(
             list(outputs),
             [
                 "[ASIO] Focusrite USB ASIO — 1 / 2",
+                "[ASIO] Focusrite USB ASIO — 1",
+                "[ASIO] Focusrite USB ASIO — 2",
                 "[ASIO] Focusrite USB ASIO — 3 / 4",
+                "[ASIO] Focusrite USB ASIO — 3",
+                "[ASIO] Focusrite USB ASIO — 4",
                 "[WASAPI] Speakers (Realtek)",
             ],
         )
         self.assertEqual(outputs["[ASIO] Focusrite USB ASIO — 3 / 4"].selectors, [2, 3])
+        # One channel on its own: a mic on input 1 is not mixed with an empty input 2.
+        self.assertEqual(inputs["[ASIO] Focusrite USB ASIO"].selectors, [0, 1])
+        self.assertEqual(inputs["[ASIO] Focusrite USB ASIO — 2"].selectors, [1])
+        self.assertEqual(outputs["[ASIO] Focusrite USB ASIO — 3"].selectors, [2])
         self.assertEqual(outputs["[WASAPI] Speakers (Realtek)"].selectors, [])
         shown_all, _ = build_endpoints(WINDOWS_DEVICES, WINDOWS_HOSTAPIS, show_all=True)
         self.assertIn("[MME] Microphone (Wave XLR)", shown_all)

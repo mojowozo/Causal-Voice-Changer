@@ -29,7 +29,24 @@ def channel_pairs(channel_count):
     return pairs or ["1 / 1"]
 
 
+def channel_choices(channel_count):
+    """Each channel pair, followed by its two channels on their own ("1 / 2", "1", "2", ...).
+
+    A single channel is for a mic on one input of an interface: with the pair, the empty
+    channel beside it would be mixed in and halve its level. A device with one channel (and
+    an odd device's last "n / n") is already a single channel.
+    """
+    choices = []
+    for pair in channel_pairs(channel_count):
+        choices.append(pair)
+        first, second = parse_channel_pair(pair)
+        if first != second:
+            choices += [str(first + 1), str(second + 1)]
+    return choices
+
+
 def parse_channel_pair(value):
+    """"1 / 2" -> [0, 1]; a single channel, "3" -> [2]."""
     return [int(part.strip()) - 1 for part in value.split("/")]
 
 
@@ -38,7 +55,8 @@ def endpoint_label(api_name, device_name):
 
 
 def label_sort_key(endpoint):
-    return api_priority(endpoint.api), endpoint.label.lower()
+    """Best API first, then by device; a device's channel choices keep their own order."""
+    return api_priority(endpoint.api), endpoint_label(endpoint.api, endpoint.name).lower()
 
 
 def build_endpoints(devices, hostapis, show_all=False):
@@ -46,8 +64,9 @@ def build_endpoints(devices, hostapis, show_all=False):
 
     Raw ALSA hw:* devices are normally held open by PipeWire, so only its
     shared PCMs are offered unless ``show_all`` is set; on Windows only WASAPI
-    and ASIO are.  JACK and ASIO devices with more than two channels are split
-    into one endpoint per channel pair.
+    and ASIO are.  JACK and ASIO devices are split into one endpoint per channel
+    pair and per channel; a device's first pair keeps its plain label when it has
+    no others, so labels saved before single channels were offered still match.
     """
     api_names = {}
     for hostapi in hostapis:
@@ -70,15 +89,16 @@ def build_endpoints(devices, hostapis, show_all=False):
             if api_name not in CHANNEL_PAIR_APIS:
                 endpoints[label] = Endpoint(label, index, api_name, device["name"])
                 continue
-            pairs = channel_pairs(channel_count)
-            for pair in pairs:
-                pair_label = label if len(pairs) == 1 else f"{label} — {pair}"
-                endpoints[pair_label] = Endpoint(
-                    pair_label,
+            only_pair = len(channel_pairs(channel_count)) == 1
+            for choice in channel_choices(channel_count):
+                plain = only_pair and "/" in choice
+                choice_label = label if plain else f"{label} — {choice}"
+                endpoints[choice_label] = Endpoint(
+                    choice_label,
                     index,
                     api_name,
                     device["name"],
-                    parse_channel_pair(pair),
+                    parse_channel_pair(choice),
                 )
     return (
         dict(sorted(inputs.items(), key=lambda item: label_sort_key(item[1]))),

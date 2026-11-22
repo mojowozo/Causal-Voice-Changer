@@ -44,11 +44,17 @@ class SettingsDefaultsTest(unittest.TestCase):
         engine = RealtimeEngine.__new__(RealtimeEngine)
         restored = []
         engine.update_settings = restored.append
+        flushed = []
+        engine.flush_model_settings_save = lambda force=False: flushed.append(force)
         engine.reset_settings("performance")
         engine.reset_settings("cleanup")
         self.assertEqual([set(changes) for changes in restored], [set(PERFORMANCE_DEFAULT_KEYS), set(CLEANUP_DEFAULT_KEYS)])
         self.assertFalse(set(PERFORMANCE_DEFAULT_KEYS) & set(CLEANUP_DEFAULT_KEYS))
         self.assertEqual(restored[1]["soften_treble"], EngineSettings().soften_treble)
+        self.assertEqual(restored[1]["noise_gate_db"], EngineSettings().noise_gate_db)
+        engine.reset_settings("general")
+        self.assertNotIn("noise_gate_db", restored[2])
+        self.assertEqual(flushed, [True, True])  # cleanup and general save the voice's settings at once
         with self.assertRaises(EngineError):
             engine.reset_settings("audio")
 
