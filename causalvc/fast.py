@@ -24,14 +24,21 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, AntiAliasAct, CausalLPF, Decoder, _tone_buffers, loudness, tone
+from causalvc.decoder.model import FRAME, PS_LOOKBACK, SR, AntiAliasAct, CausalLPF, Decoder, _ps_idx, _tone_buffers, pitch_sync_loudness, tone
 from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
-from causalvc.stream import DELAY, F0_RANGE, REF_TONE, _ref_tone, map_f0, normalize_tone, smooth_f0, smooth_loud
+from causalvc.stream import DELAY, F0_RANGE, REF_TONE, _ref_tone, map_f0, normalize_tone, smooth_f0
 
 TAIL = 3840  # 48 kHz samples of input kept between blocks (80 ms): covers every front end's history
+
+
+def check_tail_capacity(base_delay: int) -> None:
+    """Ensure both pitch_sync_loudness and tone slices stay non-negative inside the 80 ms TAIL buffer."""
+    assert base_delay * FRAME + PS_LOOKBACK <= TAIL and (base_delay + 1) * FRAME <= TAIL, (
+        f"base_delay={base_delay} exceeds TAIL={TAIL // FRAME} frames"
+    )
 
 
 def supported(dec: Decoder) -> bool:
@@ -39,12 +46,15 @@ def supported(dec: Decoder) -> bool:
 
 
 def map_f0_tensor(f0: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-    """`map_f0` with its settings in a tensor, p = [ratio, offset, ceiling, keep, bounded], so a recorded
-    graph follows changes to them. bounded is 1 when the offset or the ceiling is in use."""
+    """`map_f0` with its settings in a tensor, p = [ratio, offset, ceiling, keep, floor, floor_keep, bounded],
+    so a recorded graph follows changes to them. bounded is 1 when offset, ceiling, or floor is in use."""
     y = (f0 * p[0] + p[1]).clamp(*F0_RANGE)
     c = p[2]
+    fl = torch.where(c > 0, torch.minimum(p[4], c), p[4])
+    y = torch.where((fl > 0) & (y < fl), fl * (y / fl.clamp_min(1e-6)) ** p[5], y)
     y = torch.where((c > 0) & (y > c), c * (y / c.clamp_min(1e-6)) ** p[3], y)
-    return torch.where(p[4] > 0, torch.where(f0 > 0, y, torch.zeros_like(f0)), f0 * p[0])
+    y = y.clamp(*F0_RANGE)
+    return torch.where(p[6] > 0, torch.where(f0 > 0, y, torch.zeros_like(f0)), f0 * p[0])
 
 
 class FastStreamingVC:
@@ -79,13 +89,15 @@ class FastStreamingVC:
             assert self.enc.lookahead <= self.base_delay
         else:
             assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
-        self.ratio, self.offset, self.ceiling, self.keep = 1.0, 0.0, 0.0, 1.0
+        check_tail_capacity(self.base_delay)
+        self.ratio, self.offset, self.ceiling, self.keep, self.floor, self.floor_keep = 1.0, 0.0, 0.0, 1.0, 0.0, 1.0
         # Kept in place (a recorded graph reads them where they are): the speaker and the pitch settings.
         self.spk = torch.zeros(1, dtype=torch.long, device=device)
-        self.pmap = torch.tensor([1.0, 0.0, 0.0, 1.0, 0.0], device=device)
+        self.pmap = torch.tensor([1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0], device=device)
         # The voice's index (causalvc.index), if it has one, and how strongly it is blended in (0-1).
         self.index = self.index_unit = None
         self.index_rate, self.rate = torch.zeros((), device=device), 0.0
+        _ps_idx(torch.device(device))
         if self.dec.tone is not None:
             _tone_buffers(torch.device(device))
             _ref_tone(torch.device(device))
@@ -93,15 +105,36 @@ class FastStreamingVC:
         self.graph = None
         self.reset()
 
-    def set_voice(self, speaker: str, semitones: float = 0.0, offset_hz: float = 0.0, ceiling_hz: float = 0.0,
-                  ceiling_keep: float = 1.0) -> None:
-        """The voice to convert to and its pitch: the tracked pitch times 2^(semitones/12), plus ``offset_hz``,
-        with only ``ceiling_keep`` of the rise above ``ceiling_hz`` (0 = no ceiling); see ``map_f0``."""
+    def set_voice(
+        self,
+        speaker: str,
+        semitones: float = 0.0,
+        offset_hz: float = 0.0,
+        ceiling_hz: float = 0.0,
+        ceiling_keep: float = 1.0,
+        floor_hz: float = 0.0,
+        floor_keep: float = 1.0,
+    ) -> None:
+        """The voice to convert to and its pitch mapping; see ``map_f0``."""
         self.spk.fill_(self.speakers.index(speaker))
         self.ratio, self.offset = 2.0 ** (semitones / 12.0), float(offset_hz)
         self.ceiling, self.keep = float(ceiling_hz), float(ceiling_keep)
-        bounded = float(self.offset != 0.0 or self.ceiling > 0.0)
-        self.pmap.copy_(torch.tensor([self.ratio, self.offset, self.ceiling, max(0.0, min(1.0, self.keep)), bounded]))
+        self.floor, self.floor_keep = float(floor_hz), float(floor_keep)
+        bounded = float(self.offset != 0.0 or self.ceiling > 0.0 or self.floor > 0.0)
+        vals = torch.tensor(
+            [
+                self.ratio,
+                self.offset,
+                self.ceiling,
+                max(0.0, min(1.0, self.keep)),
+                self.floor,
+                max(0.0, min(1.0, self.floor_keep)),
+                bounded,
+            ],
+            device=self.pmap.device,
+            dtype=self.pmap.dtype,
+        )
+        self.pmap.copy_(vals)
 
     def set_index(self, frames: torch.Tensor | None) -> None:
         """The voice's index frames [N, C] (None: no index). Set before ``prepare``: a recorded graph
@@ -132,7 +165,6 @@ class FastStreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
-        self.loud_state = torch.full((2,), -100.0, device=d)
         self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)
         self.pending_v = torch.zeros(1, device=d)
@@ -290,18 +322,18 @@ class FastStreamingVC:
         """Every tensor the stream carries from one block to the next."""
         late = [] if self.pending_h is None else [self.pending_h]
         return [
-            self.tail, self.phase, self.prev_f0, self.smooth_state, self.loud_state, self.tone_state,
+            self.tail, self.phase, self.prev_f0, self.smooth_state, self.tone_state,
             self.pending_f0, self.pending_v, *late, *self.steps, *(self.st[k] for k in self.keys),
         ]
 
     def _put(self, slots: list[torch.Tensor]) -> None:
         (
             self.tail, self.phase, self.prev_f0, self.smooth_state,
-            self.loud_state, self.tone_state, self.pending_f0, self.pending_v,
-        ) = slots[:8]
-        i = 8
+            self.tone_state, self.pending_f0, self.pending_v,
+        ) = slots[:7]
+        i = 7
         if self.pending_h is not None:
-            self.pending_h, i = slots[8], 9
+            self.pending_h, i = slots[7], 8
         n = len(self.steps)
         self.steps = list(slots[i : i + n])
         for k, t in zip(self.keys, slots[i + n :]):
@@ -426,9 +458,16 @@ class FastStreamingVC:
             raw_f0 = torch.where(valid, raw_f0, torch.zeros_like(raw_f0))
             v = torch.where(valid, v, torch.zeros_like(v))
         f0_s, self.smooth_state = smooth_f0(raw_f0, self.smooth_state)
-        f0 = map_f0_tensor(f0_s, self.pmap) if self.graphs else map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep)
-        raw_loud = loudness(buf[None, buf.shape[0] - (D + m) * FRAME : buf.shape[0] - D * FRAME])[0]
-        loud, self.loud_state = smooth_loud(raw_loud, raw_f0, self.loud_state)
+        f0 = (
+            map_f0_tensor(f0_s, self.pmap)
+            if self.graphs
+            else map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep, self.floor, self.floor_keep)
+        )
+        loud = pitch_sync_loudness(
+            buf[None, buf.shape[0] - (D + m) * FRAME - PS_LOOKBACK : buf.shape[0] - D * FRAME],
+            raw_f0[None],
+            prepadded=True,
+        )[0]
 
         g = self.dec.speaker(self.spk)
         tn = None

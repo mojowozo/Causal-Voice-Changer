@@ -100,7 +100,7 @@ translate by `code`.
 | `input_source` | `"microphone"` \| `"file"` | restart |
 | `input_device` / `output_device` | string | restart; a device `label` from state |
 | `monitor_device` | string \| null | restart; `null` disables the monitor |
-| `block_time` | number (s) | restart; min 0.02 |
+| `block_time` | number (s) | restart; min 0.01 (rounded to 10 ms at 100 Hz, 20 ms for custom 50 Hz encoders) |
 | `asio_buffer` | 0, 32, 64, 96, 128, 192, 256, 512, 1024 or 2048 | restart; the ASIO buffer to ask the driver for, in samples. 0 (default) uses the driver's current size, read at start. PortAudio rounds to a size the driver accepts (state `asio.sizes`) |
 | `cuda_graphs` | bool (default true) | restart: replay each block's recorded GPU work (a CUDA graph), about twice as fast and steadier; the stream then starts from four seconds of recorded silence. Where recording fails the voice converts block by block, and the log says so |
 | `input_denoise` | bool | live: noise reduction on the input, with `input_denoise_method` |
@@ -113,6 +113,8 @@ translate by `code`.
 | `noise_gate_db` | number | live, per voice (−60 = off) |
 | `pitch` | number (semitones) | live, per voice |
 | `pitch_offset_hz` | number (Hz, −300 to 300) added to the shifted pitch of voiced frames | live, per voice |
+| `pitch_floor_hz` | number (Hz, 0–500; 0 = none): output pitch below it keeps only `pitch_floor_keep` of its drop | live, per voice |
+| `pitch_floor_keep` | number 0–1 (default 0.25): share of the drop below the floor kept, in semitones | live, per voice |
 | `pitch_ceiling_hz` | number (Hz, 0–1000; 0 = none): output pitch above it keeps only `pitch_ceiling_keep` of its rise | live, per voice |
 | `pitch_ceiling_keep` | number 0–1 (default 0.25): share of the rise above the ceiling kept, in semitones | live, per voice |
 | `index_rate` | number 0–1 (default 0 = off): how much of each content frame is drawn from the voice's index; does nothing for a voice without one (`has_index`) | live, per voice |
@@ -124,7 +126,7 @@ without its own entry takes the selected checkpoint's, else its newest checkpoin
 
 A block is converted as it arrives and the output is continuous from block to
 block, so there is no crossfade or context setting. Delay is the model's fixed
-60 ms plus one `block_time`, plus the sound card's buffers.
+50 ms (60 ms for custom 50 Hz encoders) plus one `block_time`, plus the sound card's buffers.
 
 ## State
 

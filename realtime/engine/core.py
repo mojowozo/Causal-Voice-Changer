@@ -68,6 +68,7 @@ from causalvc import merge as voice_merge
 from tools import asio as asio_driver
 from tools import hushwire, rnnoise
 from tools.limiter import soft_clip
+from tools.noise_gate import NoiseGate
 from tools.treble_softener import TrebleSoftener, DELAY_SECONDS as TREBLE_SOFTENER_DELAY
 from tools.loudness import TARGETS_LUFS, LoudnessMeter
 from tools.model_registry import (
@@ -93,10 +94,15 @@ RNNOISE_DELAY_SECONDS = 0.020
 #: Audio queued for an output beyond one chunk plus this margin is a standing
 #: backlog: a moment when inference fell behind leaves extra audio queued
 #: that, with input and output running at the same rate, never drains.  It
-#: is trimmed by dropping blocks of pure silence (see ``queue_output``).  The
-#: margin is at least twice the recent inference time, so trimming never
-#: leaves the output at risk of running dry.
-BACKLOG_MARGIN_SECONDS = 0.060
+#: is trimmed by dropping silent blocks (see ``queue_output``).  The margin
+#: is at least twice the recent inference time, so trimming never leaves the
+#: output at risk of running dry.
+BACKLOG_MARGIN_SECONDS = 0.025
+#: Post-gain peak below which a block counts as silence (-60 dBFS: safely above
+#: neural decoder silence even at +24 dB output gain, well below whispers).
+BACKLOG_SILENCE_PEAK = 1e-3
+#: Linear ramp applied to the first kept block after dropping non-zero silence (2 ms at 48 kHz).
+BACKLOG_RAMP_SAMPLES = 96
 #: How often a growing underrun count is logged.
 UNDERRUN_LOG_SECONDS = 5.0
 #: A device latency above this is a bogus report, not a real buffer: some
@@ -125,7 +131,7 @@ def printt(strr, *args):
 def plausible_stream_latency(latency):
     """The device's reported latency in seconds, or 0.0 if it is impossible."""
     if isinstance(latency, (tuple, list)):
-        latency = latency[-1]
+        latency = latency[-1] if latency else None
     try:
         latency = float(latency)
     except (TypeError, ValueError):
@@ -136,10 +142,29 @@ def plausible_stream_latency(latency):
     return latency
 
 
+def stream_side_latency(stream, side):
+    """Input or output buffer latency of ``stream`` in seconds, or 0.0."""
+    if stream is None:
+        return 0.0
+    latency = getattr(stream, "latency", None)
+    if isinstance(latency, (tuple, list)):
+        if not latency:
+            return 0.0
+        latency = latency[0] if side == "input" else latency[-1]
+    return plausible_stream_latency(latency)
+
+
 def peak_meter(samples):
     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
     peak_db = 20.0 * np.log10(max(peak, 1e-6))
     return float(np.clip((peak_db + 60.0) / 60.0, 0.0, 1.0))
+
+
+def _voice_block_multiple(voice):
+    multiple = getattr(voice, "block_multiple", None)
+    if isinstance(multiple, int) and not isinstance(multiple, bool) and multiple > 0:
+        return multiple
+    return causalvc_backend.BLOCK_MULTIPLE
 
 
 class RealtimeEngine:
@@ -648,7 +673,7 @@ class RealtimeEngine:
             self.schedule_model_settings_save()
         if hot_swap:
             try:
-                self.swap_voice(self.models_by_name[changed["model_name"]])
+                hot_swap = self.swap_voice(self.models_by_name[changed["model_name"]])
             except EngineError:
                 self.settings.model_name = previous_model
                 self.emit_state()
@@ -861,11 +886,7 @@ class RealtimeEngine:
             self.stop()
             raise EngineError("audio_start_failed", str(error)) from error
         if self.stream is not None:
-            self.delay_time = (
-                plausible_stream_latency(self.stream.latency)
-                + self.settings.block_time
-                + (self.voice.delay_seconds if self.function == "vc" else 0.0)
-            )
+            self.delay_time = self.compute_initial_delay()
         self.refresh_denoiser()  # prepare_inference cleared the last stream's denoiser
         self.refresh_treble_softener()
         save_settings(self.settings)
@@ -1023,6 +1044,9 @@ class RealtimeEngine:
         self.status("loading_model", model=model.name)
         voice = self.build_voice(model)
         block_frame = self.block_frame
+        if block_frame % _voice_block_multiple(voice) != 0:
+            del voice
+            return False
         try:
             voice.warm(block_frame, record=False)
             with self.voice_lock:
@@ -1037,6 +1061,7 @@ class RealtimeEngine:
         del old
         printt("Switched to checkpoint %s", model.name)
         self.status("checkpoint_switched", name=model.name)
+        return True
 
     def prepare_inference(self, samplerate):
         """Allocate the stream buffers for ``samplerate``; no audio devices."""
@@ -1044,12 +1069,12 @@ class RealtimeEngine:
             raise EngineError("samplerate_unsupported", "CausalVC voices need a 48 kHz audio route.")
         self.samplerate = samplerate
         self.zc = self.samplerate // 100
-        # Whole 20 ms frames; the block itself is the only chunking.
-        multiple = causalvc_backend.BLOCK_MULTIPLE
+        # Whole encoder frames (10 ms at 100 Hz, 20 ms for custom 50 Hz encoders).
+        multiple = _voice_block_multiple(getattr(self, "voice", None))
         self.block_frame = max(1, round(self.settings.block_time * self.samplerate / multiple)) * multiple
         self.input_wav = torch.zeros(2 * self.block_frame, device=self.config.device, dtype=torch.float32)
         self.input_wav_denoise = self.input_wav.clone()
-        self.rms_buffer = np.zeros(4 * self.zc, dtype="float32")
+        self.noise_gate = NoiseGate(self.samplerate)
         # Input denoisers are built on demand for this stream (refresh_denoiser).
         self.active_denoiser = None
         self.active_denoise_delay = 0.0
@@ -1057,6 +1082,8 @@ class RealtimeEngine:
         self.treble_softener = None  # refresh_treble_softener builds this stream's
         # Per-stream counters (see __init__).
         self.trimmed_frames = 0
+        self._output_seams = {}
+        self.native_inflight_frames = 0
         self.output_underruns = 0
         self.logged_underruns = 0
         self.output_flowing = False
@@ -1329,12 +1356,15 @@ class RealtimeEngine:
                 input_block = self.native_input_fifo.read(self.block_frame, exact=True)
                 if input_block is None:
                     break
+                self.native_inflight_frames = self.block_frame
                 try:
                     self.audio_callback(input_block, self.block_frame, None, None)
                 except Exception:
                     printt(traceback.format_exc())
                     self.native_worker_stop.set()
                     return
+                finally:
+                    self.native_inflight_frames = 0
 
     def native_fifo_input_callback(self, indata, frames, times, status):
         self.native_input_fifo.write(select_channels(indata, self.input_selectors))
@@ -1440,6 +1470,7 @@ class RealtimeEngine:
         self.close_streams("input_stream", "output_stream", "monitor_stream")
         self.stream = None
         self.asio_frames = None
+        self.native_inflight_frames = 0
         self.output_queue = None
         self.monitor_queue = None
         self.native_input_fifo = None
@@ -1580,20 +1611,8 @@ class RealtimeEngine:
         Returns whether the denoised buffer holds this block.
         """
         settings = self.settings
-        if settings.noise_gate_db > -60:
-            indata = np.append(self.rms_buffer, indata)
-            rms = librosa.feature.rms(
-                y=indata, frame_length=4 * self.zc, hop_length=self.zc
-            )[:, 2:]
-            self.rms_buffer[:] = indata[-4 * self.zc :]
-            indata = indata[2 * self.zc - self.zc // 2 :]
-            db_threhold = (
-                librosa.amplitude_to_db(rms, ref=1.0)[0] < settings.noise_gate_db
-            )
-            for i in range(db_threhold.shape[0]):
-                if db_threhold[i]:
-                    indata[i * self.zc : (i + 1) * self.zc] = 0
-            indata = indata[self.zc // 2 :]
+        gate = self.__dict__.setdefault("noise_gate", NoiseGate(self.samplerate))
+        indata = gate.process(indata, settings.noise_gate_db)
         self.input_wav[: -self.block_frame] = self.input_wav[self.block_frame :].clone()
         self.input_wav[-indata.shape[0] :] = torch.from_numpy(indata).to(self.config.device)
         denoiser = self.active_denoiser
@@ -1626,6 +1645,7 @@ class RealtimeEngine:
                 0.0 if self.monitor_device_index is None else peak_meter(monitor_mono)
             )
             self.last_output_meter_update = meter_now
+        self.native_inflight_frames = 0
         self.queue_output(self.output_queue, output_mono)
         self.queue_output(self.monitor_queue, monitor_mono)
         if self.running:
@@ -1644,17 +1664,32 @@ class RealtimeEngine:
         """Queue a finished block, or drop it if it is silence over a backlog."""
         if target is None:
             return
-        if not self.file_source_active and not np.any(block):
+        seams = self.__dict__.setdefault("_output_seams", {})
+        seam = seams.get(id(target))
+        if seam is None or seam[0] is not target:
+            seam = [target, 0.0, False]
+            seams[id(target)] = seam
+        silent = block.size == 0 or float(np.max(np.abs(block))) < BACKLOG_SILENCE_PEAK
+        if not self.file_source_active and silent:
             margin = max(BACKLOG_MARGIN_SECONDS, 2 * self.latest_infer_time / 1000)
             queued = self.queued_frames(target)
             if queued >= self.block_frame + int(margin * self.samplerate):
                 self.trimmed_frames += block.shape[0]
+                seam[2] = True
                 printt(
                     "Output backlog %.0f ms: dropped %.0f ms of silence to catch up",
                     1000 * queued / self.samplerate,
                     1000 * block.shape[0] / self.samplerate,
                 )
                 return
+        if seam[2] and block.size > 0:
+            n = min(BACKLOG_RAMP_SAMPLES, block.shape[0])
+            w = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float32)
+            block = block.copy()
+            block[:n] = np.float32(seam[1]) * (1.0 - w) + block[:n] * w
+            seam[2] = False
+        if block.size > 0:
+            seam[1] = float(block[-1])
         self.enqueue_audio_target(target, block)
 
     def log_underruns(self):
@@ -1667,13 +1702,38 @@ class RealtimeEngine:
         self.underrun_logged_at = now
         printt("Output underruns: %d (+%d): the output ran dry, an audible gap", self.output_underruns, new)
 
+    def base_stream_latency(self):
+        """Device buffer latency not already counted inside ``queued_ms``."""
+        in_stream = getattr(self, "input_stream", None)
+        out_stream = getattr(self, "output_stream", None) or getattr(self, "stream", None)
+        out_lat = stream_side_latency(out_stream, "output")
+        if self.file_source_active:
+            return out_lat
+        in_lat = stream_side_latency(in_stream, "input")
+        if getattr(self, "native_input_fifo", None) is not None:
+            return in_lat + out_lat
+        block_s = self.block_frame / self.samplerate if getattr(self, "samplerate", 0) else self.settings.block_time
+        if isinstance(getattr(self, "output_queue", None), AudioFrameFifo):
+            return out_lat + max(in_lat, block_s)
+        return max(out_lat, block_s) + max(0.0, in_lat - block_s)
+
+    def compute_initial_delay(self):
+        return self.base_stream_latency() + (self.voice.delay_seconds if self.function == "vc" else 0.0)
+
     def queued_ms(self):
         """Audio waiting between the mic and the output right now, in ms."""
         if not self.running or not self.samplerate:
             return None
-        frames = self.queued_frames(self.output_queue)
-        if self.native_input_fifo is not None:
-            frames += self.native_input_fifo.available_frames
+        target = self.output_queue
+        native_in = self.native_input_fifo is not None
+        if target is None:
+            frames = 0
+        elif isinstance(target, AudioFrameFifo):
+            frames = target.available_frames if native_in or self.file_source_active else max(0, target.available_frames - self.block_frame)
+        else:
+            frames = max(0, target.qsize() - 1) * self.block_frame
+        if native_in:
+            frames += self.native_input_fifo.available_frames + getattr(self, "native_inflight_frames", 0)
         return round(1000 * frames / self.samplerate)
 
     @staticmethod

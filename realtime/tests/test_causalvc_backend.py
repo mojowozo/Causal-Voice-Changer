@@ -136,6 +136,23 @@ class CausalVCBackendTest(unittest.TestCase):
         self.assertIsNot(engine.voice, old)
         self.assertEqual(engine.voice.uses_cuda_graph, old.uses_cuda_graph)
 
+    def test_10ms_block_converts_on_100hz_voice(self):
+        device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")
+        model = find_voice()
+        engine = causalvc_engine(model, block_time=0.01, device=device)
+        expected = 480 if engine.voice.block_multiple == 480 else 960
+        self.assertEqual(engine.block_frame, expected)
+        block = engine.block_frame
+        t = np.arange(RATE) / RATE
+        signal = (0.05 * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+        outputs = [
+            engine.audio_callback(signal[s : s + block, None].copy(), block, None, None).copy()
+            for s in range(0, len(signal) - block + 1, block)
+        ]
+        out = np.concatenate(outputs)
+        self.assertTrue(np.isfinite(out).all())
+        self.assertGreater(float(np.abs(out[RATE // 2 :]).max()), 1e-3)
+
 
 class WarmTest(unittest.TestCase):
     """warm(record=False) leaves the CUDA graph to record(): a voice swapped in while another converts."""

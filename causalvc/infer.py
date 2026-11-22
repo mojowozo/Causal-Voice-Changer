@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
+from causalvc.decoder.model import FRAME, SR, Decoder, loudness, pitch_sync_loudness, tone
 from causalvc.encoder.model import StreamingEncoder
 from causalvc.pitch import Rmvpe
 
@@ -83,7 +83,17 @@ class CausalVC:
             self.rmvpe = Rmvpe(device)
 
     @torch.no_grad()
-    def convert(self, wav48: torch.Tensor, speaker: str, semitones: float = 0.0) -> torch.Tensor:
+    def convert(
+        self,
+        wav48: torch.Tensor,
+        speaker: str,
+        semitones: float = 0.0,
+        offset_hz: float = 0.0,
+        ceiling_hz: float = 0.0,
+        ceiling_keep: float = 1.0,
+        floor_hz: float = 0.0,
+        floor_keep: float = 1.0,
+    ) -> torch.Tensor:
         """Mono [N] at 48 kHz in, same length out."""
         n = wav48.shape[-1]
         unit = FRAME if getattr(self.enc, "hop", 320) == 160 else 2 * FRAME
@@ -93,12 +103,21 @@ class CausalVC:
             near = self.lookup(content[0], self.bank(speaker))
             content = (1 - self.index) * content + self.index * near[None]
         spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
-        from causalvc.stream import normalize_tone, smooth_f0, smooth_loud
+        from causalvc.stream import map_f0, normalize_tone, smooth_f0
 
-        raw_f0 = f0[:, : loud.shape[1]]
-        loud = smooth_loud(loud[0], raw_f0[0])[0][None]
-        tn = normalize_tone(tone(x)[0], loud[0], raw_f0[0])[0][None] if self.dec.tone is not None else None
-        f0 = smooth_f0(f0[0])[0][None] * 2.0 ** (semitones / 12.0)
+        n_fr = min(f0.shape[1], loud.shape[1])
+        f0, voicing = f0[:, :n_fr], voicing[:, :n_fr]
+        loud = pitch_sync_loudness(x[:, : n_fr * FRAME], f0)
+        tn = normalize_tone(tone(x)[0, :n_fr], loud[0], f0[0])[0][None] if self.dec.tone is not None else None
+        f0 = map_f0(
+            smooth_f0(f0[0])[0],
+            2.0 ** (semitones / 12.0),
+            offset_hz,
+            ceiling_hz,
+            ceiling_keep,
+            floor_hz,
+            floor_keep,
+        )[None]
         enc_hz = 100 if getattr(self.enc, "hop", 320) == 160 else 50
         v_in = voicing if self.dec.expressive else None
         h, g = self.dec.features(content, f0, loud, spk, tone=tn, content_hz=enc_hz, voicing=v_in)

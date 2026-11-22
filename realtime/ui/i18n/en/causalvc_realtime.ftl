@@ -39,11 +39,15 @@ section-voice = Voice
 pitch = Pitch (semitones)
 pitch-detail = How far to shift your voice: +12 is one octave up.
 pitch-advanced = Advanced pitch
-pitch-advanced-detail = Output pitch = your pitch × the shift above + an offset in Hz, with an optional ceiling for peaks. Most voices don't need these. Offset: { $offset }; ceiling: { $ceiling }.
+pitch-advanced-detail = Output pitch = your pitch × the shift above + an offset in Hz, with an optional floor for low endings and ceiling for peaks. Most voices don't need these. Offset: { $offset }; floor: { $floor }; ceiling: { $ceiling }.
 pitch-advanced-show = Show
 pitch-advanced-hide = Hide
 pitch-offset = Pitch offset (Hz)
 pitch-offset-detail = Hz added to your shifted pitch. A positive offset raises low notes more than high ones, so it narrows your range; a negative one widens it. 0 is off.
+pitch-floor = Pitch floor
+pitch-floor-detail = Output pitch below this is cushioned upward, keeping relaxed phrase endings out of vocal fry while notes above it keep their intervals. Off by default.
+pitch-floor-keep = Below the floor
+pitch-floor-keep-detail = How much of the drop below the floor is kept, in semitones. 0% stops at the floor; 100% is no floor.
 pitch-ceiling = Pitch ceiling
 pitch-ceiling-detail = Output pitch above this is pulled down, so squeaky peaks stay in the voice's range. Below it, notes keep their intervals, so singing stays in tune. Off by default.
 pitch-ceiling-keep = Above the ceiling
@@ -174,7 +178,7 @@ jack-hint = [JACK] devices give the lowest latency. Set the period with PIPEWIRE
 ## Performance page
 section-buffering = Buffering
 chunk = Chunk
-chunk-detail = How much audio is converted at a time, in steps of 20 ms. Total delay is the model's fixed 60 ms plus one chunk; shorter chunks lower the delay but can stutter if the GPU can't keep up (watch Inference in the bottom bar). Changing it restarts conversion.
+chunk-detail = How much audio is converted at a time, in steps of 10 ms. Total delay is the model's fixed 50 ms plus one chunk; shorter chunks lower the delay but can stutter if the GPU can't keep up (watch Inference in the bottom bar). Changing it restarts conversion.
 extra = Extra inference buffer
 extra-detail = How much of your recent speech the model looks back at for each chunk. More context gives steadier tone and pitch at a small GPU cost, with no added delay. Changing it restarts conversion.
 section-inference = Inference

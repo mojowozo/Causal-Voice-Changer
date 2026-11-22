@@ -14,7 +14,7 @@ import math
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness, tone
+from causalvc.decoder.model import FRAME, PS_LOOKBACK, SR, Decoder, loudness, pitch_sync_loudness, tone
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
@@ -56,29 +56,6 @@ def smooth_f0(f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torc
     return (torch.stack(out) if out else f0), cur
 
 
-def smooth_loud(loud: torch.Tensor, raw_f0: torch.Tensor, state: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """Causal anti-flutter on 10 ms loudness [m] gated to sustained low pitches (0 < raw_f0 < 130 Hz).
-
-    At <115 Hz one glottal period exceeds 10 ms, so every 3rd-4th frame falls between glottal snaps (-9 dB hole);
-    holding across a single inter-pulse gap (`prev_raw - 1.0 dB`) eliminates the 20-30 Hz strobe while keeping
-    exact 0 ms timing on attacks, stop closures, fast fade-outs, and >=130 Hz voices."""
-    st = loud.new_full((2,), -100.0) if state is None else state.clone()
-    cur, prev_raw = st[0:1], st[1:2]
-    out = []
-    for i in range(loud.shape[0]):
-        li = loud[i : i + 1]
-        fi = raw_f0[i : i + 1]
-        gap_bridge = (fi > 0) & (fi < 115.0) & (prev_raw > -70.0) & ((prev_raw - li) < 16.0)
-        held = torch.where(gap_bridge, torch.maximum(li, prev_raw - 0.6), li)
-        low_voiced = (fi > 0) & (fi < 130.0) & (cur > -70.0)
-        t = (((held - cur).abs() - 3.5) / 4.5).clamp(0.0, 1.0)
-        alpha = 0.18 + 0.82 * (t * t)
-        cur = torch.where(low_voiced, cur + alpha * (held - cur), li)
-        prev_raw = li
-        out.append(cur[0])
-    return (torch.stack(out) if out else loud), torch.cat([cur, prev_raw])
-
-
 def normalize_tone(
     tn: torch.Tensor,
     loud: torch.Tensor,
@@ -99,20 +76,30 @@ def normalize_tone(
     return (torch.stack(out) if out else tn), avg
 
 
-def map_f0(f0: torch.Tensor, ratio: float, offset: float = 0.0, ceiling: float = 0.0, keep: float = 1.0) -> torch.Tensor:
+def map_f0(
+    f0: torch.Tensor,
+    ratio: float,
+    offset: float = 0.0,
+    ceiling: float = 0.0,
+    keep: float = 1.0,
+    floor: float = 0.0,
+    floor_keep: float = 1.0,
+) -> torch.Tensor:
     """The pitch the voice is given for the tracked pitch ``f0`` (Hz, 0 unvoiced).
 
-    ``f0 * ratio + offset``, then, with a ``ceiling`` (Hz, 0 = none), only ``keep`` (0-1) of the rise
-    above it: in semitones, so notes below the ceiling keep their intervals (singing stays in tune)
-    and only peaks above it are pulled down (keep 0 stops them at the ceiling). Both apply to voiced
-    frames only (unvoiced ones stay 0) and keep them within the decoder's pitch range; without
-    either this is the plain multiplication."""
-    if offset == 0.0 and ceiling <= 0.0:
+    ``f0 * ratio + offset``, then an optional ``floor`` (Hz, 0 = none) below which only
+    ``floor_keep`` (0-1) of the drop is kept in semitones, and an optional ``ceiling`` (Hz,
+    0 = none) above which only ``keep`` (0-1) of the rise is kept in semitones. Applies to
+    voiced frames only (unvoiced ones stay 0) and stays within ``F0_RANGE``."""
+    if offset == 0.0 and ceiling <= 0.0 and floor <= 0.0:
         return f0 * ratio
     y = (f0 * ratio + offset).clamp(*F0_RANGE)
+    if floor > 0.0:
+        fl = min(floor, ceiling) if ceiling > 0.0 else floor
+        y = torch.where(y < fl, fl * (y / fl) ** max(0.0, min(1.0, floor_keep)), y)
     if ceiling > 0.0:
         y = torch.where(y > ceiling, ceiling * (y / ceiling) ** max(0.0, min(1.0, keep)), y)
-    return torch.where(f0 > 0, y, torch.zeros_like(f0))
+    return torch.where(f0 > 0, y.clamp(*F0_RANGE), torch.zeros_like(f0))
 
 
 class StreamingVC:
@@ -136,7 +123,8 @@ class StreamingVC:
         else:
             assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
         self.n = int(window * SR)
-        self.ratio, self.offset, self.ceiling, self.keep, self.spk = 1.0, 0.0, 0.0, 1.0, None
+        assert self.n >= max(self.base_delay * FRAME + PS_LOOKBACK, (self.base_delay + 1) * FRAME) + FRAME
+        self.ratio, self.offset, self.ceiling, self.keep, self.floor, self.floor_keep, self.spk = 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, None
         self.index, self.rate = None, 0.0  # the voice's index (causalvc.index) and its strength
         self.reset()
 
@@ -149,13 +137,21 @@ class StreamingVC:
         """How much of each content frame comes from the index (0 = none, 1 = all)."""
         self.rate = max(0.0, min(1.0, float(rate)))
 
-    def set_voice(self, speaker: str, semitones: float = 0.0, offset_hz: float = 0.0, ceiling_hz: float = 0.0,
-                  ceiling_keep: float = 1.0) -> None:
-        """The voice to convert to and its pitch: the tracked pitch times 2^(semitones/12), plus ``offset_hz``,
-        with only ``ceiling_keep`` of the rise above ``ceiling_hz`` (0 = no ceiling); see ``map_f0``."""
+    def set_voice(
+        self,
+        speaker: str,
+        semitones: float = 0.0,
+        offset_hz: float = 0.0,
+        ceiling_hz: float = 0.0,
+        ceiling_keep: float = 1.0,
+        floor_hz: float = 0.0,
+        floor_keep: float = 1.0,
+    ) -> None:
+        """The voice to convert to and its pitch mapping; see ``map_f0``."""
         self.spk = torch.tensor([self.speakers.index(speaker)], device=self.device)
         self.ratio, self.offset = 2.0 ** (semitones / 12.0), float(offset_hz)
         self.ceiling, self.keep = float(ceiling_hz), float(ceiling_keep)
+        self.floor, self.floor_keep = float(floor_hz), float(floor_keep)
 
     def reset(self) -> None:
         d = self.device
@@ -169,7 +165,6 @@ class StreamingVC:
         self.phase = torch.zeros(1, dtype=torch.float64, device=d)
         self.prev_f0 = torch.zeros(1, device=d)
         self.smooth_state = torch.zeros(1, device=d)
-        self.loud_state = torch.full((2,), -100.0, device=d)
         self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)  # newest pitch frame, whose excitation waits for the next one
         self.pending_v = torch.zeros(1, device=d)
@@ -246,11 +241,13 @@ class StreamingVC:
         sal = torch.sigmoid(self.pitch.forward(wav16).float())  # step t is pitch frame t - lookahead
         raw_f0_all, raw_v = self.pitch.decode_with_voicing(sal)
         raw_f0 = raw_f0_all[0, frames + self.pitch.lookahead]
-        f0_s, self.smooth_state = smooth_f0(raw_f0, self.smooth_state)
-        f0 = map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep)
         v = raw_v[0, frames + self.pitch.lookahead]
-        raw_loud = loudness(self.buf[None])[0, frames]
-        loud, self.loud_state = smooth_loud(raw_loud, raw_f0, self.loud_state)
+        f0_s, self.smooth_state = smooth_f0(raw_f0, self.smooth_state)
+        f0 = map_f0(f0_s, self.ratio, self.offset, self.ceiling, self.keep, self.floor, self.floor_keep)
+        start_s = int(frames[0].item()) * FRAME - PS_LOOKBACK
+        assert start_s >= 0, "StreamingVC window is too short for pitch_sync_loudness lookback"
+        end_s = int(frames[-1].item() + 1) * FRAME
+        loud = pitch_sync_loudness(self.buf[None, start_s:end_s], raw_f0[None], prepadded=True)[0]
 
         use_v = self.dec.expressive
         if self.late:  # excitation for the frame before each new one, now that its following pitch is known

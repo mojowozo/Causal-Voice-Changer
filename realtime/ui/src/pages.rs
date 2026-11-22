@@ -149,6 +149,8 @@ fn num_description(num: Num) -> Option<String> {
     Some(match num {
         Num::Pitch => fl!("pitch-detail"),
         Num::PitchOffset => fl!("pitch-offset-detail"),
+        Num::PitchFloor => fl!("pitch-floor-detail"),
+        Num::PitchFloorKeep => fl!("pitch-floor-keep-detail"),
         Num::PitchCeiling => fl!("pitch-ceiling-detail"),
         Num::PitchCeilingKeep => fl!("pitch-ceiling-keep-detail"),
         Num::IndexRate => fl!("index-rate-detail"),
@@ -296,9 +298,10 @@ fn model_page<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
     page_column(sections)
 }
 
-/// The pitch, and behind a disclosure row the pitch offset and ceiling, which few voices need.
+/// The pitch, and behind a disclosure row the pitch offset, floor and ceiling, which few voices need.
 fn voice_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
     let offset = state.settings.pitch_offset_hz;
+    let floor = state.settings.pitch_floor_hz;
     let ceiling = state.settings.pitch_ceiling_hz;
     let open = app.pitch_advanced_open;
     let toggle = widget::button::icon(widget::icon::from_name(if open {
@@ -312,6 +315,7 @@ fn voice_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
         .description(fl!(
             "pitch-advanced-detail",
             offset = hertz(offset),
+            floor = ceiling_text(floor),
             ceiling = ceiling_text(ceiling)
         ))
         .control(toggle);
@@ -323,6 +327,14 @@ fn voice_section<'a>(app: &'a App, state: &'a State) -> Element<'a, Message> {
     if open {
         section = section
             .add(slider_item(app, fl!("pitch-offset"), Num::PitchOffset, state, hertz))
+            .add(slider_item(app, fl!("pitch-floor"), Num::PitchFloor, state, ceiling_text))
+            .add(slider_item(
+                app,
+                fl!("pitch-floor-keep"),
+                Num::PitchFloorKeep,
+                state,
+                |value| format!("{:.0}%", value * 100.0),
+            ))
             .add(slider_item(app, fl!("pitch-ceiling"), Num::PitchCeiling, state, ceiling_text))
             .add(slider_item(
                 app,

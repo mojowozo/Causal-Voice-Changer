@@ -27,11 +27,12 @@ RECORDING_MODES = ("separate", "mix", "stereo")
 LOUDNESS_TARGETS = ("voice_chat", "streaming")
 #: Input noise reduction: Hushwire (Amazon Voice Focus, ~53 ms) or RNNoise (20 ms).
 INPUT_DENOISE_METHODS = ("hushwire", "rnnoise")
-#: The largest pitch offset, in Hz, either way, and the highest pitch ceiling (0 = no ceiling).
+#: The largest pitch offset, in Hz, either way, and the highest pitch floor/ceiling (0 = off).
 PITCH_OFFSET_LIMIT = 300.0
+PITCH_FLOOR_LIMIT = 500.0
 PITCH_CEILING_LIMIT = 1000.0
 #: The advanced pitch settings, applied together (CausalVC.change_pitch_map).
-PITCH_MAP_KEYS = ("pitch_offset_hz", "pitch_ceiling_hz", "pitch_ceiling_keep")
+PITCH_MAP_KEYS = ("pitch_offset_hz", "pitch_ceiling_hz", "pitch_ceiling_keep", "pitch_floor_hz", "pitch_floor_keep")
 #: ASIO buffer sizes (samples) the app can ask the driver for; 0 keeps the driver's own setting.
 ASIO_BUFFER_SIZES = (0, 32, 64, 96, 128, 192, 256, 512, 1024, 2048)
 
@@ -43,6 +44,8 @@ MODEL_SETTING_FILE_KEYS = {
     "noise_gate_db": "threhold",
     "pitch": "pitch",
     "pitch_offset_hz": "pitch_offset_hz",
+    "pitch_floor_hz": "pitch_floor_hz",
+    "pitch_floor_keep": "pitch_floor_keep",
     "pitch_ceiling_hz": "pitch_ceiling_hz",
     "pitch_ceiling_keep": "pitch_ceiling_keep",
     "index_rate": "index_rate",
@@ -76,7 +79,8 @@ class EngineSettings:
     input_device: str = ""
     output_device: str = ""
     monitor_device: str | None = None
-    #: Seconds of audio converted at a time; a multiple of 20 ms. Delay is the model's 60 ms plus one block.
+    #: Seconds of audio converted at a time; a multiple of 10 ms (20 ms for custom 50 Hz encoders).
+    #: Delay is the model's 50 ms (60 ms at 50 Hz) plus one block.
     block_time: float = 0.04
     #: ASIO buffer size to ask the driver for, in samples; 0 keeps the driver's own setting.
     asio_buffer: int = 0
@@ -102,6 +106,9 @@ class EngineSettings:
     pitch: float = 0.0
     #: Hz added to the shifted pitch of voiced frames: output pitch = input * 2^(pitch/12) + this.
     pitch_offset_hz: float = 0.0
+    #: Output pitch below which only ``pitch_floor_keep`` (0-1) of the drop is kept, in semitones; 0 is off.
+    pitch_floor_hz: float = 0.0
+    pitch_floor_keep: float = 0.25
     #: Output pitch above which only ``pitch_ceiling_keep`` (0-1) of the rise is kept, in semitones;
     #: 0 is no ceiling. Pulls down peaks while notes below it keep their intervals.
     pitch_ceiling_hz: float = 0.0
@@ -181,12 +188,14 @@ def coerce_setting(key, value):
         if not math.isfinite(value):
             raise SettingError(key, f"{key} must be finite")
         if key in ("block_time",):
-            value = max(0.02, value)
+            value = max(0.01, value)
         if key == "pitch_offset_hz":
             value = min(max(value, -PITCH_OFFSET_LIMIT), PITCH_OFFSET_LIMIT)
+        if key == "pitch_floor_hz":
+            value = min(max(value, 0.0), PITCH_FLOOR_LIMIT)
         if key == "pitch_ceiling_hz":
             value = min(max(value, 0.0), PITCH_CEILING_LIMIT)
-        if key in ("pitch_ceiling_keep", "index_rate"):
+        if key in ("pitch_floor_keep", "pitch_ceiling_keep", "index_rate"):
             value = min(max(value, 0.0), 1.0)
         if key == "file_input_volume":
             value = min(max(value, 0.0), 1.0)

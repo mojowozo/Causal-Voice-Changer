@@ -169,6 +169,8 @@ public sealed class Settings
     public double NoiseGateDb = -60;
     public double Pitch;
     public double PitchOffsetHz;
+    public double PitchFloorHz;
+    public double PitchFloorKeep = 0.25;
     public double PitchCeilingHz;
     public double PitchCeilingKeep = 0.25;
     public double IndexRate;
@@ -197,6 +199,8 @@ public sealed class Settings
         NoiseGateDb = json.DoubleOrNull("noise_gate_db") ?? -60,
         Pitch = json.DoubleOrNull("pitch") ?? 0,
         PitchOffsetHz = json.DoubleOrNull("pitch_offset_hz") ?? 0,
+        PitchFloorHz = json.DoubleOrNull("pitch_floor_hz") ?? 0,
+        PitchFloorKeep = json.DoubleOrNull("pitch_floor_keep") ?? 0.25,
         PitchCeilingHz = json.DoubleOrNull("pitch_ceiling_hz") ?? 0,
         PitchCeilingKeep = json.DoubleOrNull("pitch_ceiling_keep") ?? 0.25,
         IndexRate = json.DoubleOrNull("index_rate") ?? 0,

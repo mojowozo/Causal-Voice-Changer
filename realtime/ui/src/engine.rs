@@ -80,6 +80,11 @@ pub struct Settings {
     /// Hz added to the shifted pitch of voiced frames (0 = off).
     #[serde(default)]
     pub pitch_offset_hz: f32,
+    /// Output pitch below which only `pitch_floor_keep` (0-1) of the drop is kept (0 = no floor).
+    #[serde(default)]
+    pub pitch_floor_hz: f32,
+    #[serde(default = "default_ceiling_keep")]
+    pub pitch_floor_keep: f32,
     /// Output pitch above which only `pitch_ceiling_keep` (0-1) of the rise is kept (0 = no ceiling).
     #[serde(default)]
     pub pitch_ceiling_hz: f32,

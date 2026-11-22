@@ -39,11 +39,15 @@ section-voice = 声
 pitch = ピッチ（半音）
 pitch-detail = 声をどれだけ高く/低くするか。+12 で 1 オクターブ上がります。下の「ピッチ合わせ」で目安を提案できます。
 pitch-advanced = ピッチの詳細設定
-pitch-advanced-detail = 出力ピッチ = あなたのピッチ × 上のシフト + オフセット（Hz）。ピーク用の上限も設定できます。ほとんどの声では不要です。オフセット: { $offset }、上限: { $ceiling }。
+pitch-advanced-detail = 出力ピッチ = あなたのピッチ × 上のシフト + オフセット（Hz）。低音の下限やピークの上限も設定できます。ほとんどの声では不要です。オフセット: { $offset }、下限: { $floor }、上限: { $ceiling }。
 pitch-advanced-show = 表示
 pitch-advanced-hide = 隠す
 pitch-offset = ピッチオフセット（Hz）
 pitch-offset-detail = シフト後のピッチに足す Hz。正の値は低い音ほど大きく上げるので声域が狭まり、負の値は広がります。0 でオフ。
+pitch-floor = ピッチの下限
+pitch-floor-detail = これより低い出力ピッチを緩やかに持ち上げ、語尾の下がりすぎによるガラつきを抑えます。これより上では音程の幅はそのままです。既定はオフ。
+pitch-floor-keep = 下限より下
+pitch-floor-keep-detail = 下限を下回った分（半音単位）をどれだけ残すか。0% で下限で止まり、100% で下限なしと同じです。
 pitch-ceiling = ピッチの上限
 pitch-ceiling-detail = これより高い出力ピッチを引き下げ、甲高いピークを声域内に収めます。これより下では音程の幅がそのままなので、歌っても音程が合います。既定はオフ。
 pitch-ceiling-keep = 上限より上
@@ -174,7 +178,7 @@ jack-hint = [JACK] デバイスが最も低遅延です。周期は PIPEWIRE_QUA
 ## Performance page
 section-buffering = バッファー
 chunk = チャンク長
-chunk-detail = 一度に変換する音声の長さです（20 ms 刻み）。遅延はモデル固有の 60 ms にチャンク1つ分を加えたものです。短くすると遅延は減りますが、GPU が追いつかないと途切れます（下部バーの「推論」を確認してください）。変更すると変換が再起動します。
+chunk-detail = 一度に変換する音声の長さです（10 ms 刻み）。遅延はモデル固有の 50 ms にチャンク1つ分を加えたものです。短くすると遅延は減りますが、GPU が追いつかないと途切れます（下部バーの「推論」を確認してください）。変更すると変換が再起動します。
 extra = 追加推論バッファ
 extra-detail = 各チャンクを変換するときに、モデルが参照する直前の音声の長さです。長いほど声質とピッチが安定し、GPU 負荷はわずかに増えますが、遅延は増えません。変更すると変換が再起動します。
 section-inference = 推論

@@ -63,6 +63,8 @@ pub enum Num {
     NoiseGate,
     Pitch,
     PitchOffset,
+    PitchFloor,
+    PitchFloorKeep,
     PitchCeiling,
     PitchCeilingKeep,
     IndexRate,
@@ -79,6 +81,8 @@ impl Num {
             Num::NoiseGate => "noise_gate_db",
             Num::Pitch => "pitch",
             Num::PitchOffset => "pitch_offset_hz",
+            Num::PitchFloor => "pitch_floor_hz",
+            Num::PitchFloorKeep => "pitch_floor_keep",
             Num::PitchCeiling => "pitch_ceiling_hz",
             Num::PitchCeilingKeep => "pitch_ceiling_keep",
             Num::IndexRate => "index_rate",
@@ -96,19 +100,21 @@ impl Num {
             Num::Pitch => (-24.0, 24.0, 0.1),
             // Hz either way, as far as the engine allows (settings.py PITCH_OFFSET_LIMIT).
             Num::PitchOffset => (-300.0, 300.0, 1.0),
-            // 0 is no ceiling (settings.py PITCH_CEILING_LIMIT is the top).
+            // 0 is no floor/ceiling (settings.py PITCH_FLOOR_LIMIT / PITCH_CEILING_LIMIT).
+            Num::PitchFloor => (0.0, 500.0, 5.0),
+            Num::PitchFloorKeep => (0.0, 1.0, 0.01),
             Num::PitchCeiling => (0.0, 1000.0, 5.0),
             Num::PitchCeilingKeep => (0.0, 1.0, 0.01),
             Num::IndexRate => (0.0, 1.0, 0.05),
-            // Whole 20 ms frames; delay is the model's 60 ms plus one block.
-            Num::BlockTime => (0.02, 0.2, 0.02),
+            // Whole 10 ms frames; delay is the model's 50 ms plus one block.
+            Num::BlockTime => (0.01, 0.2, 0.01),
             Num::FileVolume => (0.0, 1.0, 0.01),
         }
     }
 
     /// Shown and typed in percent, stored as 0-1.
     fn is_percent(self) -> bool {
-        matches!(self, Num::FileVolume | Num::PitchCeilingKeep | Num::IndexRate)
+        matches!(self, Num::FileVolume | Num::PitchFloorKeep | Num::PitchCeilingKeep | Num::IndexRate)
     }
 
     /// The value as plain text for the edit field (no unit or sign padding).
@@ -129,7 +135,7 @@ impl Num {
         let (min, max, _) = self.range();
         let text = text.trim().to_lowercase();
         let off = text == "off" || text == fl!("off").to_lowercase();
-        if matches!(self, Num::NoiseGate | Num::PitchCeiling | Num::IndexRate) && off {
+        if matches!(self, Num::NoiseGate | Num::PitchFloor | Num::PitchCeiling | Num::IndexRate) && off {
             return Some(min);
         }
         let number = text
@@ -159,6 +165,8 @@ impl Num {
             Num::NoiseGate => settings.noise_gate_db,
             Num::Pitch => settings.pitch,
             Num::PitchOffset => settings.pitch_offset_hz,
+            Num::PitchFloor => settings.pitch_floor_hz,
+            Num::PitchFloorKeep => settings.pitch_floor_keep,
             Num::PitchCeiling => settings.pitch_ceiling_hz,
             Num::PitchCeilingKeep => settings.pitch_ceiling_keep,
             Num::IndexRate => settings.index_rate,
@@ -175,6 +183,8 @@ impl Num {
             Num::NoiseGate => &mut settings.noise_gate_db,
             Num::Pitch => &mut settings.pitch,
             Num::PitchOffset => &mut settings.pitch_offset_hz,
+            Num::PitchFloor => &mut settings.pitch_floor_hz,
+            Num::PitchFloorKeep => &mut settings.pitch_floor_keep,
             Num::PitchCeiling => &mut settings.pitch_ceiling_hz,
             Num::PitchCeilingKeep => &mut settings.pitch_ceiling_keep,
             Num::IndexRate => &mut settings.index_rate,
@@ -1427,6 +1437,8 @@ mod tests {
         assert_eq!(Num::Pitch.parse("+11.5"), Some(11.5));
         assert_eq!(Num::Pitch.parse(" -3,25 "), Some(-3.25));
         assert_eq!(Num::OutputGain.parse("-6 dB"), Some(-6.0));
+        assert_eq!(Num::BlockTime.range(), (0.01, 0.2, 0.01));
+        assert_eq!(Num::BlockTime.parse("0.01s"), Some(0.01));
         assert_eq!(Num::BlockTime.parse("0.04s"), Some(0.04));
         assert_eq!(Num::FileVolume.parse("50%"), Some(0.5));
         assert_eq!(Num::NoiseGate.parse("Off"), Some(-60.0));
@@ -1435,6 +1447,11 @@ mod tests {
         assert_eq!(Num::PitchCeiling.parse("off"), Some(0.0));
         assert_eq!(Num::PitchCeiling.parse("320 Hz"), Some(320.0));
         assert_eq!(Num::PitchCeilingKeep.parse("25%"), Some(0.25));
+        assert_eq!(Num::PitchFloor.range(), (0.0, 500.0, 5.0));
+        assert_eq!(Num::PitchFloor.parse("off"), Some(0.0));
+        assert_eq!(Num::PitchFloor.parse("185 Hz"), Some(185.0));
+        assert_eq!(Num::PitchFloor.parse("900"), Some(500.0));
+        assert_eq!(Num::PitchFloorKeep.parse("25%"), Some(0.25));
     }
 
     #[test]

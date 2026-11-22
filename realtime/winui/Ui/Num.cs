@@ -5,7 +5,7 @@ using CausalVC.Realtime.Engine;
 
 namespace CausalVC.Realtime.Ui;
 
-public enum Num { InputGain, OutputGain, MonitorGain, NoiseGate, Pitch, PitchOffset, PitchCeiling, PitchCeilingKeep, IndexRate, BlockTime, FileVolume }
+public enum Num { InputGain, OutputGain, MonitorGain, NoiseGate, Pitch, PitchOffset, PitchFloor, PitchFloorKeep, PitchCeiling, PitchCeilingKeep, IndexRate, BlockTime, FileVolume }
 
 public static class NumInfo
 {
@@ -19,6 +19,8 @@ public static class NumInfo
         Num.NoiseGate => "noise_gate_db",
         Num.Pitch => "pitch",
         Num.PitchOffset => "pitch_offset_hz",
+        Num.PitchFloor => "pitch_floor_hz",
+        Num.PitchFloorKeep => "pitch_floor_keep",
         Num.PitchCeiling => "pitch_ceiling_hz",
         Num.PitchCeilingKeep => "pitch_ceiling_keep",
         Num.IndexRate => "index_rate",
@@ -35,12 +37,14 @@ public static class NumInfo
         Num.Pitch => (-24, 24, 0.1),
         // Hz either way, as far as the engine allows (settings.py PITCH_OFFSET_LIMIT).
         Num.PitchOffset => (-300, 300, 1),
-        // 0 is no ceiling (settings.py PITCH_CEILING_LIMIT is the top).
+        // 0 is no floor/ceiling (settings.py PITCH_FLOOR_LIMIT / PITCH_CEILING_LIMIT).
+        Num.PitchFloor => (0, 500, 5),
+        Num.PitchFloorKeep => (0, 1, 0.01),
         Num.PitchCeiling => (0, 1000, 5),
         Num.PitchCeilingKeep => (0, 1, 0.01),
         Num.IndexRate => (0, 1, 0.05),
-        // Whole 20 ms frames; delay is the model's 60 ms plus one block.
-        Num.BlockTime => (0.02, 0.2, 0.02),
+        // Whole 10 ms frames; delay is the model's 50 ms plus one block.
+        Num.BlockTime => (0.01, 0.2, 0.01),
         _ => (0, 1, 0.01),
     };
 
@@ -55,6 +59,8 @@ public static class NumInfo
         Num.NoiseGate => settings.NoiseGateDb,
         Num.Pitch => settings.Pitch,
         Num.PitchOffset => settings.PitchOffsetHz,
+        Num.PitchFloor => settings.PitchFloorHz,
+        Num.PitchFloorKeep => settings.PitchFloorKeep,
         Num.PitchCeiling => settings.PitchCeilingHz,
         Num.PitchCeilingKeep => settings.PitchCeilingKeep,
         Num.IndexRate => settings.IndexRate,
@@ -72,6 +78,8 @@ public static class NumInfo
             case Num.NoiseGate: settings.NoiseGateDb = value; break;
             case Num.Pitch: settings.Pitch = value; break;
             case Num.PitchOffset: settings.PitchOffsetHz = value; break;
+            case Num.PitchFloor: settings.PitchFloorHz = value; break;
+            case Num.PitchFloorKeep: settings.PitchFloorKeep = value; break;
             case Num.PitchCeiling: settings.PitchCeilingHz = value; break;
             case Num.PitchCeilingKeep: settings.PitchCeilingKeep = value; break;
             case Num.IndexRate: settings.IndexRate = value; break;
@@ -85,11 +93,11 @@ public static class NumInfo
     {
         Num.Pitch => value.ToString("+0.0;-0.0;0.0", Invariant),
         Num.PitchOffset => Hertz(value),
-        Num.PitchCeiling => Ceiling(value),
+        Num.PitchFloor or Num.PitchCeiling => Ceiling(value),
         Num.NoiseGate => value <= -60 ? S.Off : $"{value.ToString("0", Invariant)} dB",
         Num.BlockTime => $"{value.ToString("0.00", Invariant)} s",
         Num.IndexRate when value <= 0 => S.Off,
-        Num.FileVolume or Num.PitchCeilingKeep or Num.IndexRate => $"{(value * 100).ToString("0", Invariant)}%",
+        Num.FileVolume or Num.PitchFloorKeep or Num.PitchCeilingKeep or Num.IndexRate => $"{(value * 100).ToString("0", Invariant)}%",
         _ => $"{value.ToString("+0.0;-0.0;0.0", Invariant)} dB",
     };
 
@@ -98,7 +106,7 @@ public static class NumInfo
     public static string Ceiling(double value) => value <= 0 ? S.Off : $"{value.ToString("0", Invariant)} Hz";
 
     /// Shown and typed in percent, stored as 0-1.
-    static bool IsPercent(this Num num) => num is Num.FileVolume or Num.PitchCeilingKeep or Num.IndexRate;
+    static bool IsPercent(this Num num) => num is Num.FileVolume or Num.PitchFloorKeep or Num.PitchCeilingKeep or Num.IndexRate;
 
     /// The value as plain text for the edit field (no unit or sign padding).
     public static string EditText(this Num num, double value)
@@ -114,7 +122,7 @@ public static class NumInfo
     {
         var (min, max, _) = num.Range();
         text = text.Trim().ToLowerInvariant();
-        if ((num is Num.NoiseGate or Num.PitchCeiling or Num.IndexRate) && (text == "off" || text == S.Off.ToLowerInvariant())) return min;
+        if ((num is Num.NoiseGate or Num.PitchFloor or Num.PitchCeiling or Num.IndexRate) && (text == "off" || text == S.Off.ToLowerInvariant())) return min;
         text = text.TrimEnd('%', 's');
         if (text.EndsWith("db") || text.EndsWith("hz")) text = text[..^2];
         text = text.Trim().TrimStart('+').Replace(',', '.');
@@ -128,6 +136,8 @@ public static class NumInfo
     {
         Num.Pitch => S.PitchDetail,
         Num.PitchOffset => S.PitchOffsetDetail,
+        Num.PitchFloor => S.PitchFloorDetail,
+        Num.PitchFloorKeep => S.PitchFloorKeepDetail,
         Num.PitchCeiling => S.PitchCeilingDetail,
         Num.PitchCeilingKeep => S.PitchCeilingKeepDetail,
         Num.IndexRate => S.IndexRateDetail,

@@ -31,11 +31,13 @@ public sealed class ModelPage : PageBase
     readonly Button _apply;
     readonly Action<IReadOnlyList<string>, int> _setTarget;
     List<string> _modelNames = [];
-    // The Voice section: the pitch, and behind a disclosure row the pitch offset and ceiling, which few voices need.
+    // The Voice section: the pitch, and behind a disclosure row the pitch offset, floor and ceiling, which few voices need.
     readonly SettingsSection _voice = new(S.SectionVoice);
     readonly SettingRow _pitchRow;
     readonly SettingRow _advancedRow;
     readonly SettingRow _offsetRow;
+    readonly SettingRow _floorRow;
+    readonly SettingRow _floorKeepRow;
     readonly SettingRow _ceilingRow;
     readonly SettingRow _keepRow;
     // The Index slider, or for a voice without an index a note saying so.
@@ -60,6 +62,8 @@ public sealed class ModelPage : PageBase
 
         _pitchRow = Slider(S.Pitch, Num.Pitch);
         _offsetRow = Slider(S.PitchOffset, Num.PitchOffset);
+        _floorRow = Slider(S.PitchFloor, Num.PitchFloor);
+        _floorKeepRow = Slider(S.PitchFloorKeep, Num.PitchFloorKeep);
         _ceilingRow = Slider(S.PitchCeiling, Num.PitchCeiling);
         _keepRow = Slider(S.PitchCeilingKeep, Num.PitchCeilingKeep);
         _indexRow = Slider(S.IndexRate, Num.IndexRate);
@@ -68,7 +72,7 @@ public sealed class ModelPage : PageBase
             _advancedOpen = !_advancedOpen;
             RenderVoice();
         });
-        _advancedRow = new SettingRow(S.PitchAdvanced, S.PitchAdvancedDetail(NumInfo.Hertz(0), NumInfo.Ceiling(0)), _advancedToggle);
+        _advancedRow = new SettingRow(S.PitchAdvanced, S.PitchAdvancedDetail(NumInfo.Hertz(0), NumInfo.Ceiling(0), NumInfo.Ceiling(0)), _advancedToggle);
         RenderVoice();
 
         _apply = Build.Button(S.OutputLevelApply, (_, _) => Host.ApplyLoudness(), style: "AccentButtonStyle");
@@ -107,7 +111,7 @@ public sealed class ModelPage : PageBase
     {
         _voice.Clear();
         _voice.Add(_pitchRow).Add(_hasIndex ? _indexRow : _noIndexRow).Add(_advancedRow);
-        if (_advancedOpen) _voice.Add(_offsetRow).Add(_ceilingRow).Add(_keepRow);
+        if (_advancedOpen) _voice.Add(_offsetRow).Add(_floorRow).Add(_floorKeepRow).Add(_ceilingRow).Add(_keepRow);
         ((FontIcon)_advancedToggle.Content).Glyph = _advancedOpen ? "\uE70E" : "\uE70D";  // chevron up / down
         ToolTipService.SetToolTip(_advancedToggle, _advancedOpen ? S.PitchAdvancedHide : S.PitchAdvancedShow);
     }
@@ -154,7 +158,10 @@ public sealed class ModelPage : PageBase
         }
 
         foreach (var slider in _sliders) slider.Update(slider.Num.Get(settings));
-        _advancedRow.Description = S.PitchAdvancedDetail(NumInfo.Hertz(settings.PitchOffsetHz), NumInfo.Ceiling(settings.PitchCeilingHz));
+        _advancedRow.Description = S.PitchAdvancedDetail(
+            NumInfo.Hertz(settings.PitchOffsetHz),
+            NumInfo.Ceiling(settings.PitchFloorHz),
+            NumInfo.Ceiling(settings.PitchCeilingHz));
         _setTarget([S.LoudnessTargetVoiceChat, S.LoudnessTargetStreaming], Array.IndexOf(LoudnessTargets, settings.LoudnessTarget));
         UpdateMeters(state, Host.Meters);
     }

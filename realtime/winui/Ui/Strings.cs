@@ -49,10 +49,14 @@ static class S
     public const string Pitch = "Pitch (semitones)";
     public const string PitchDetail = "How far to shift your voice: +12 is one octave up.";
     public const string PitchAdvanced = "Advanced pitch";
-    public static string PitchAdvancedDetail(string offset, string ceiling) => $"Output pitch = your pitch × the shift above + an offset in Hz, with an optional ceiling for peaks. Most voices don't need these. Offset: {offset}; ceiling: {ceiling}.";
+    public static string PitchAdvancedDetail(string offset, string floor, string ceiling) => $"Output pitch = your pitch × the shift above + an offset in Hz, with an optional floor for low endings and ceiling for peaks. Most voices don't need these. Offset: {offset}; floor: {floor}; ceiling: {ceiling}.";
     public const string PitchAdvancedShow = "Show";
     public const string PitchAdvancedHide = "Hide";
     public const string PitchOffset = "Pitch offset (Hz)";
+    public const string PitchFloor = "Pitch floor";
+    public const string PitchFloorDetail = "Output pitch below this is cushioned upward, keeping relaxed phrase endings out of vocal fry while notes above it keep their intervals. Off by default.";
+    public const string PitchFloorKeep = "Below the floor";
+    public const string PitchFloorKeepDetail = "How much of the drop below the floor is kept, in semitones. 0% stops at the floor; 100% is no floor.";
     public const string PitchCeiling = "Pitch ceiling";
     public const string PitchCeilingDetail = "Output pitch above this is pulled down, so squeaky peaks stay in the voice's range. Below it, notes keep their intervals, so singing stays in tune. Off by default.";
     public const string PitchCeilingKeep = "Above the ceiling";
@@ -192,7 +196,7 @@ static class S
     // Performance page
     public const string SectionBuffering = "Buffering";
     public const string Chunk = "Chunk";
-    public const string ChunkDetail = "How much audio is converted at a time, in steps of 20 ms. Total delay is the model's fixed 60 ms plus one chunk; shorter chunks lower the delay but can stutter if the GPU can't keep up (watch Inference in the bottom bar). Changing it restarts conversion.";
+    public const string ChunkDetail = "How much audio is converted at a time, in steps of 10 ms. Total delay is the model's fixed 50 ms plus one chunk; shorter chunks lower the delay but can stutter if the GPU can't keep up (watch Inference in the bottom bar). Changing it restarts conversion.";
     public const string SectionInference = "Inference";
     public const string Gpu = "GPU";
     public const string GpuDetail = "The graphics card that runs the model. Changing it restarts conversion.";

@@ -19,12 +19,17 @@ from engine.settings import (
 class CoerceSettingTest(unittest.TestCase):
     def test_numbers_are_converted_and_clamped(self):
         self.assertEqual(coerce_setting("pitch", 12), 12.0)
-        self.assertEqual(coerce_setting("block_time", 0.001), 0.02)
+        self.assertEqual(coerce_setting("block_time", 0.001), 0.01)
+        self.assertEqual(coerce_setting("block_time", 0.01), 0.01)
         self.assertEqual(coerce_setting("file_input_volume", -1), 0.0)
         self.assertEqual(coerce_setting("pitch_offset_hz", 40), 40.0)
         self.assertEqual(coerce_setting("pitch_offset_hz", -5000), -300.0)
         self.assertEqual(coerce_setting("pitch_ceiling_hz", -10), 0.0)
         self.assertEqual(coerce_setting("pitch_ceiling_keep", 2), 1.0)
+        self.assertEqual(coerce_setting("pitch_floor_hz", -10), 0.0)
+        self.assertEqual(coerce_setting("pitch_floor_hz", 900), 500.0)
+        self.assertEqual(coerce_setting("pitch_floor_keep", -0.5), 0.0)
+        self.assertEqual(coerce_setting("pitch_floor_keep", 2.0), 1.0)
 
     def test_rejects_wrong_types_and_unknown_keys(self):
         for key, value in (
@@ -114,6 +119,15 @@ class PersistenceTest(unittest.TestCase):
             saved_file.write('{"Alto": {"pitch": "high"}, "Bass": 3')
         self.assertEqual(load_voice_settings(path), {})
         self.assertEqual(model_settings_from({"pitch": "high"})["pitch"], EngineSettings().pitch)
+
+    def test_pitch_floor_settings_persist_and_legacy_entries_default_cleanly(self):
+        legacy = model_settings_from({"pitch": 4.0})
+        self.assertEqual(legacy["pitch_floor_hz"], 0.0)
+        self.assertEqual(legacy["pitch_floor_keep"], 0.25)
+
+        saved = model_settings_to_save(EngineSettings(pitch_floor_hz=185.0, pitch_floor_keep=0.2))
+        self.assertEqual(saved["pitch_floor_hz"], 185.0)
+        self.assertEqual(saved["pitch_floor_keep"], 0.2)
 
 
 if __name__ == "__main__":

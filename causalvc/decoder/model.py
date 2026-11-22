@@ -468,6 +468,39 @@ def loudness(wav: torch.Tensor) -> torch.Tensor:
     return 20.0 * torch.log10(ac.pow(2).mean(-1).sqrt() + 1e-5)
 
 
+PS_LOOKBACK = 2 * FRAME  # up to 3 * FRAME (30 ms) causal window -> covers 1 full glottal cycle down to 33.3 Hz
+_PS_IDX: dict[str, torch.Tensor] = {}
+
+
+def _ps_idx(device: torch.device) -> torch.Tensor:
+    key = str(device)
+    buf = _PS_IDX.get(key)
+    if buf is None:
+        buf = torch.arange(FRAME + PS_LOOKBACK, device=device, dtype=torch.float32)[None, None, :]
+        _PS_IDX[key] = buf
+    return buf
+
+
+def pitch_sync_loudness(wav: torch.Tensor, raw_f0: torch.Tensor, prepadded: bool = False) -> torch.Tensor:
+    """Causal pitch-synchronous RMS in dB [B, T]: exact 1.0 glottal cycle (SR / raw_f0) when 0 < raw_f0 < 100 Hz
+    (cancelling <100 Hz glottal-pulse beating analytically with zero multi-frame IIR lag on fast speech), and exact
+    10 ms (FRAME) when unvoiced or raw_f0 >= 100 Hz. When `prepadded=True`, `wav` carries `PS_LOOKBACK` lead samples."""
+    max_w = FRAME + PS_LOOKBACK
+    if prepadded:
+        n = (wav.shape[1] - PS_LOOKBACK) // FRAME
+        x = wav[:, : PS_LOOKBACK + n * FRAME].float().unfold(1, max_w, FRAME)
+    else:
+        n = wav.shape[1] // FRAME
+        x = F.pad(wav[:, : n * FRAME].float(), (PS_LOOKBACK, 0)).unfold(1, max_w, FRAME)
+    f = raw_f0[:, :n].float()
+    period = torch.where((f > 0) & (f < 100.0), SR / f.clamp_min(33.4), torch.full_like(f, float(FRAME))).clamp(float(FRAME), float(max_w))
+    w = (_ps_idx(wav.device) - (float(max_w) - period[..., None]) + 1.0).clamp(0.0, 1.0)
+    denom = w.sum(dim=-1, keepdim=True).clamp_min(1.0)
+    mean = (x * w).sum(dim=-1, keepdim=True) / denom
+    ms = (((x - mean).pow(2) * w).sum(dim=-1, keepdim=True) / denom).clamp_min(0.0)[..., 0]
+    return 20.0 * torch.log10(ms.sqrt() + 1e-5)
+
+
 TONE_BANDS = ((2000, 8000, 250, 2000), (700, 2000, 250, 700))  # brightness, vowel openness
 _TONE_BANKS: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 

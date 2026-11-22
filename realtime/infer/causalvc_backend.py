@@ -22,11 +22,12 @@ import torch
 #: A voice file (.cvc), or an older voice folder's description (the second spelling is the
 #: project's earlier name and still loads).
 SUFFIXES = (".cvc", ".causalvc.json", ".nextvc.json")
-#: Blocks must be a whole number of 20 ms encoder frames at 48 kHz.
+#: Blocks are multiples of 10 ms (480 samples) at 100 Hz, or 20 ms (960 samples) at 50 Hz.
 SAMPLE_RATE = 48000
 #: The repository this app is part of (the folder above realtime/).
 REPOSITORY = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BLOCK_MULTIPLE = 960
+BLOCK_MULTIPLE = 480
+BLOCK_MULTIPLE_50HZ = 960
 
 
 def is_causalvc(model_path):
@@ -37,8 +38,19 @@ class CausalVC:
     is_causalvc = True
     tgt_sr = SAMPLE_RATE
 
-    def __init__(self, key, model_path, device, pitch_offset=0.0, pitch_ceiling=0.0, pitch_ceiling_keep=1.0,
-                 cuda_graphs=False, index_rate=0.0):
+    def __init__(
+        self,
+        key,
+        model_path,
+        device,
+        pitch_offset=0.0,
+        pitch_ceiling=0.0,
+        pitch_ceiling_keep=1.0,
+        pitch_floor=0.0,
+        pitch_floor_keep=1.0,
+        cuda_graphs=False,
+        index_rate=0.0,
+    ):
         if REPOSITORY not in sys.path:  # the causalvc package, when it is not installed in this environment
             sys.path.insert(0, REPOSITORY)
         from causalvc.stream import DELAY
@@ -58,13 +70,14 @@ class CausalVC:
             self.vc = streaming(spec["decoder"], spec["pitch"], str(device), spec["encoder"], graphs=cuda_graphs)
         if self.speaker not in self.vc.speakers:
             raise ValueError(f"{self.speaker} is not a voice of {spec['decoder']}")
+        self.block_multiple = BLOCK_MULTIPLE if getattr(self.vc, "hop100", True) else BLOCK_MULTIPLE_50HZ
         self.delay_seconds = getattr(self.vc, "delay", DELAY) / 100.0
         # The voice's index (content frames of its own audio), when its file carries one.
         self.has_index = bool(spec.get("index"))
         if self.has_index:
             self.vc.set_index(torch.load(spec["index"], map_location="cpu")["frames"])
         self.key = float(key)
-        self.change_pitch_map(pitch_offset, pitch_ceiling, pitch_ceiling_keep)
+        self.change_pitch_map(pitch_offset, pitch_ceiling, pitch_ceiling_keep, pitch_floor, pitch_floor_keep)
         self.change_index_rate(index_rate)
 
     def change_key(self, key):
@@ -72,11 +85,10 @@ class CausalVC:
         self.key = float(key)
         self._set_voice()
 
-    def change_pitch_map(self, offset, ceiling, keep):
-        """The advanced pitch settings; the stream carries on. ``offset``: Hz added to every voiced
-        frame's pitch after the shift (y = x * 2^(key/12) + offset). ``ceiling``: Hz above which only
-        ``keep`` (0-1) of the rise is kept, in semitones (0 = no ceiling)."""
+    def change_pitch_map(self, offset, ceiling, keep, floor=0.0, floor_keep=1.0):
+        """The advanced pitch settings; the stream carries on."""
         self.pitch_offset, self.pitch_ceiling, self.pitch_ceiling_keep = float(offset), float(ceiling), float(keep)
+        self.pitch_floor, self.pitch_floor_keep = float(floor), float(floor_keep)
         self._set_voice()
 
     def change_index_rate(self, rate):
@@ -86,7 +98,15 @@ class CausalVC:
         self.vc.set_index_rate(self.index_rate)
 
     def _set_voice(self):
-        self.vc.set_voice(self.speaker, self.key, self.pitch_offset, self.pitch_ceiling, self.pitch_ceiling_keep)
+        self.vc.set_voice(
+            self.speaker,
+            self.key,
+            self.pitch_offset,
+            self.pitch_ceiling,
+            self.pitch_ceiling_keep,
+            self.pitch_floor,
+            self.pitch_floor_keep,
+        )
 
     def reset_stream_state(self):
         self.vc.reset()

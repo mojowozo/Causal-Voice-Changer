@@ -58,10 +58,30 @@ class PassthroughPipelineTest(unittest.TestCase):
 
         np.testing.assert_allclose(output, signal[: output.shape[0]], atol=1e-5)
 
-    def test_block_length_is_a_whole_number_of_20_ms_frames(self):
-        for block_time, frames in ((0.02, 960), (0.04, 1920), (0.06, 2880), (0.1, 4800)):
+    def test_block_length_is_a_whole_number_of_10_ms_frames(self):
+        for block_time, frames in ((0.01, 480), (0.02, 960), (0.03, 1440), (0.04, 1920), (0.1, 4800)):
             with self.subTest(block_time=block_time):
                 self.assertEqual(passthrough_engine(block_time=block_time).block_frame, frames)
+
+    def test_50hz_voice_at_10ms_rounds_up_to_960_and_declines_incompatible_hot_swap(self):
+        engine = passthrough_engine(block_time=0.01)
+        self.assertEqual(engine.block_frame, 480)
+        engine.voice.block_multiple = 960
+        engine.prepare_inference(RATE)
+        self.assertEqual(engine.block_frame, 960)
+
+        # Running at 480 samples (10 ms) on a 100 Hz voice; hot-swapping to a 960-multiple voice must decline cleanly.
+        engine10 = passthrough_engine(block_time=0.01)
+        old_voice = engine10.voice
+        engine10.build_voice = lambda model: SimpleNamespace(
+            block_multiple=960,
+            warm=lambda frames, record=True: None,
+            record=lambda frames: None,
+            delay_seconds=0.06,
+        )
+        swapped = engine10.swap_voice(SimpleNamespace(name="Legacy50Hz", model_path=SimpleNamespace(name="Legacy50Hz.cvc")))
+        self.assertFalse(swapped)
+        self.assertIs(engine10.voice, old_voice)
 
 
 if __name__ == "__main__":
