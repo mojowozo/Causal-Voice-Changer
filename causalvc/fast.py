@@ -24,21 +24,38 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from causalvc.decoder.model import FRAME, PS_LOOKBACK, SR, AntiAliasAct, CausalLPF, Decoder, _ps_idx, _tone_buffers, pitch_sync_loudness, tone
+from causalvc.decoder.model import (
+    AP_LOOKBACK,
+    BREATH_TAPS,
+    FRAME,
+    PS_LOOKBACK,
+    SR,
+    AntiAliasAct,
+    CausalLPF,
+    Decoder,
+    _ap_buffers,
+    _ps_idx,
+    _tone_buffers,
+    aperiodicity,
+    pitch_sync_loudness,
+    tone,
+)
 from causalvc.index import lookup
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
 from causalvc.stream import DELAY, F0_RANGE, REF_TONE, _ref_tone, map_f0, normalize_tone, smooth_f0
 
-TAIL = 3840  # 48 kHz samples of input kept between blocks (80 ms): covers every front end's history
+TAIL = 4800  # 48 kHz samples of input kept between blocks (100 ms): covers every front end's history
 
 
 def check_tail_capacity(base_delay: int) -> None:
-    """Ensure both pitch_sync_loudness and tone slices stay non-negative inside the 80 ms TAIL buffer."""
-    assert base_delay * FRAME + PS_LOOKBACK <= TAIL and (base_delay + 1) * FRAME <= TAIL, (
-        f"base_delay={base_delay} exceeds TAIL={TAIL // FRAME} frames"
-    )
+    """Ensure pitch_sync_loudness, aperiodicity, and tone slices stay non-negative inside the 100 ms TAIL buffer."""
+    assert (
+        base_delay * FRAME + PS_LOOKBACK <= TAIL
+        and base_delay * FRAME + AP_LOOKBACK <= TAIL
+        and (base_delay + 1) * FRAME <= TAIL
+    ), f"base_delay={base_delay} exceeds TAIL={TAIL // FRAME} frames"
 
 
 def supported(dec: Decoder) -> bool:
@@ -98,6 +115,8 @@ class FastStreamingVC:
         self.index = self.index_unit = None
         self.index_rate, self.rate = torch.zeros((), device=device), 0.0
         _ps_idx(torch.device(device))
+        if self.dec.source.aper:
+            _ap_buffers(torch.device(device))
         if self.dec.tone is not None:
             _tone_buffers(torch.device(device))
             _ref_tone(torch.device(device))
@@ -169,6 +188,12 @@ class FastStreamingVC:
         self.pending_f0 = torch.zeros(1, device=d)
         self.pending_v = torch.zeros(1, device=d)
         self.pending_h = None  # features of the newest frame, waiting for its excitation (glide="next")
+        if self.dec.source.aper:
+            self.prev_ap = torch.ones(1, self.dec.source.aper, device=d)
+            self.pending_ap = torch.ones(1, self.dec.source.aper, device=d)
+            self.breath_white = torch.zeros(1, self.dec.source.aper, BREATH_TAPS - 1, device=d)
+        else:
+            self.prev_ap = self.pending_ap = self.breath_white = None
         self.frames = 0  # 100 Hz frames of input received so far
 
     # ---- history helpers -------------------------------------------------
@@ -191,9 +216,9 @@ class FastStreamingVC:
 
     def _aa_act(self, act: AntiAliasAct, x: torch.Tensor, key) -> torch.Tensor:
         b, c, t = x.shape
-        u = F.conv1d(self._hist((key, "u"), x, act.pad_up), act.w_up, groups=c).view(b, c, 2, t).transpose(2, 3).reshape(b, c, 2 * t)
-        u = F.leaky_relu(u, 0.1)
-        return F.conv1d(self._hist((key, "d"), u, act.pad_dn), act.w_dn, stride=2, groups=c)
+        u = F.conv1d(self._hist((key, "u"), x, act.pad_up), act.w_up.to(x.dtype), groups=c).view(b, c, 2, t).transpose(2, 3).reshape(b, c, 2 * t)
+        u = act.act(u) if act.act is not None else F.leaky_relu(u, 0.1)
+        return F.conv1d(self._hist((key, "d"), u, act.pad_dn), act.w_dn.to(u.dtype), stride=2, groups=c)
 
     # ---- content encoder -------------------------------------------------
 
@@ -286,11 +311,19 @@ class FastStreamingVC:
         if d.reg_cond is not None and reg is not None:
             x = x + d.reg_cond(reg.to(d.reg_cond.weight.dtype)).transpose(1, 2)
         for i, (up, src, res) in enumerate(zip(d.ups, d.src, d.res)):
-            x = F.leaky_relu(x, 0.1)
-            z = self._hist(("g.up", i), x, 1)  # a transposed convolution's output hop depends on this frame and the one before
-            u = up.conv(z)[..., up.stride : z.shape[-1] * up.stride]
-            if up.lpf is not None:
-                u = self._lpf(up.lpf, u, ("g.uplpf", i))
+            if d.pre_acts is None:
+                x = F.leaky_relu(x, 0.1)
+            elif isinstance(d.pre_acts[i], AntiAliasAct):  # aa_filter 3: its filters carry history across blocks
+                x = self._aa_act(d.pre_acts[i], x, ("g.pre", i))
+            else:
+                x = d.pre_acts[i](x)
+            z = self._hist(("g.up", i), x, 1)  # output hop depends on this frame and the one before
+            if up.linear:
+                u = self._cconv(up.post_conv, up.upsample_linear(x, z), ("g.upconv", i))
+            else:
+                u = up.conv(z)[..., up.stride : z.shape[-1] * up.stride]
+                if up.lpf is not None:
+                    u = self._lpf(up.lpf, u, ("g.uplpf", i))
             if d.exc == "multirate":
                 e_i = d.source.stage_excitation(exc, d.stage_rates[i], d.stage_rem[i]).to(x.dtype)
                 s_i = self._cconv(src, e_i, ("g.src", i))
@@ -302,17 +335,22 @@ class FastStreamingVC:
             out = 0
             for j, r in enumerate(res):
                 y = x
-                if r.a1 is None:
-                    for k, (c1, c2) in enumerate(zip(r.c1, r.c2)):
-                        t = self._cconv(c1, F.leaky_relu(y, 0.1), ("g.r", i, j, k, 1))
-                        y = y + self._cconv(c2, F.leaky_relu(t, 0.1), ("g.r", i, j, k, 2))
-                else:
+                if r.a1 is not None:
                     for k, (c1, c2, a1, a2) in enumerate(zip(r.c1, r.c2, r.a1, r.a2)):
                         t = self._cconv(c1, self._aa_act(a1, y, ("g.a", i, j, k, 1)), ("g.r", i, j, k, 1))
                         y = y + self._cconv(c2, self._aa_act(a2, t, ("g.a", i, j, k, 2)), ("g.r", i, j, k, 2))
+                elif r.s1 is not None:
+                    for k, (c1, c2, s1, s2) in enumerate(zip(r.c1, r.c2, r.s1, r.s2)):
+                        t = self._cconv(c1, s1(y), ("g.r", i, j, k, 1))
+                        y = y + self._cconv(c2, s2(t), ("g.r", i, j, k, 2))
+                else:
+                    for k, (c1, c2) in enumerate(zip(r.c1, r.c2)):
+                        t = self._cconv(c1, F.leaky_relu(y, 0.1), ("g.r", i, j, k, 1))
+                        y = y + self._cconv(c2, F.leaky_relu(t, 0.1), ("g.r", i, j, k, 2))
                 out = out + y
             x = out / len(res)
-        return torch.tanh(self._cconv(d.post, F.leaky_relu(x, 0.1), "g.post"))[0, 0]
+        xp = d.post_act(x) if d.post_act is not None else F.leaky_relu(x, 0.1)
+        return torch.tanh(self._cconv(d.post, xp, "g.post"))[0, 0]
 
     # ---- one block -------------------------------------------------------
 
@@ -321,9 +359,10 @@ class FastStreamingVC:
     def _slots(self) -> list[torch.Tensor]:
         """Every tensor the stream carries from one block to the next."""
         late = [] if self.pending_h is None else [self.pending_h]
+        aper = [self.prev_ap, self.pending_ap, self.breath_white] if self.dec.source.aper else []
         return [
             self.tail, self.phase, self.prev_f0, self.smooth_state, self.tone_state,
-            self.pending_f0, self.pending_v, *late, *self.steps, *(self.st[k] for k in self.keys),
+            self.pending_f0, self.pending_v, *late, *aper, *self.steps, *(self.st[k] for k in self.keys),
         ]
 
     def _put(self, slots: list[torch.Tensor]) -> None:
@@ -333,7 +372,10 @@ class FastStreamingVC:
         ) = slots[:7]
         i = 7
         if self.pending_h is not None:
-            self.pending_h, i = slots[7], 8
+            self.pending_h, i = slots[i], i + 1
+        if self.dec.source.aper:
+            self.prev_ap, self.pending_ap, self.breath_white = slots[i : i + 3]
+            i += 3
         n = len(self.steps)
         self.steps = list(slots[i : i + n])
         for k, t in zip(self.keys, slots[i + n :]):
@@ -349,42 +391,99 @@ class FastStreamingVC:
         return out
 
     @torch.inference_mode()
-    def prepare(self, n: int) -> None:
-        """Get ready for blocks of n samples; with `graphs`, record one block as a CUDA graph."""
+    def prewarm(self, n: int) -> None:
+        """Warm every history buffer and build static state slots for blocks of n samples.
+
+        Runs purely eager ops (no CUDA graph capture), so a background thread can call it
+        while another voice keeps converting live audio on the same GPU.
+        """
         self.graph = None
         self.reset()
+        self._prewarmed_n = None
         if not self.graphs:
             return
         try:
-            with torch.cuda.device(self.device):  # record on the voice's own GPU, not the current one
-                self._record(n)
+            with torch.cuda.device(self.device):
+                silence = torch.zeros(32 * FRAME, device=self.device)  # blocks short enough for the rotary table
+                for _ in range(13):  # four seconds: fills the encoder's 3-second attention window completely
+                    self._process(silence)
+                for _ in range(3):  # settle the encoder step list to this block length
+                    self._process(torch.zeros(n, device=self.device))
+                self.keys = sorted(self.st, key=repr)
+                self.static = [t.clone() for t in self._slots()]
+                self._put(self.static)
+                self.snapshot, self.snapshot_frames = [t.clone() for t in self.static], self.frames
+                self.inp = torch.zeros(n, device=self.device)
+                for _ in range(2):
+                    self._step_in_place()
+                self._prewarmed_n = n
+        except Exception as error:
+            print(f"CUDA graph not used: {error}", flush=True)
+            self.graph, self.graphs, self._prewarmed_n = None, False, None
+            self.reset()
+
+    @torch.inference_mode()
+    def capture(self, n: int) -> None:
+        """Record the CUDA graph for blocks of n samples (fast: ~5 ms when already prewarmed)."""
+        if not self.graphs:
+            self.reset()
+            return
+        if getattr(self, "_prewarmed_n", None) != n:
+            self.prewarm(n)
+            if not self.graphs:
+                return
+        try:
+            with torch.cuda.device(self.device):
+                side = torch.cuda.Stream(self.device)
+                side.wait_stream(torch.cuda.current_stream(self.device))
+                with torch.cuda.stream(side):
+                    self._step_in_place()
+                torch.cuda.current_stream(self.device).wait_stream(side)
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    self.out = self._step_in_place()
+                self.graph, self.graph_n = graph, n
         except Exception as error:  # a GPU or driver that cannot record: carry on without
             print(f"CUDA graph not used: {error}", flush=True)
             self.graph, self.graphs = None, False
         self.reset()
 
-    def _record(self, n: int) -> None:
-        """Four seconds of silence, then one block of n samples recorded with every state tensor updated in place."""
-        silence = torch.zeros(32 * FRAME, device=self.device)  # blocks short enough for the rotary table
-        for _ in range(13):  # four seconds: every history (the encoder's three-second window above all) is full
-            self._process(silence)
-        for _ in range(3):  # and the encoder steps kept are those of this block length
-            self._process(torch.zeros(n, device=self.device))
-        self.keys = sorted(self.st, key=repr)
-        self.static = [t.clone() for t in self._slots()]
-        self._put(self.static)
-        self.snapshot, self.snapshot_frames = [t.clone() for t in self.static], self.frames
-        self.inp = torch.zeros(n, device=self.device)
-        side = torch.cuda.Stream(self.device)
-        side.wait_stream(torch.cuda.current_stream(self.device))
-        with torch.cuda.stream(side):
-            for _ in range(2):
-                self._step_in_place()
-        torch.cuda.current_stream(self.device).wait_stream(side)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            self.out = self._step_in_place()
-        self.graph, self.graph_n = graph, n
+    @torch.inference_mode()
+    def prepare(self, n: int) -> None:
+        """Get ready for blocks of n samples; with `graphs`, record one block as a CUDA graph."""
+        self.prewarm(n)
+        self.capture(n)
+
+    @torch.inference_mode()
+    def copy_frontend_state(self, other: "FastStreamingVC") -> None:
+        """Transfer live encoder, pitch-tracker, tone, and input-audio history from ``other`` in place.
+
+        Keeps the new voice's recorded CUDA graph static buffer addresses intact so the very first
+        block after a hot-swap already has full 3-second speech context (zero cold-start warble).
+        """
+        if not isinstance(other, FastStreamingVC):
+            return
+        if self.tail.shape == other.tail.shape:
+            self.tail.copy_(other.tail)
+        self.phase.copy_(other.phase)
+        self.smooth_state.copy_(other.smooth_state)
+        self.tone_state.copy_(other.tone_state)
+        self.pending_v.copy_(other.pending_v)
+        if self.dec.source.aper and other.dec.source.aper and self.pending_ap.shape == other.pending_ap.shape:
+            self.prev_ap.copy_(other.prev_ap)
+            self.pending_ap.copy_(other.pending_ap)
+            if self.breath_white.shape == other.breath_white.shape:
+                self.breath_white.copy_(other.breath_white)
+        if len(self.steps) == len(other.steps) and all(a.shape == b.shape for a, b in zip(self.steps, other.steps)):
+            for dst, src in zip(self.steps, other.steps):
+                dst.copy_(src)
+        for k, dst in self.st.items():
+            prefix = k[0] if isinstance(k, tuple) else k
+            if isinstance(prefix, str) and prefix.startswith(("e.", "p.")):
+                src = other.st.get(k)
+                if src is not None and src.shape == dst.shape:
+                    dst.copy_(src)
+        self.frames = other.frames
 
     @torch.inference_mode()
     def process(self, block: torch.Tensor) -> torch.Tensor:
@@ -475,19 +574,52 @@ class FastStreamingVC:
             raw_tn = tone(buf[None, buf.shape[0] - (D + m + 1) * FRAME : buf.shape[0] - D * FRAME])[0, 1:]
             tn, self.tone_state = normalize_tone(raw_tn, loud, raw_f0, self.tone_state)
         use_v = self.dec.expressive
+        use_ap = bool(self.dec.source.aper)
+        ap = None
+        if use_ap:
+            ap = aperiodicity(
+                buf[None, buf.shape[0] - (D + m) * FRAME - AP_LOOKBACK : buf.shape[0] - D * FRAME],
+                raw_f0[None],
+                causal=True,
+                edges=self.dec.source.breath_edges,
+                prepadded=True,
+            )[0]
         h = self._features(content, f0, loud, g, tn, v if use_v else None)
         if self.late:  # the excitation of a frame needs the next frame's pitch, so the waveform runs one frame behind
             f0_e = torch.cat([self.pending_f0, f0[:-1]])
             v_e = torch.cat([self.pending_v, v[:-1]]) if use_v else None
-            exc = self.dec.source(f0_e[None], self.phase, nxt=f0[-1:], voicing=None if v_e is None else v_e[None], nxt_v=v[-1:] if use_v else None)
+            ap_e = torch.cat([self.pending_ap, ap[:-1]], dim=0) if use_ap else None
+            exc = self.dec.source(
+                f0_e[None],
+                self.phase,
+                nxt=f0[-1:],
+                voicing=None if v_e is None else v_e[None],
+                nxt_v=v[-1:] if use_v else None,
+                ap=None if ap_e is None else ap_e[None],
+                nxt_ap=ap[-1:] if use_ap else None,
+                breath_state=self.breath_white if use_ap else None,
+            )
             self.pending_f0, self.pending_v = f0[-1:], v[-1:]
+            if use_ap:
+                self.pending_ap = ap[-1:]
             held = h.new_zeros(1, h.shape[1], 1) if self.pending_h is None else self.pending_h
             h, self.pending_h = torch.cat([held, h[..., :-1]], dim=-1), h[..., -1:]
             reg = self.dec.register_vec(f0_e[None], None if v_e is None else v_e[None]) if self.dec.reg_cond is not None else None
         else:
-            exc = self.dec.source(f0[None], self.phase, self.prev_f0, voicing=v[None] if use_v else None)
+            exc = self.dec.source(
+                f0[None],
+                self.phase,
+                self.prev_f0,
+                voicing=v[None] if use_v else None,
+                ap=None if ap is None else ap[None],
+                prev_ap=self.prev_ap if use_ap else None,
+                breath_state=self.breath_white if use_ap else None,
+            )
             reg = self.dec.register_vec(f0[None], v[None] if use_v else None) if self.dec.reg_cond is not None else None
         self.phase, self.prev_f0 = self.dec.source.last_phase, f0[-1:]
+        if use_ap:
+            self.prev_ap = ap[-1:]
+            self.breath_white = self.dec.source.last_breath_white
         return self._generate(h, g, exc, reg=reg)
 
 

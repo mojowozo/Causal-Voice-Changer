@@ -150,6 +150,179 @@ class CudaGraphTest(unittest.TestCase):
             ye = torch.cat([eager_vc.process(x[i : i + 960]) for i in range(0, len(x), 960)]).cpu()
             self.assertLess(float((yg - ye).pow(2).mean().sqrt()), 1e-3 * float(ye.pow(2).mean().sqrt()))
 
+    def test_v5_antialiased_snake_decoder_matches_whole_and_records_10ms_cuda_graph(self):
+        self.check_v5_stream(aa_filter=1)
+
+    def test_aa_filter_3_decoder_matches_whole_and_records_10ms_cuda_graph(self):
+        # Stronger filters, and the pre-upsampler Snakes oversampled: their filter history crosses blocks.
+        self.check_v5_stream(aa_filter=3)
+
+    def test_aper_fine_crossfade_decoder_streams_and_records_10ms_cuda_graph(self):
+        # dec-s15 config: aa_filter=3 + 5 fine breath bands + causal_aper + crossfade wired into 10 ms CUDA graphs.
+        import tempfile
+        from pathlib import Path
+        from causalvc.decoder.model import Decoder, Source
+        from causalvc.fast import FastStreamingVC
+        from causalvc.stream import StreamingVC
+        from causalvc.voice import load
+
+        device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")
+        spec = load(find_voice().model_path)
+        cfg = {
+            "channels": 128,
+            "dim": 96,
+            "rates": [12, 10, 2, 2],
+            "antialias": True,
+            "snake": True,
+            "bands": 4,
+            "glide": "next",
+            "lookahead": 0,
+            "mel_cond": False,
+            "exc": "bandlimit",
+            "smooth_in": "p",
+            "content_hz": 100,
+            "tone": 2,
+            "expressive": True,
+            "aa_filter": 3,
+            "aper": 5,
+            "breath_edges": list(Source.FINE_BREATH_EDGES),
+            "causal_aper": True,
+            "crossfade": True,
+        }
+        torch.manual_seed(9)
+        dec = Decoder(1, **cfg).eval()
+        with torch.no_grad():
+            dec.tone.weight.normal_(0.0, 0.02)
+            dec.f0_proj.weight.normal_(0.0, 0.02)
+            dec.reg_cond.weight.normal_(0.0, 0.02)
+            dec.source.depth.fill_(0.7)
+            for mod in dec.modules():
+                if hasattr(mod, "a") and hasattr(mod, "b"):
+                    mod.a.uniform_(-0.3, 0.3)
+                    mod.b.uniform_(-0.3, 0.3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dec_path = str(Path(tmp) / "decoder.pt")
+            torch.save({"generator": dec.state_dict(), "cfg": cfg, "speakers": [spec["speaker"]], "step": 1}, dec_path)
+
+            x = speech_like(1.0).to(device)
+            graph_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), None, graphs=True)
+            graph_vc.set_voice(spec["speaker"], semitones=4.0)
+            torch.manual_seed(1)
+            graph_vc.prepare(480)
+            self.assertIsNotNone(graph_vc.graph)
+            self.assertIsNotNone(graph_vc.breath_white)
+
+            ref_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), None, graphs=False)
+            ref_vc.set_voice(spec["speaker"], semitones=4.0)
+            torch.manual_seed(1)
+            for _ in range(13):
+                ref_vc.process(torch.zeros(32 * 480, device=device))
+            for _ in range(3):
+                ref_vc.process(torch.zeros(480, device=device))
+            torch.manual_seed(0)
+            yg = torch.cat([graph_vc.process(x[i : i + 480]) for i in range(0, len(x), 480)]).cpu()
+            torch.manual_seed(0)
+            ye = torch.cat([ref_vc.process(x[i : i + 480]) for i in range(0, len(x), 480)]).cpu()
+            self.assertLess(float((yg - ye).abs().max().item()), 1e-4)
+
+            # StreamingVC also runs cleanly with aper + crossfade + causal FIR breath at 10 ms blocks.
+            slow_vc = StreamingVC(dec_path, spec["pitch"], str(device), None)
+            slow_vc.set_voice(spec["speaker"], semitones=4.0)
+            ys = torch.cat([slow_vc.process(x[i : i + 480]) for i in range(0, 12 * 480, 480)]).cpu()
+            self.assertEqual(ys.shape, (12 * 480,))
+            self.assertTrue(torch.isfinite(ys).all())
+
+    def check_v5_stream(self, aa_filter):
+        import tempfile
+        from pathlib import Path
+        from causalvc.decoder.model import Decoder
+        from causalvc.fast import FastStreamingVC
+        from causalvc.voice import load
+
+        device = torch.device(f"cuda:{torch.cuda.device_count() - 1}")
+        spec = load(find_voice().model_path)
+        cfg = {
+            "channels": 128,
+            "dim": 96,
+            "rates": [12, 10, 2, 2],
+            "antialias": True,
+            "snake": True,
+            "bands": 4,
+            "glide": "next",
+            "lookahead": 0,
+            "mel_cond": False,
+            "exc": "bandlimit",
+            "smooth_in": "p",
+            "content_hz": 100,
+            "tone": 2,
+            "expressive": True,
+            "aa_filter": aa_filter,
+        }
+        torch.manual_seed(7)
+        dec = Decoder(1, **cfg).eval()
+        with torch.no_grad():
+            dec.tone.weight.normal_(0.0, 0.02)
+            dec.f0_proj.weight.normal_(0.0, 0.02)
+            dec.reg_cond.weight.normal_(0.0, 0.02)
+            for mod in dec.modules():
+                if hasattr(mod, "a") and hasattr(mod, "b"):
+                    mod.a.uniform_(-0.3, 0.3)
+                    mod.b.uniform_(-0.3, 0.3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dec_path = str(Path(tmp) / "decoder.pt")
+            torch.save({"generator": dec.state_dict(), "cfg": cfg, "speakers": [spec["speaker"]], "step": 1}, dec_path)
+
+            # 1) Whole-sequence Decoder.generate vs block-by-block FastStreamingVC._generate at 10 ms (480 samples).
+            eager_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), None, graphs=False)
+            eager_vc.set_voice(spec["speaker"], semitones=4.0)
+            T = 16
+            h = torch.randn(1, cfg["dim"], T, device=device)
+            g = eager_vc.dec.speaker(eager_vc.spk)
+            f0 = torch.full((1, T), 220.0, device=device)
+            v = torch.full((1, T), 0.9, device=device)
+            reg = eager_vc.dec.register_vec(f0, v)
+            eager_vc.dec.source.noise = 0.0
+            exc = eager_vc.dec.source(f0, voicing=v)
+            # TF32 convolutions round differently for different lengths (~1e-4); in full float32 the
+            # blocks must give exactly the whole sequence, so any lost filter history shows.
+            tf32 = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+            torch.backends.cudnn.allow_tf32 = torch.backends.cuda.matmul.allow_tf32 = False
+            try:
+                with torch.no_grad():
+                    y_whole = eager_vc.dec.generate(h, g, exc, reg=reg)[0, 0]
+                    eager_vc.reset()
+                    y_blocks = torch.cat(
+                        [
+                            eager_vc._generate(h[..., t : t + 2], g, exc[..., t * 480 : (t + 2) * 480], reg=reg[:, t : t + 2])
+                            for t in range(0, T, 2)
+                        ]
+                    )
+            finally:
+                torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = tf32
+            self.assertLess(float((y_whole - y_blocks).abs().max().item()), 1e-6)
+
+            # 2) Full 10 ms (480-sample) CUDA Graph recording and replay parity.
+            x = speech_like(1.0).to(device)
+            graph_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), None, graphs=True)
+            graph_vc.set_voice(spec["speaker"], semitones=4.0)
+            torch.manual_seed(1)
+            graph_vc.prepare(480)
+            self.assertIsNotNone(graph_vc.graph)
+            ref_vc = FastStreamingVC(dec_path, spec["pitch"], str(device), None, graphs=False)
+            ref_vc.set_voice(spec["speaker"], semitones=4.0)
+            torch.manual_seed(1)
+            for _ in range(13):
+                ref_vc.process(torch.zeros(32 * 480, device=device))
+            for _ in range(3):
+                ref_vc.process(torch.zeros(480, device=device))
+            torch.manual_seed(0)
+            yg = torch.cat([graph_vc.process(x[i : i + 480]) for i in range(0, len(x), 480)]).cpu()
+            torch.manual_seed(0)
+            ye = torch.cat([ref_vc.process(x[i : i + 480]) for i in range(0, len(x), 480)]).cpu()
+            self.assertLess(float((yg - ye).abs().max().item()), 1e-4)
+
 
 if __name__ == "__main__":
     unittest.main()

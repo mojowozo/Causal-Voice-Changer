@@ -120,9 +120,14 @@ class CausalVC:
         return getattr(self.vc, "graph", None) is not None
 
     def warm(self, block_frame, record=True):
-        """Run a few silent blocks of this length (and, with cuda_graphs, record one), then start afresh.
-        With ``record`` False the recording is left to ``record()`` (a voice warmed while another
-        voice is converting: recording needs the GPU to itself)."""
+        """Run a few silent blocks of this length (and, with cuda_graphs, prewarm & optionally record one).
+        With ``record`` False, prewarms every history buffer outside the audio lock so ``record()`` only
+        needs a ~5 ms graph capture."""
+        if hasattr(self.vc, "prewarm"):
+            self.vc.prewarm(block_frame)
+            if record:
+                self.vc.capture(block_frame)
+            return
         for _ in range(4):
             self.vc.process(torch.zeros(block_frame, device=self.vc.device))
         self.vc.reset()
@@ -131,5 +136,12 @@ class CausalVC:
 
     def record(self, block_frame):
         """Get ready for blocks of this length; with cuda_graphs, record one as a CUDA graph."""
-        if hasattr(self.vc, "prepare"):
+        if hasattr(self.vc, "capture"):
+            self.vc.capture(block_frame)
+        elif hasattr(self.vc, "prepare"):
             self.vc.prepare(block_frame)
+
+    def copy_frontend_state(self, other):
+        """Transfer live encoder/pitch/tone/input history from ``other`` during a hot-swap."""
+        if hasattr(self.vc, "copy_frontend_state") and hasattr(other, "vc"):
+            self.vc.copy_frontend_state(other.vc)

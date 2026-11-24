@@ -14,7 +14,18 @@ import math
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, PS_LOOKBACK, SR, Decoder, loudness, pitch_sync_loudness, tone
+from causalvc.decoder.model import (
+    AP_LOOKBACK,
+    BREATH_TAPS,
+    FRAME,
+    PS_LOOKBACK,
+    SR,
+    Decoder,
+    aperiodicity,
+    loudness,
+    pitch_sync_loudness,
+    tone,
+)
 from causalvc.infer import load_encoder
 from causalvc.voice import encoder_path
 from causalvc.pitch_causal import load_pitch
@@ -123,7 +134,7 @@ class StreamingVC:
         else:
             assert self.enc.lookahead * 2 <= DELAY - 1 and self.pitch.lookahead + 4 <= DELAY + 1
         self.n = int(window * SR)
-        assert self.n >= max(self.base_delay * FRAME + PS_LOOKBACK, (self.base_delay + 1) * FRAME) + FRAME
+        assert self.n >= max(self.base_delay * FRAME + PS_LOOKBACK, self.base_delay * FRAME + AP_LOOKBACK, (self.base_delay + 1) * FRAME) + FRAME
         self.ratio, self.offset, self.ceiling, self.keep, self.floor, self.floor_keep, self.spk = 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, None
         self.index, self.rate = None, 0.0  # the voice's index (causalvc.index) and its strength
         self.reset()
@@ -168,6 +179,12 @@ class StreamingVC:
         self.tone_state = torch.tensor(REF_TONE, device=d)
         self.pending_f0 = torch.zeros(1, device=d)  # newest pitch frame, whose excitation waits for the next one
         self.pending_v = torch.zeros(1, device=d)
+        if self.dec.source.aper:
+            self.prev_ap = torch.ones(1, self.dec.source.aper, device=d)
+            self.pending_ap = torch.ones(1, self.dec.source.aper, device=d)
+            self.breath_white = torch.zeros(1, self.dec.source.aper, BREATH_TAPS - 1, device=d)
+        else:
+            self.prev_ap = self.pending_ap = self.breath_white = None
         self.level, self.level_pow, self.level_n, self.gain = -23.0, 0.0, 0, 1.0  # running speech level (dB, power), frames seen, gain
 
     LEVEL_BAND = 5.0  # dB above the target that still counts as an ordinary level and is left alone
@@ -250,14 +267,49 @@ class StreamingVC:
         loud = pitch_sync_loudness(self.buf[None, start_s:end_s], raw_f0[None], prepadded=True)[0]
 
         use_v = self.dec.expressive
+        use_ap = bool(self.dec.source.aper)
+        ap = None
+        if use_ap:
+            start_ap = int(frames[0].item()) * FRAME - AP_LOOKBACK
+            assert start_ap >= 0, "StreamingVC window is too short for aperiodicity lookback"
+            ap = aperiodicity(
+                self.buf[None, start_ap:end_s],
+                raw_f0[None],
+                causal=True,
+                edges=self.dec.source.breath_edges,
+                prepadded=True,
+            )[0]
         if self.late:  # excitation for the frame before each new one, now that its following pitch is known
             f0_e = torch.cat([self.pending_f0, f0[:-1]])
             v_e = torch.cat([self.pending_v, v[:-1]]) if use_v else None
-            exc = self.dec.source(f0_e[None], self.phase, nxt=f0[-1:], voicing=None if v_e is None else v_e[None], nxt_v=v[-1:] if use_v else None)[0]
+            ap_e = torch.cat([self.pending_ap, ap[:-1]], dim=0) if use_ap else None
+            exc = self.dec.source(
+                f0_e[None],
+                self.phase,
+                nxt=f0[-1:],
+                voicing=None if v_e is None else v_e[None],
+                nxt_v=v[-1:] if use_v else None,
+                ap=None if ap_e is None else ap_e[None],
+                nxt_ap=ap[-1:] if use_ap else None,
+                breath_state=self.breath_white if use_ap else None,
+            )[0]
             self.pending_f0, self.pending_v = f0[-1:], v[-1:]
+            if use_ap:
+                self.pending_ap = ap[-1:]
         else:
-            exc = self.dec.source(f0[None], self.phase, self.prev_f0, voicing=v[None] if use_v else None)[0]
+            exc = self.dec.source(
+                f0[None],
+                self.phase,
+                self.prev_f0,
+                voicing=v[None] if use_v else None,
+                ap=None if ap is None else ap[None],
+                prev_ap=self.prev_ap if use_ap else None,
+                breath_state=self.breath_white if use_ap else None,
+            )[0]
         self.phase, self.prev_f0 = self.dec.source.last_phase, f0[-1:]
+        if use_ap:
+            self.prev_ap = ap[-1:]
+            self.breath_white = self.dec.source.last_breath_white
         self.content = torch.cat([self.content[m:], content])
         self.f0 = torch.cat([self.f0[m:], f0])
         self.voicing = torch.cat([self.voicing[m:], v])

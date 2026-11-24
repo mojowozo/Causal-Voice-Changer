@@ -151,7 +151,7 @@ class SpecLoss(nn.Module):
     stay narrower than the harmonic spacing at every frequency, so noise between
     high harmonics is penalised directly."""
 
-    def __init__(self, ffts: tuple[int, ...] = (1024, 2048, 4096), sr: int = 48000, f_max: float | None = None):
+    def __init__(self, ffts: tuple[int, ...] = (512, 1024, 2048, 4096), sr: int = 48000, f_max: float | None = None):
         super().__init__()
         self.ffts, self.sr, self.f_max = ffts, sr, f_max
         for n in ffts:

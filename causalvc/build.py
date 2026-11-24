@@ -28,7 +28,12 @@ if sys.platform != "win32":  # PyTorch supports this only on Linux
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BASES = ("runs/models/dec-s8-100hz-v4", "runs/models/dec-s7-100hz", "runs/models/dec-s6-100hz", "runs/models/dec-s6")
+DEFAULT_BASES = (
+    "runs/models/dec-s8-100hz-v4",
+    "runs/models/dec-s7-100hz",
+    "runs/models/dec-s6-100hz",
+    "runs/models/dec-s6",
+)
 CUSTOM = ROOT / "custom-base"
 
 
@@ -170,10 +175,17 @@ def main() -> None:
     argv += ["--resume"] if done else ["--init", str(base_dir / "last.pt")]
     argv += ["--rates", *(str(r) for r in base["rates"])] if base.get("rates") else []
     argv += ["--antialias"] if base.get("antialias") else []
+    argv += ["--snake"] if base.get("snake") else []
+    argv += ["--aa-filter", str(base["aa_filter"])] if base.get("aa_filter", 1) != 1 else []
     argv += ["--glide-next"] if base.get("glide_next") else ["--glide"] if base.get("glide") else []
     argv += ["--smooth-in", smooth_in] if smooth_in else []
     argv += ["--tone", str(base["tone"])] if base.get("tone") else []
     argv += ["--expressive"] if base.get("expressive") else []
+    argv += ["--aper"] if base.get("aper") else []
+    argv += ["--breath-from", str(base["breath_from"])] if base.get("aper") and base.get("breath_from", 4000.0) != 4000.0 else []
+    argv += ["--breath-bands", base["breath_bands"]] if base.get("aper") and base.get("breath_bands", "coarse") != "coarse" else []
+    argv += ["--breath-cap", str(base["breath_cap"])] if base.get("aper") and base.get("breath_cap") else []
+    argv += ["--crossfade"] if base.get("aper") and base.get("crossfade") else []
     base_reg = (25.0 if base.get("expressive") else 0.0) if a.base_reg is None else a.base_reg
     argv += ["--base-reg", str(base_reg)] if base_reg > 0 else []
     argv += ["--bf16"] if a.bf16 else []

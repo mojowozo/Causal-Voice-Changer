@@ -103,8 +103,8 @@ BACKLOG_MARGIN_SECONDS = 0.025
 BACKLOG_SILENCE_PEAK = 1e-3
 #: Linear ramp applied to the first kept block after dropping non-zero silence (2 ms at 48 kHz).
 BACKLOG_RAMP_SAMPLES = 96
-#: Smooth cosine crossfade applied on the first block after hot-swapping checkpoints (5 ms at 48 kHz).
-SWAP_FADE_SAMPLES = 240
+#: Smooth cosine crossfade applied on the first block after hot-swapping voices (10 ms at 48 kHz).
+SWAP_FADE_SAMPLES = 480
 #: Gentle subsonic/plosive high-pass cutoff for VC input (keeps 32 Hz vocal fry harmonics intact).
 INPUT_HPF_HZ = 45.0
 #: How often a growing underrun count is logged.
@@ -1095,9 +1095,17 @@ class RealtimeEngine:
             with self.voice_lock:
                 voice.record(block_frame)
                 old, self.voice = self.voice, voice
+                if hasattr(voice, "copy_frontend_state"):
+                    voice.copy_frontend_state(old)
+                old_gain_ratio = 1.0
+                if voice_settings is not None:
+                    old_out_db = self.settings.output_gain_db
+                    new_out_db = voice_settings.get("output_gain_db", old_out_db)
+                    old_gain_ratio = float(10.0 ** ((old_out_db - new_out_db) / 20.0))
                 self.settings.model_name = model.name
                 if voice_settings is not None:
                     self.settings.__dict__.update(voice_settings)
+                self._swap_old_voice = (old, old_gain_ratio)
                 self._swap_fade_pending = True
         except Exception as error:
             raise EngineError(
@@ -1107,7 +1115,6 @@ class RealtimeEngine:
             self.delay_time += voice.delay_seconds - old.delay_seconds
         if not checkpoint and getattr(self, "loudness", None) is not None:
             self.loudness.reset()
-        del old
         if checkpoint:
             printt("Switched to checkpoint %s", model.name)
             self.status("checkpoint_switched", name=model.name)
@@ -1132,6 +1139,7 @@ class RealtimeEngine:
         self.noise_gate = NoiseGate(self.samplerate)
         self.output_limiter = PeakLimiter(self.samplerate)
         self.monitor_limiter = PeakLimiter(self.samplerate)
+        self._swap_old_voice = None
         self._swap_fade_pending = False
         self._last_vc_sample = 0.0
         # Input denoisers are built on demand for this stream (refresh_denoiser).
@@ -1574,7 +1582,26 @@ class RealtimeEngine:
         denoised = self.ingest_block(indata)
         block = (self.input_wav_denoise if denoised else self.input_wav)[-self.block_frame :]
         # Every block is converted, silence included: the model's own state has to keep running.
-        output = self.voice.process(block) if self.function == "vc" else block.clone()
+        if self.function == "vc":
+            output = self.voice.process(block)
+            swap_old = self.__dict__.pop("_swap_old_voice", None)
+            if swap_old is not None:
+                old_voice, old_gain_ratio = swap_old
+                try:
+                    old_out = old_voice.process(block)
+                    n = min(SWAP_FADE_SAMPLES, output.shape[0], old_out.shape[0])
+                    if n > 0:
+                        t = torch.linspace(0.0, torch.pi, n, device=output.device, dtype=output.dtype)
+                        w = 0.5 * (1.0 - torch.cos(t))
+                        output = output.clone()
+                        output[:n] = (old_out[:n].to(output.device, output.dtype) * old_gain_ratio) * (1.0 - w) + output[:n] * w
+                        self._swap_fade_pending = False
+                except Exception:
+                    pass
+                del old_voice
+        else:
+            self._swap_old_voice = None
+            output = block.clone()
         return self.finish_block(output, start_time)
 
     # ------------------------------------------------------------------

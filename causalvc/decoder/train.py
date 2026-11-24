@@ -19,10 +19,11 @@ from pathlib import Path
 
 import soundfile as sf
 import torch
+import torch.nn.functional as F
 import torchaudio
 
 from causalvc.decoder.disc import Discriminators, EnergyLoss, MelLoss, SpecLoss, d_loss, g_loss
-from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder
+from causalvc.decoder.model import FRAME, SR, CausalMel, Decoder, Source, aperiodicity
 from causalvc.augment import add_noise, add_silent_transients, colour
 from causalvc.decoder.model import tone as tone_of
 from causalvc.infer import CausalVC, extract_all, load_encoder
@@ -289,6 +290,100 @@ def _quiet_worker(_: int) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl-C is handled by the main process, which saves first
 
 
+#: Bands of the breath penalty (--aper); --breath-from picks the lowest.
+BREATH_BANDS = ((1000.0, 2000.0), (2000.0, 4000.0), (4000.0, 8000.0), (8000.0, 16000.0))
+
+
+def breath_edges(from_hz: float) -> tuple[float, ...]:
+    """Band edges of the breath penalty from `from_hz` up (one of BREATH_BANDS' lower edges)."""
+    bands = [b for b in BREATH_BANDS if b[0] >= from_hz]
+    assert bands and bands[0][0] == from_hz, f"--breath-from must be one of {[b[0] for b in BREATH_BANDS]}"
+    return tuple(b[0] for b in bands) + (bands[-1][1],)
+
+
+def breath_penalty(fake: torch.Tensor, again: torch.Tensor, ap_t: torch.Tensor, weight: torch.Tensor,
+                   edges: tuple[float, ...]) -> torch.Tensor:
+    """How much more regular than the target the output is, per band: fake and again [B, T * FRAME] are the
+    same frames rendered with fresh noise, ap_t [B, T, bands] the target's own aperiodicity in those bands
+    (`aperiodicity(..., edges=edges)`), weight [B, T] the frames that count. Two draws of a signal whose
+    noise share is ap correlate by about 1 - ap, so only per-frame correlation above that is penalised
+    (squared): harmonics may stay, and output noisier than the target costs nothing. Summed over bands."""
+    n = fake.shape[-1]
+    fr = torch.fft.rfftfreq(n, 1.0 / SR, device=fake.device)
+    spec_a, spec_b = torch.fft.rfft(fake.float(), dim=-1), torch.fft.rfft(again.float(), dim=-1)
+    total = fake.new_zeros((), dtype=torch.float32)
+    for i, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
+        keep = ((fr >= lo) & (fr < hi)).float()
+        a, b = (torch.fft.irfft(s * keep, n=n, dim=-1).unflatten(1, (-1, FRAME)) for s in (spec_a, spec_b))
+        a, b = a - a.mean(-1, keepdim=True), b - b.mean(-1, keepdim=True)
+        corr = (a * b).sum(-1) / (a.norm(dim=-1) * b.norm(dim=-1) + 1e-5)
+        excess = torch.relu(corr - (1.0 - ap_t[..., i]))
+        total = total + (excess.pow(2) * weight).sum() / weight.sum().clamp_min(1.0)
+    return total
+
+
+def breath_cap(fake: torch.Tensor, again: torch.Tensor, real: torch.Tensor, f0: torch.Tensor, weight: torch.Tensor,
+               edges: tuple[float, ...], margin: float = 0.05, span: int = 5) -> torch.Tensor:
+    """How much noisier than the target the output is, per band (the other side of `breath_penalty`, which
+    lets output be as noisy as it likes: the 4-8 kHz band overshot the target, 0.8 against 0.6). fake, again
+    and real [B, T * FRAME]: two draws of the output and the target over the same frames, f0 [B, T] theirs,
+    weight [B, T] the frames that count. The output's aperiodicity (both draws averaged) and the target's are
+    each averaged over `span` frames, weighted, so the per-frame estimates settle while a 50 ms consonant
+    still stands apart from its vowel; only the excess over `margin` is penalised (squared). Summed over bands."""
+    ap_o = 0.5 * (aperiodicity(fake, f0, edges=edges, clamp=False) + aperiodicity(again, f0, edges=edges, clamp=False))
+    with torch.no_grad():
+        ap_t = aperiodicity(real, f0, edges=edges)
+    t = min(ap_o.shape[1], ap_t.shape[1], weight.shape[1])
+    w = weight[:, :t, None].float()
+
+    def smooth(x: torch.Tensor) -> torch.Tensor:
+        num = F.avg_pool1d((x[:, :t] * w).transpose(1, 2), span, 1, span // 2, count_include_pad=False)
+        den = F.avg_pool1d(w.transpose(1, 2), span, 1, span // 2, count_include_pad=False)
+        return (num / den.clamp_min(1e-6)).transpose(1, 2)
+
+    excess = torch.relu(smooth(ap_o) - smooth(ap_t) - margin)
+    return (excess.pow(2) * w).sum() / w.sum().clamp_min(1.0)
+
+
+def breath_inputs(old: torch.Tensor, shape: torch.Size, base: int, old_edges: tuple[float, ...],
+                  new_edges: tuple[float, ...]) -> torch.Tensor:
+    """An excitation conv's weight [out, in, k] carried over to other breath bands. The first `base` inputs
+    (harmonics, voicing, harmonic bands) are copied. Each new band inside an old one takes that band's
+    fixed-level weight, scaled by the square root of its share of the old width (each band's noise has unit
+    variance, so together the new bands hand on the same noise level); a band that matches an old one exactly
+    also keeps its aperiodicity-scaled weight. The rest start at zero: 0-1 kHz loses its fixed breath noise,
+    and the 1-2 and 2-4 kHz breathiness, which the old input could not see, starts silent."""
+    w = old.new_zeros(shape)
+    w[:, :base] = old[:, :base]
+    n_old, n_new = len(old_edges) - 1, len(new_edges) - 1
+    for j, (lo, hi) in enumerate(zip(new_edges[:-1], new_edges[1:])):
+        for i, (a, b) in enumerate(zip(old_edges[:-1], old_edges[1:])):
+            if a <= lo and hi <= b:
+                w[:, base + j] = old[:, base + i] * math.sqrt((hi - lo) / (b - a))
+                if (a, b) == (lo, hi):
+                    w[:, base + n_new + j] = old[:, base + n_old + i]
+                break
+    return w
+
+
+def own_key(key: str, own: dict) -> str:
+    """A base's tensor name as this decoder calls it: a plain pre-upsampler Snake (pre_acts.N.a) that
+    --aa-filter 3 wraps in its oversampling filters is pre_acts.N.act.a."""
+    if key not in own and key.startswith("pre_acts."):
+        head, _, leaf = key.rpartition(".")
+        if f"{head}.act.{leaf}" in own:
+            return f"{head}.act.{leaf}"
+    return key
+
+
+def vocoder_arch_changed(old_cfg: dict, new_cfg: dict) -> bool:
+    """Whether the waveform upsampler/activation backbone changed (e.g. LeakyReLU -> SnakeBeta or stage rates),
+    in which case --init transfers the trained speaker/conditioning front-end while starting the vocoder + D clean."""
+    old_rates = tuple(old_cfg.get("rates", (10, 6, 4, 2)))
+    new_rates = tuple(new_cfg.get("rates", (10, 6, 4, 2)))
+    return bool(old_cfg.get("snake", False)) != bool(new_cfg.get("snake", False)) or old_rates != new_rates
+
+
 def main(on_save=None) -> None:
     """on_save(step, path) is called after each checkpoint of a voice build with that checkpoint's own decoder file."""
     ap = argparse.ArgumentParser()
@@ -308,8 +403,9 @@ def main(on_save=None) -> None:
     ap.add_argument("--save-every", type=int, default=5000)
     ap.add_argument("--channels", type=int, default=384)
     ap.add_argument("--dim", type=int, default=256)
-    ap.add_argument("--rates", type=int, nargs="+", default=[10, 6, 4, 2], help="upsampling factors multiplying to 480 (e.g. 20 4 3 2)")
+    ap.add_argument("--rates", type=int, nargs="+", default=[10, 6, 4, 2], help="upsampling factors multiplying to 480 (e.g. 12 10 2 2)")
     ap.add_argument("--antialias", action="store_true", help="causal low-pass anti-imaging on upsamplers and 2x oversampled activations")
+    ap.add_argument("--snake", action="store_true", help="periodic C^inf SnakeBeta activations instead of LeakyReLU")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--init", help="another run's last.pt to start from (fine-tuning); the step count restarts")
     ap.add_argument("--disc", type=int, default=1, help="1: magnitude spectrogram discriminators; 2: banded complex ones; 3: +longer 48 kHz periods")
@@ -341,9 +437,28 @@ def main(on_save=None) -> None:
                     "the value is the spread (dB) of a random per-crop offset that hides the source's own overall tone")
     ap.add_argument("--expressive", action="store_true", help="continuous voicing confidence (0..1), 32-1400 Hz log-F0 register conditioning, and silence/click floor training")
     ap.add_argument("--silence-share", type=float, default=-1.0, help="share of crops that are digital silence or fade-to-silence (default: 0.06 with --expressive, else 0)")
+    ap.add_argument("--aa-filter", type=int, default=1, help="2: anti-aliasing filters with 50-70 dB of attenuation (default 1: ~35 dB); "
+                    "3: also oversample the activation before each audio-rate upsampler. Fixed filters only, so a "
+                    "checkpoint trained with 1 or 2 can continue with a higher one")
+    ap.add_argument("--aper", action="store_true", help="experimental: breath-noise channels per band, as noisy as the input is there "
+                    "(fixes metallic highs); from a base without them, the new inputs start at zero")
+    ap.add_argument("--breath-from", type=float, default=4000.0, help="with --aper: the lowest band (Hz: 1000, 2000, "
+                    "4000 or 8000) where vowels may be no more regular than the target; below 4000 it also works on the "
+                    "buzz in 1-4 kHz")
+    ap.add_argument("--breath-bands", choices=("coarse", "fine"), default="coarse", help="with --aper: the breath channels' "
+                    "bands. coarse: 0-4, 4-8, 8-16, 16-24 kHz; fine: 1-2, 2-4, 4-8, 8-16, 16-24 kHz, which tells voiced "
+                    "consonants (v, z, m) from vowels. From a coarse checkpoint, --init carries the breath weights over")
+    ap.add_argument("--crossfade", action="store_true", help="with --aper: where the input is breathy, also turn the "
+                    "harmonics down in that band (by a learned depth that starts at 0)")
+    ap.add_argument("--breath-cap", type=float, default=0.0, help="with --aper and --decorr: weight of a loss that keeps the "
+                    "output no noisier than the target in the --breath-from bands")
     ap.add_argument("--base-reg", type=float, default=0.0, help="L2-SP weight anchoring shared layers toward --init during single-voice builds so laughs, whispers and extreme registers do not drift")
     ap.add_argument("--voice", nargs="+", help="NAME=folder-or-file: new voices added to the base's speaker table (use with --init and --only)")
     args = ap.parse_args()
+    if args.breath_cap and not (args.aper and args.decorr):
+        ap.error("--breath-cap needs --aper and --decorr")
+    if args.crossfade and not args.aper:
+        ap.error("--crossfade needs --aper")
 
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
@@ -390,9 +505,15 @@ def main(on_save=None) -> None:
         "smooth_in": args.smooth_in,
         **(({"rates": list(args.rates)}) if list(args.rates) != [10, 6, 4, 2] else {}),
         **(({"antialias": True}) if args.antialias else {}),
+        **(({"snake": True}) if args.snake else {}),
         **(({"content_hz": 100}) if content_hz == 100 else {}),
         **(({"tone": 2}) if args.tone else {}),
         **(({"expressive": True}) if args.expressive else {}),
+        **(({"aper": 4, "causal_aper": True}) if args.aper and args.breath_bands == "coarse" else {}),
+        **(({"aper": len(Source.FINE_BREATH_EDGES) - 1, "breath_edges": list(Source.FINE_BREATH_EDGES), "causal_aper": True})
+           if args.aper and args.breath_bands == "fine" else {}),
+        **(({"crossfade": True}) if args.aper and args.crossfade else {}),
+        **(({"aa_filter": args.aa_filter}) if args.aa_filter != 1 else {}),
     }
     gen, disc, mel_loss = Decoder(len(spk), **cfg).to(dev), Discriminators(args.disc).to(dev), MelLoss(f_max=f_max).to(dev)
     print(f"generator {sum(p.numel() for p in gen.parameters()) / 1e6:.1f}M params", flush=True)
@@ -408,13 +529,28 @@ def main(on_save=None) -> None:
         print(f"resumed at step {step}", flush=True)
     elif args.init:
         ck = torch.load(args.init, map_location=dev)
+        arch_changed = vocoder_arch_changed(ck.get("cfg", {}), cfg)
         own = gen.state_dict()  # excitation convs may have gained input channels: new ones start at zero
         loaded_g = 0
+        old_cfg = ck.get("cfg", {})
+        old_breath = (tuple(old_cfg.get("breath_edges") or Source.EDGES)) if old_cfg.get("aper") else None
+        new_breath = gen.source.breath_edges if gen.source.aper else None
+        rebreath = old_breath is not None and new_breath is not None and old_breath != new_breath
+        if rebreath:
+            print(f"breath bands {old_breath} -> {new_breath}: carrying the excitation weights over", flush=True)
         for a, b in ck["generator"].items():
+            a = own_key(a, own)
             if a not in own:
                 continue
+            if arch_changed and a.startswith(("ups.", "src.", "res.", "post.", "pre_acts.", "post_act.")):
+                continue
+            if rebreath and a.startswith("src.") and own[a].dim() == 3:
+                own[a].copy_(breath_inputs(b, own[a].shape, gen.source.n_in - 2 * gen.source.aper, old_breath, new_breath))
+                loaded_g += 1
+                continue
             if own[a].shape != b.shape:  # new inputs (speakers, future taps) start at zero; changed upsamplers/src keep fresh init
-                if a.startswith(("ups.", "src.")):
+                grew_inputs = a.startswith("src.") and own[a].dim() == 3 and own[a].shape[0::2] == b.shape[0::2] and own[a].shape[1] > b.shape[1]
+                if a.startswith(("ups.", "src.")) and not grew_inputs:  # (new breath channels go after the old inputs)
                     continue
                 own[a].zero_()
                 part = tuple(slice(0, min(m, n)) for m, n in zip(own[a].shape, b.shape))  # the base may also have more (speakers)
@@ -424,11 +560,14 @@ def main(on_save=None) -> None:
                 own[a].copy_(b)
                 loaded_g += 1
         gen.load_state_dict(own)
-        print(f"generator: {loaded_g} of {len(own)} tensors loaded", flush=True)
-        own = disc.state_dict()  # keep the discriminators whose shape is unchanged
-        keep = {a: b for a, b in ck["discriminator"].items() if a in own and own[a].shape == b.shape}
-        disc.load_state_dict(keep, strict=False)
-        print(f"discriminator: {len(keep)} of {len(own)} tensors loaded", flush=True)
+        print(f"generator: {loaded_g} of {len(own)} tensors loaded (vocoder_reset={arch_changed})", flush=True)
+        if not arch_changed:
+            own = disc.state_dict()  # keep the discriminators whose shape is unchanged
+            keep = {a: b for a, b in ck["discriminator"].items() if a in own and own[a].shape == b.shape}
+            disc.load_state_dict(keep, strict=False)
+            print(f"discriminator: {len(keep)} of {len(own)} tensors loaded", flush=True)
+        else:
+            print("discriminator: fresh init (matching reset vocoder stages)", flush=True)
         base_n = len(ck["speakers"])
         shared = min(base_n, len(spk))
         assert ck["speakers"][:shared] == list(spk)[:shared], "speaker table differs from the base run"
@@ -544,7 +683,9 @@ def main(on_save=None) -> None:
         with amp():
             h, g = gen.features(content, f0, loud, s, cmel(wav) if args.mel_cond else None, tn, voicing=v_in)
         th = h.shape[-1]
-        exc = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])
+        # measured on what the microphone hears, as a stream can (each frame from the audio up to its end)
+        breath = aperiodicity(src, f0, causal=gen.causal_aper, edges=gen.source.breath_edges)[:, :th] if gen.source.aper else None
+        exc = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th], ap=breath)
         reg = gen.register_vec(f0[:, lo:hi], None if v_in is None else v_in[:, lo:hi]) if gen.reg_cond is not None else None
         with amp():
             fake = gen.generate(h[..., lo:hi], g, exc[..., lo * FRAME : hi * FRAME], reg=reg).float()
@@ -581,7 +722,7 @@ def main(on_save=None) -> None:
             # time; without this the decoder computes one fixed noise-like pattern from the features and
             # ignores the noise it is given. Penalise the per-frame correlation of the two outputs where unvoiced
             # (or half-voiced in laughs/sighs), but never on silent target frames where the output should be 0.
-            exc2 = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])[..., lo * FRAME : hi * FRAME]
+            exc2 = gen.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th], ap=breath)[..., lo * FRAME : hi * FRAME]
             with amp():
                 again = gen.generate(h[..., lo:hi], g, exc2, reg=reg).float()
             a, b = (y[:, 0].unflatten(1, (-1, FRAME)) for y in (fake, again))
@@ -590,6 +731,20 @@ def main(on_save=None) -> None:
             audible = (real[:, 0].unflatten(1, (-1, FRAME)).pow(2).mean(-1).sqrt() > 3e-4).float()
             quiet = ((1.0 - v_in[:, lo:hi]).pow(2) if v_in is not None else (f0[:, lo:hi] == 0).float()) * audible
             loss_dc = (corr.pow(2) * quiet).sum() / quiet.sum().clamp_min(1.0)
+            if breath is not None:
+                # Vowels too: per band from --breath-from up, the output may be no more regular than the
+                # target is there. With (1 - voicing)^2 above, vowels are never asked for fresh noise, and
+                # the spectral losses reward a fixed, clean answer (a buzzy, robotic voice).
+                edges = breath_edges(args.breath_from)
+                ap_t = aperiodicity(wav, f0, edges=edges)[:, lo:hi]  # the target's own, per band
+                vowel = (v_in[:, lo:hi] if v_in is not None else (f0[:, lo:hi] > 0).float()) * audible
+                loss_vb = breath_penalty(fake[:, 0], again[:, 0], ap_t, vowel, edges)
+                loss_dc = loss_dc + loss_vb
+                log["vbreath"] = log.get("vbreath", 0.0) + loss_vb.item() / 100
+                if args.breath_cap:
+                    loss_bc = breath_cap(fake[:, 0], again[:, 0], real[:, 0], f0[:, lo:hi], vowel, edges)
+                    loss_g = loss_g + args.breath_cap * loss_bc
+                    log["bcap"] = log.get("bcap", 0.0) + loss_bc.item() / 100
             loss_g = loss_g + args.decorr * loss_dc
             log["decorr"] = log.get("decorr", 0.0) + loss_dc.item() / 100
         if silence_share > 0:

@@ -20,20 +20,25 @@ SR = 48000
 FRAME = 480  # samples per 100 Hz frame
 
 
-def min_phase_lpf(cutoff: float, taps: int = 12, beta: float = 6.0) -> torch.Tensor:
-    """Causal minimum-phase Kaiser-windowed sinc low-pass filter (`cutoff` in 0..1 of Nyquist),
-    returned in Conv1d correlation order (index -1 multiplies the newest sample)."""
-    n_lin = 4 * taps - 1
-    m = torch.arange(n_lin, dtype=torch.float64) - (n_lin - 1) / 2
+def min_phase_lpf(cutoff: float, taps: int = 16, beta: float = 7.0) -> torch.Tensor:
+    """Causal minimum-phase FIR low-pass filter (`cutoff` in 0..1 of Nyquist) via Fejér-Riesz
+    spectral factorization of a lifted (2 * taps - 1) Kaiser sinc prototype. Exact support `taps`
+    (zero post-truncation Gibbs passband crater), returned in Conv1d correlation order."""
+    n_lin = 2 * taps - 1
+    m = torch.arange(n_lin, dtype=torch.float64) - (taps - 1)
     h = cutoff * torch.sinc(cutoff * m)
     b_t = torch.tensor(beta, dtype=torch.float64)
-    w = torch.i0(b_t * torch.sqrt((1.0 - (2.0 * m / (n_lin - 1)) ** 2).clamp_min(0.0))) / torch.i0(b_t)
-    h = (h * w) / (h * w).sum()
-    H = torch.fft.fft(h, n=1024).abs().clamp_min(1e-7)
-    cep = torch.fft.ifft(torch.log(H)).real
-    win = torch.zeros(1024, dtype=torch.float64)
-    win[0] = win[512] = 1.0
-    win[1:512] = 2.0
+    w = torch.i0(b_t * torch.sqrt((1.0 - (m / max(1, taps - 1)) ** 2).clamp_min(0.0))) / torch.i0(b_t)
+    hw = h * w
+    n_fft = max(4096, 1 << (2 * taps).bit_length())
+    padded = torch.cat([hw, torch.zeros(n_fft - n_lin, dtype=torch.float64)])
+    H_real = torch.fft.fft(torch.roll(padded, -(taps - 1))).real
+    H_pos = (H_real - H_real.min().clamp_max(0.0) + 1e-8)
+    H_pos = H_pos / H_pos[0]
+    cep = torch.fft.ifft(0.5 * torch.log(H_pos)).real
+    win = torch.zeros(n_fft, dtype=torch.float64)
+    win[0] = win[n_fft // 2] = 1.0
+    win[1 : n_fft // 2] = 2.0
     mp = torch.fft.ifft(torch.exp(torch.fft.fft(cep * win))).real[:taps]
     return (mp / mp.sum()).flip(0).float()
 
@@ -41,24 +46,116 @@ def min_phase_lpf(cutoff: float, taps: int = 12, beta: float = 6.0) -> torch.Ten
 class CausalLPF(nn.Module):
     """Fixed causal depthwise low-pass filter for suppressing transposed-conv mirror images."""
 
-    def __init__(self, channels: int, cutoff: float, taps: int = 12):
+    def __init__(self, channels: int, cutoff: float, taps: int = 16, beta: float = 7.0):
         super().__init__()
         self.channels, self.pad = channels, taps - 1
-        h = min_phase_lpf(cutoff, taps=taps)
+        h = min_phase_lpf(cutoff, taps=taps, beta=beta)
         self.register_buffer("weight", h[None, None, :].repeat(channels, 1, 1), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.conv1d(F.pad(x, (self.pad, 0)), self.weight, groups=self.channels)
+        return F.conv1d(x, self.weight.to(x.dtype), padding=self.pad, groups=self.channels)[..., : x.shape[-1]]
+
+
+def _snake_fwd_eager(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    wd = torch.float64 if x.dtype == torch.float64 else torch.float32
+    xf = x.to(wd)
+    ac = a.to(wd).clamp(-6.0, 6.0).exp()
+    ib = (-b.to(wd).clamp(-6.0, 6.0)).exp()
+    return (xf + ib * torch.sin(ac * xf).pow(2)).to(x.dtype)
+
+
+def _snake_bwd_eager(grad_out: torch.Tensor, x: torch.Tensor, a: torch.Tensor, b: torch.Tensor):
+    wd = torch.float64 if x.dtype == torch.float64 else torch.float32
+    xf, go = x.to(wd), grad_out.to(wd)
+    af, bf = a.to(wd), b.to(wd)
+    ac = af.clamp(-6.0, 6.0).exp()
+    ib = (-bf.clamp(-6.0, 6.0)).exp()
+    ax = ac * xf
+    s = torch.sin(ax)
+    sc2 = torch.sin(2.0 * ax)
+    gx = (go * (1.0 + ib * ac * sc2)).to(x.dtype)
+    ma = ((af > -6.0) & (af < 6.0)).to(wd)
+    mb = ((bf > -6.0) & (bf < 6.0)).to(wd)
+    ga = (go * (ib * ac * xf * sc2)).sum(dim=(0, 2), keepdim=True) * ma
+    gb = -(go * (ib * s * s)).sum(dim=(0, 2), keepdim=True) * mb
+    return gx, ga.to(a.dtype), gb.to(b.dtype)
+
+
+_SNAKE_FUSED: tuple | None = None
+_SNAKE_FUSED_OK: bool = True
+
+
+def _get_snake_fused():
+    global _SNAKE_FUSED, _SNAKE_FUSED_OK
+    if not _SNAKE_FUSED_OK:
+        return None
+    if _SNAKE_FUSED is None:
+        try:
+            _SNAKE_FUSED = (torch.compile(_snake_fwd_eager), torch.compile(_snake_bwd_eager))
+        except Exception:
+            _SNAKE_FUSED_OK = False
+            return None
+    return _SNAKE_FUSED
+
+
+class _SnakeBetaFn(torch.autograd.Function):
+    """Memory-lean & Triton-fused autograd for SnakeBeta: saves only x (in x.dtype, e.g. bf16)
+    and fuses all elementwise trig ops into a single kernel (~8x lower VRAM, ~3x faster step time)."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        global _SNAKE_FUSED_OK
+        ctx.save_for_backward(x, a, b)
+        if x.is_cuda and x.dtype != torch.float64:
+            fused = _get_snake_fused()
+            if fused is not None:
+                try:
+                    return fused[0](x, a, b)
+                except Exception:
+                    _SNAKE_FUSED_OK = False
+        return _snake_fwd_eager(x, a, b)
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):
+        global _SNAKE_FUSED_OK
+        x, a, b = ctx.saved_tensors
+        if x.is_cuda and x.dtype != torch.float64:
+            fused = _get_snake_fused()
+            if fused is not None:
+                try:
+                    return fused[1](grad_out, x, a, b)
+                except Exception:
+                    _SNAKE_FUSED_OK = False
+        return _snake_bwd_eager(grad_out, x, a, b)
+
+
+class SnakeBeta(nn.Module):
+    """Periodic C^inf nonlinearity x + exp(-b) * sin^2(exp(a) * x) (BigVGAN), computed in float32."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.a = nn.Parameter(torch.zeros(1, channels, 1))
+        self.b = nn.Parameter(torch.zeros(1, channels, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.is_grad_enabled() and (x.requires_grad or self.a.requires_grad or self.b.requires_grad):
+            return _SnakeBetaFn.apply(x, self.a, self.b)
+        xf = x.float()
+        a = self.a.float().clamp(-6.0, 6.0).exp()
+        ib = (-self.b.float().clamp(-6.0, 6.0)).exp()
+        return (xf + ib * torch.sin(a * xf).pow(2)).to(x.dtype)
 
 
 class AntiAliasAct(nn.Module):
-    """Causal 2x polyphase oversampled LeakyReLU: suppresses nonlinear harmonic folding in-band."""
+    """Causal 2x polyphase oversampled activation (SnakeBeta or LeakyReLU): suppresses nonlinear harmonic folding."""
 
-    def __init__(self, channels: int, taps: int = 12):
+    def __init__(self, channels: int, taps: int = 16, snake: bool = False, cutoff: float = 0.50, beta: float = 7.0):
         super().__init__()
         assert taps % 2 == 0
         self.channels, self.pad_up, self.pad_dn = channels, taps // 2 - 1, taps - 2
-        h = min_phase_lpf(0.46, taps=taps, beta=6.5)
+        self.snake = bool(snake)
+        self.act = SnakeBeta(channels) if self.snake else None
+        h = min_phase_lpf(cutoff, taps=taps, beta=beta)
         up = torch.stack([2.0 * h[1::2], 2.0 * h[0::2]], dim=0)[:, None, :].repeat(channels, 1, 1)
         dn = h[None, None, :].repeat(channels, 1, 1)
         self.register_buffer("w_up", up, persistent=False)
@@ -66,9 +163,9 @@ class AntiAliasAct(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, t = x.shape
-        u = F.conv1d(F.pad(x, (self.pad_up, 0)), self.w_up, groups=c).view(b, c, 2, t).transpose(2, 3).reshape(b, c, 2 * t)
-        u = F.leaky_relu(u, 0.1)
-        return F.conv1d(F.pad(u, (self.pad_dn, 0)), self.w_dn, stride=2, groups=c)
+        u = F.conv1d(x, self.w_up.to(x.dtype), padding=self.pad_up, groups=c)[..., :t].view(b, c, 2, t).transpose(2, 3).reshape(b, c, 2 * t)
+        u = self.act(u) if self.act is not None else F.leaky_relu(u, 0.1)
+        return F.conv1d(u, self.w_dn.to(u.dtype), stride=2, padding=self.pad_dn, groups=c)[..., :t]
 
 
 class CConv(nn.Module):
@@ -85,34 +182,77 @@ class CConv(nn.Module):
 
 
 class CUp(nn.Module):
-    """Causal transposed convolution: output hop t depends on frames t-1 and t."""
+    """Causal upsampler: output hop t depends on frames t-1 and t.
+    `linear=True` uses exact causal linear frame interpolation + CConv(3) (zero 100 Hz checkerboard ripple,
+    zero extra LPF delay); `antialias=True` on transposed convs applies a stride-scaled Fejér-Riesz LPF."""
 
-    def __init__(self, cin: int, cout: int, stride: int, antialias: bool = False):
+    def __init__(self, cin: int, cout: int, stride: int, antialias: bool = False, linear: bool = False, strong: bool = False):
         super().__init__()
         self.stride = stride
-        self.conv = weight_norm(nn.ConvTranspose1d(cin, cout, 2 * stride, stride))
-        self.lpf = CausalLPF(cout, min(0.46, 0.96 / stride), taps=16 if stride >= 4 else 12) if antialias else None
+        self.linear = bool(linear)
+        if self.linear:
+            ramp = (torch.arange(1, stride + 1, dtype=torch.float32) / float(stride))[None, None, :, None]
+            self.register_buffer("ramp", ramp, persistent=False)
+            self.conv = None
+            self.post_conv = CConv(cin, cout, 3)
+            self.lpf = None
+        else:
+            self.conv = weight_norm(nn.ConvTranspose1d(cin, cout, 2 * stride, stride))
+            self.post_conv = None
+            if not antialias:
+                self.lpf = None
+            elif strong:  # see STRONG_AA
+                self.lpf = CausalLPF(cout, 0.95 / float(stride), taps=max(48, 16 * stride), beta=14.0)
+            else:
+                self.lpf = CausalLPF(cout, 1.0 / float(stride), taps=max(16, 6 * stride), beta=7.0)
+
+    def upsample_linear(self, x: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
+        """z [B, C, T + 1] (or zero-padded x when z is None) -> [B, C, T * stride]."""
+        if z is None:
+            z = F.pad(x, (1, 0))
+        w = self.ramp.to(z.dtype)
+        y = z[:, :, :-1].unsqueeze(2) * (1.0 - w) + z[:, :, 1:].unsqueeze(2) * w
+        return y.transpose(2, 3).reshape(z.shape[0], z.shape[1], (z.shape[2] - 1) * self.stride)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.linear:
+            return self.post_conv(self.upsample_linear(x))
         y = self.conv(x)[..., : x.shape[-1] * self.stride]
         return self.lpf(y) if self.lpf is not None else y
 
 
+#: `aa_filter=2`: the anti-aliasing filters (2x activations and the upsamplers' low-pass) reach
+#: 50-70 dB of attenuation just past their band instead of 7-35 dB. Minimum-phase factoring halves
+#: a prototype's attenuation in dB, so the default (beta 7, 16 taps) bottoms out near -35 dB: the
+#: hidden channels' images and folded harmonics stay audible as the "RVC" aliasing.
+#: `aa_filter=3` also oversamples the Snake before each audio-rate upsampler, which otherwise runs
+#: at its stage's own rate (about 5 dB less folding at 8-12 kHz, 0.2 ms more delay).
+STRONG_AA = {"taps": 48, "cutoff": 0.46, "beta": 14.0}
+
+
 class ResBlock(nn.Module):
-    def __init__(self, ch: int, k: int, dilations: tuple[int, ...] = (1, 3, 5), antialias: bool = False):
+    def __init__(self, ch: int, k: int, dilations: tuple[int, ...] = (1, 3, 5), antialias: bool = False, snake: bool = False,
+                 strong: bool = False):
         super().__init__()
         self.c1 = nn.ModuleList(CConv(ch, ch, k, d) for d in dilations)
         self.c2 = nn.ModuleList(CConv(ch, ch, k, 1) for _ in dilations)
-        self.a1 = nn.ModuleList(AntiAliasAct(ch) for _ in dilations) if antialias else None
-        self.a2 = nn.ModuleList(AntiAliasAct(ch) for _ in dilations) if antialias else None
+        aa = STRONG_AA if strong else {}
+        self.a1 = nn.ModuleList(AntiAliasAct(ch, snake=snake, **aa) for _ in dilations) if antialias else None
+        self.a2 = nn.ModuleList(AntiAliasAct(ch, snake=snake, **aa) for _ in dilations) if antialias else None
+        self.s1 = nn.ModuleList(SnakeBeta(ch) for _ in dilations) if (snake and not antialias) else None
+        self.s2 = nn.ModuleList(SnakeBeta(ch) for _ in dilations) if (snake and not antialias) else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.a1 is None:
-            for c1, c2 in zip(self.c1, self.c2):
-                x = x + c2(F.leaky_relu(c1(F.leaky_relu(x, 0.1)), 0.1))
+        if self.a1 is not None:
+            for c1, c2, a1, a2 in zip(self.c1, self.c2, self.a1, self.a2):
+                x = x + c2(a2(c1(a1(x))))
             return x
-        for c1, c2, a1, a2 in zip(self.c1, self.c2, self.a1, self.a2):
-            x = x + c2(a2(c1(a1(x))))
+        if self.s1 is not None:
+            for c1, c2, s1, s2 in zip(self.c1, self.c2, self.s1, self.s2):
+                x = x + c2(s2(c1(s1(x))))
+            return x
+        for c1, c2 in zip(self.c1, self.c2):
+            x = x + c2(F.leaky_relu(c1(F.leaky_relu(x, 0.1)), 0.1))
         return x
 
 
@@ -132,6 +272,80 @@ class NextBlock(nn.Module):
         return x + y.transpose(1, 2)
 
 
+AP_FFT = 2048
+AP_LOOKBACK = AP_FFT - FRAME  # 1568 samples (32.7 ms): causal lead samples for 2048-pt STFT
+_AP_BUFS: dict[tuple[str, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _ap_buffers(device: torch.device, n_fft: int = AP_FFT) -> tuple[torch.Tensor, torch.Tensor]:
+    key = (str(device), n_fft)
+    bufs = _AP_BUFS.get(key)
+    if bufs is None:
+        win = torch.hann_window(n_fft, device=device, dtype=torch.float32)
+        k = torch.arange(1, int(SR / 2 / 50) + 1, device=device, dtype=torch.float32)  # every harmonic of 50 Hz up
+        bufs = (win, k)
+        _AP_BUFS[key] = bufs
+    return bufs
+
+
+def aperiodicity(wav48: torch.Tensor, f0: torch.Tensor, n_fft: int = AP_FFT, causal: bool = False,
+                 edges: tuple[float, ...] | None = None, clamp: bool = True, prepadded: bool = False) -> torch.Tensor:
+    """How breathy each of Source's 4 bands (0-4, 4-8, 8-16, 16-24 kHz) is, per 10 ms frame: [B, N] at
+    48 kHz and F0 [B, T] (Hz, 0 unvoiced) -> [B, T, 4] in 0..1, 1 where unvoiced. `edges`: other bands.
+
+    Per band, the mean power midway between harmonics over the mean peak power at them (the
+    strongest of 3 bins). For white noise that ratio is 1 / (1 + 1/2 + 1/3), so it is scaled by
+    1.833 to read 1 on pure noise and 0 on clean harmonics. Frame t is centred on sample 480 t,
+    like the pitch frames; 2048 points resolve the harmonics of voices above about 90 Hz.
+    `causal`: frame t's window ends where frame t does (sample 480 (t + 1)) instead, so a stream can
+    measure it as each frame arrives (when `prepadded=True`, `wav48` already carries `n_fft - FRAME`
+    lead samples). `clamp=False` leaves voiced values above 1 as they are (a loss on output that is
+    noisier than the target keeps its gradient there)."""
+    win, k = _ap_buffers(wav48.device, n_fft)
+    with torch.autocast(wav48.device.type, enabled=False):
+        if causal:
+            x = wav48.float() if prepadded else F.pad(wav48.float(), (n_fft - FRAME, 0))
+            spec = torch.fft.rfft(x.unfold(1, n_fft, FRAME) * win, dim=-1).abs().pow(2)  # [B, T', F]
+        else:
+            spec = torch.stft(wav48.float(), n_fft, FRAME, window=win, return_complex=True).abs().pow(2).transpose(1, 2)
+    t = min(spec.shape[1], f0.shape[1])
+    spec, f = spec[:, :t], f0[:, :t].float()  # [B, T, F]
+    nbins = spec.shape[-1]
+    hz = SR / n_fft
+    fs = f.clamp_min(50.0)[..., None]
+    centre = k * fs  # [B, T, K]
+    valid = centre < SR / 2 - 2 * fs
+    idx = (centre / hz).round().long().clamp(1, nbins - 2)
+    peak = torch.stack([spec.gather(-1, idx + d) for d in (-1, 0, 1)]).amax(0)
+    mid = spec.gather(-1, ((centre + 0.5 * fs) / hz).round().long().clamp(0, nbins - 1))
+    out = []
+    edges = Source.EDGES if edges is None else edges
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (valid & (centre >= lo) & (centre < hi)).float()
+        ratio = (mid * m).sum(-1) / (peak * m).sum(-1).clamp_min(1e-12)
+        ap = (1.8333 * ratio).clamp(0.0, 1.0) if clamp else 1.8333 * ratio
+        out.append(torch.where(m.sum(-1) > 0, ap, torch.ones_like(ap)))
+    ap = torch.stack(out, -1)
+    return torch.where((f > 0)[..., None], ap, torch.ones_like(ap))
+
+
+BREATH_TAPS = 511  # causal Kaiser bandpass FIR length for streaming breath noise (~10.6 ms, -72 dB stopband)
+
+
+def _breath_fir_bank(edges: tuple[float, ...], taps: int = BREATH_TAPS, beta: float = 7.0) -> torch.Tensor:
+    """[aper, 1, taps] unit-L2-norm Kaiser bandpass FIR per breath band for click-free streaming noise."""
+    mid = (taps - 1) // 2
+    m = torch.arange(taps, dtype=torch.float64) - mid
+    b = torch.tensor(beta, dtype=torch.float64)
+    w = torch.i0(b * torch.sqrt((1.0 - (m / max(1, mid)) ** 2).clamp_min(0.0))) / torch.i0(b)
+    kernels = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        c_hi, c_lo = 2.0 * hi / SR, 2.0 * lo / SR
+        h = (c_hi * torch.sinc(c_hi * m) - c_lo * torch.sinc(c_lo * m)) * w
+        kernels.append((h / h.pow(2).sum().sqrt().clamp_min(1e-12)).float())
+    return torch.stack(kernels, dim=0)[:, None, :]
+
+
 class Source(nn.Module):
     """Harmonic-plus-noise excitation at the sample rate, from frame-rate F0.
 
@@ -144,14 +358,37 @@ class Source(nn.Module):
 
     EDGES = (0.0, 4000.0, 8000.0, 16000.0, SR / 2)
     MULTIRATE_EDGES = (0.0, 3600.0, 8000.0, 15000.0, 22500.0)
+    # Breath bands that split 1-4 kHz (`breath_edges`): over 0-4 kHz the low harmonics swamp the measure, so
+    # it reads clean on voiced consonants (v, z, m) and vowels alike; at 2-4 kHz a "v" reads ten times noisier.
+    FINE_BREATH_EDGES = (1000.0, 2000.0, 4000.0, 8000.0, 16000.0, SR / 2)
 
     def __init__(self, harmonics: int = 8, amp: float = 0.1, noise: float = 0.003, bands: int = 0, glide: bool | str = False,
-                 with_f0: bool = False, phase_only: bool = False):
+                 with_f0: bool = False, phase_only: bool = False, aper: int = 0, breath_edges: tuple[float, ...] | None = None,
+                 crossfade: bool = False):
         super().__init__()
         assert bands in (0, len(self.EDGES) - 1)
+        self.breath_edges = tuple(float(e) for e in breath_edges) if breath_edges else self.EDGES
+        assert aper in (0, len(self.breath_edges) - 1) and not (aper and phase_only)
         self.h, self.amp, self.noise, self.bands, self.glide = harmonics, amp, noise, bands, glide
+        # Breath noise in voiced sound, per band. Without it voiced noise is 30 dB under the harmonics in
+        # every band, and the highs come out as clean harmonics with nothing between them: a metallic
+        # sound. Two copies of the same noise: at a fixed level (the voice's own breathiness, which the
+        # decoder learns), and scaled by the input's aperiodicity there (`aperiodicity`: sighs, laughs).
+        # The bands are `breath_edges` (Source's own by default).
+        self.aper = aper
+        # `crossfade`: where the input is breathy, also turn the harmonics down, per breath band: by
+        # sqrt(1 - depth * ap), so a "v" or a sigh is not handed full-strength harmonics that the convs must
+        # cancel. The depth of each band is learned and starts at 0 (no change); harmonics below the lowest
+        # breath band are never touched. Needs `ap`: without it nothing is turned down.
+        assert not crossfade or aper, "crossfade needs breath bands (aper)"
+        self.depth = nn.Parameter(torch.zeros(aper)) if crossfade else None
+        if aper:
+            self.register_buffer("breath_fir", _breath_fir_bank(self.breath_edges), persistent=False)
+        else:
+            self.breath_fir = None
         self.last_phase = None  # phase after the last sample, for the next streamed call
-        self.n_in = harmonics + 1 + bands  # channels the decoder's excitation convs read
+        self.last_breath_white = None  # tail of white noise for click-free causal FIR streaming breath
+        self.n_in = harmonics + 1 + bands + 2 * aper  # channels the decoder's excitation convs read
         self.with_f0 = with_f0  # append per-sample F0 as a last channel, for per-stage band-limiting
         self.phase_only = phase_only  # return [phase % 1, f0] so each stage synthesizes band-limited harmonics natively
         self.channels = 2 if phase_only else self.n_in + int(with_f0)
@@ -171,10 +408,18 @@ class Source(nn.Module):
         nxt: torch.Tensor | None = None,
         voicing: torch.Tensor | None = None,
         nxt_v: torch.Tensor | None = None,
+        ap: torch.Tensor | None = None,
+        prev_ap: torch.Tensor | None = None,
+        nxt_ap: torch.Tensor | None = None,
+        breath_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """f0 [B, T]; phase0 [B] and prev [B] (the F0 of the frame before) carry a stream across calls;
+        """`ap` [B, T, aper]: the input's aperiodicity per band (`aperiodicity`); without it the breath
+        channels are silent, as in a decoder that has none.
+        f0 [B, T]; phase0 [B] and prev [B] (the F0 of the frame before) carry a stream across calls;
         nxt [B] is the F0 of the frame after the last one, for glide="next". Optional `voicing` [B, T] in
-        0..1 blends harmonic amplitude against breath noise smoothly on half-voiced laughs, sighs and fry."""
+        0..1 blends harmonic amplitude against breath noise smoothly on half-voiced laughs, sighs and fry.
+        `prev_ap` / `nxt_ap` [B, aper] ramp `ap` smoothly across block boundaries; `breath_state`
+        [B, aper, BREATH_TAPS - 1] switches `breath()` to a stateful causal FIR filterbank for streaming."""
         f = f0.repeat_interleave(FRAME, dim=1).double()  # [B, N]
         if self.glide == "next":
             # A pitch frame is the pitch at the *start* of its 10 ms (measured on both trackers), so holding
@@ -211,18 +456,98 @@ class Source(nn.Module):
         k = torch.arange(1, self.h + 1, device=f0.device, dtype=torch.float64)[None, :, None]
         sines = torch.sin(2 * math.pi * ((phase[:, None] * k) % 1.0)).float()
         std = voiced * self.noise + (1 - voiced) * self.amp / 3
+        level = self._ap_samples(ap, f.shape[1], prev_ap=prev_ap, nxt_ap=nxt_ap) if (self.aper and ap is not None) else None
+        gains = self.harmonic_gains(ap, f.shape[1], level=level) if self.depth is not None and ap is not None else None
+        if gains is not None:  # each sine takes the gain of the breath band its frequency is in
+            fk = f.float()[:, None] * k.float()
+            for (lo, hi), g in zip(zip(self.breath_edges[:-1], self.breath_edges[1:]), gains):
+                sines = torch.where((fk >= lo) & (fk < hi), sines * g[:, None], sines)
         out = [sines * (f.float()[:, None] * k.float() < SR / 2) * voiced * self.amp]
         if self.bands:
             theta = 2 * math.pi * (phase % 1.0)
             fs = f.clamp_min(1.0)
-            top = [torch.floor(min(e, SR / 2 - 1.0) / fs) for e in self.EDGES]  # harmonics at or below each edge
-            for lo, hi in zip(top[:-1], top[1:]):
-                band = (self._dirichlet(hi, theta) - self._dirichlet(lo, theta)) / (hi - lo).clamp_min(1.0).sqrt()
+            cuts = sorted(set(self.EDGES) | (set(self.breath_edges) if gains is not None else set()))
+            top = {e: torch.floor(min(e, SR / 2 - 1.0) / fs) for e in cuts}  # harmonics at or below each edge
+            dir_ = {e: self._dirichlet(top[e], theta) for e in cuts}
+            for lo, hi in zip(self.EDGES[:-1], self.EDGES[1:]):
+                inner = [e for e in cuts if lo <= e <= hi]
+                band = 0.0
+                for a, b in zip(inner[:-1], inner[1:]):  # split at the breath edges, each piece at its band's gain
+                    piece = dir_[b] - dir_[a]
+                    g = self.band_gain(gains, a, b) if gains is not None else None
+                    band = band + (piece if g is None else piece * g.double())
+                band = band / (top[hi] - top[lo]).clamp_min(1.0).sqrt()
                 out.append(band.float()[:, None] * voiced * self.amp)
         x = torch.cat(out, dim=1)
         x = x + std * torch.randn_like(x)
         out = [x[:, : self.h], voiced, x[:, self.h :]]
+        if self.aper:
+            out.append(self.breath(ap, voiced, f.shape, level=level, white_hist=breath_state))
         return torch.cat(out + ([f.float()[:, None]] if self.with_f0 else []), dim=1)
+
+    @staticmethod
+    def _ap_samples(
+        ap: torch.Tensor,
+        n: int,
+        prev_ap: torch.Tensor | None = None,
+        nxt_ap: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """[B, T, aper] -> [B, aper, N]: smooth per-sample aperiodicity without chunk-boundary steps."""
+        apf = ap.float()
+        if nxt_ap is not None:
+            after = torch.cat([apf[:, 1:], nxt_ap.float()[:, None]], dim=1)
+            ramp = torch.arange(FRAME, device=ap.device, dtype=torch.float32)[None, None, :, None] / FRAME
+            return (apf[:, :, None, :] + (after - apf)[:, :, None, :] * ramp).flatten(1, 2).transpose(1, 2)
+        if prev_ap is not None:
+            before = torch.cat([prev_ap.float()[:, None], apf[:, :-1]], dim=1)
+            ramp = torch.arange(1, FRAME + 1, device=ap.device, dtype=torch.float32)[None, None, :, None] / FRAME
+            return (before[:, :, None, :] + (apf - before)[:, :, None, :] * ramp).flatten(1, 2).transpose(1, 2)
+        return F.interpolate(apf.transpose(1, 2), size=n, mode="linear", align_corners=False)
+
+    def harmonic_gains(self, ap: torch.Tensor, n: int, level: torch.Tensor | None = None) -> list[torch.Tensor]:
+        """Per breath band, [B, N]: how far the harmonics there are turned down (`crossfade`)."""
+        if level is None:
+            level = self._ap_samples(ap, n)
+        return [(1.0 - d * level[:, i]).clamp(1e-4, 4.0).sqrt() for i, d in enumerate(self.depth)]
+
+    def band_gain(self, gains: list[torch.Tensor], lo: float, hi: float) -> torch.Tensor | None:
+        """The gain of the breath band holding lo..hi Hz, or None below (or outside) the breath bands."""
+        for (a, b), g in zip(zip(self.breath_edges[:-1], self.breath_edges[1:]), gains):
+            if a <= lo and hi <= b:
+                return g
+        return None
+
+    def breath(
+        self,
+        ap: torch.Tensor | None,
+        voiced: torch.Tensor,
+        shape: torch.Size,
+        level: torch.Tensor | None = None,
+        white_hist: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """[B, 2 * aper, N]: noise limited to each band, in voiced sound (unvoiced sound already gets its
+        noise from the other channels); first at a fixed level, then the same noise scaled by that band's
+        aperiodicity (silent when `ap` is None, e.g. a stream that does not measure it). When `white_hist`
+        is given ([B, aper, BREATH_TAPS - 1]), uses a stateful causal Kaiser FIR filterbank so 10 ms blocks
+        have zero wraparound or seam clicks and match whole-sequence output."""
+        b, n = shape
+        if white_hist is not None:
+            w = torch.randn(b, self.aper, n, device=voiced.device)
+            z = torch.cat([white_hist, w], dim=-1)
+            self.last_breath_white = z[..., -(self.breath_fir.shape[-1] - 1) :]
+            noise = F.conv1d(z, self.breath_fir.to(z.dtype), groups=self.aper) * voiced * self.amp
+        else:
+            white = torch.fft.rfft(torch.randn(b, self.aper, n, device=voiced.device), dim=-1)
+            fr = torch.fft.rfftfreq(n, 1.0 / SR, device=voiced.device)
+            edges = self.breath_edges
+            mask = torch.stack([((fr >= lo) & (fr < hi)).float() for lo, hi in zip(edges[:-1], edges[1:])])
+            share = mask.mean(-1, keepdim=True).clamp_min(1e-6)  # unit variance per band
+            noise = torch.fft.irfft(white * mask / share.sqrt(), n=n, dim=-1) * voiced * self.amp
+        if ap is None:
+            return torch.cat([noise, torch.zeros_like(noise)], dim=1)
+        if level is None:
+            level = self._ap_samples(ap, n)
+        return torch.cat([noise, noise * level], dim=1)
 
     def stage_excitation(self, phase_f: torch.Tensor, rate: int, rem: int) -> torch.Tensor:
         """Synthesize band-limited harmonics + Dirichlet bands natively at `rate` Hz (`SR // rem`),
@@ -270,15 +595,24 @@ class Decoder(nn.Module):
         smooth_in: str = "",
         tone: int = 0,
         antialias: bool = False,
+        snake: bool = False,
         content_hz: int = 50,
         expressive: bool = False,
+        aper: int = 0,
+        aa_filter: int = 1,
+        causal_aper: bool = False,
+        breath_edges: tuple[float, ...] | None = None,
+        crossfade: bool = False,
     ):
         super().__init__()
+        assert not aper or (bands == 4 and exc == "bandlimit"), "breath channels need --bands 4 --exc bandlimit"
+        self.causal_aper = bool(causal_aper)  # the breath channels' input is measured causally (`aperiodicity`)
         rates = tuple(rates)
         assert math.prod(rates) == FRAME
         assert content_hz in (50, 100)
         self.rates = rates
         self.antialias = bool(antialias)
+        self.snake = bool(snake)
         self.content_hz = content_hz
         self.expressive = bool(expressive)
         self.speaker = nn.Embedding(n_speakers, spk_dim)
@@ -313,20 +647,39 @@ class Decoder(nn.Module):
             glide=glide,
             with_f0=exc in ("bandlimit", "fundamental"),
             phase_only=(exc == "multirate"),
+            aper=aper,
+            breath_edges=breath_edges,
+            crossfade=crossfade,
         )
         self._band_edges = None
         if self.source.bands:
             self.register_buffer("_band_hi", torch.tensor(Source.EDGES[1:], dtype=torch.float32)[None, :, None], persistent=False)
+        if self.source.aper:
+            self.register_buffer("_breath_hi", torch.tensor(self.source.breath_edges[1:], dtype=torch.float32)[None, :, None],
+                                 persistent=False)
         self.stage_rates: list[int] = []
         self.stage_rem: list[int] = []
         self.pre = CConv(dim, channels, 7)
         self.pre_cond = nn.Linear(spk_dim, channels)
+        # Without Snake, aa_filter 2 also low-passes the audio-rate upsamplers and 3 oversamples the LeakyReLU
+        # before them, as with Snake. Fixed filters only: a trained LeakyReLU decoder (v4) keeps every weight.
+        plain_pre_aa = self.antialias and not self.snake and aa_filter >= 3
+        self.pre_acts = nn.ModuleList() if (self.snake or plain_pre_aa) else None
         self.ups, self.src, self.res = nn.ModuleList(), nn.ModuleList(), nn.ModuleList()
         ch, remaining = channels, FRAME
         for idx, r in enumerate(rates):
-            aa_up = self.antialias and idx > 0
+            if self.pre_acts is not None:
+                # aa_filter 3: the activation before each audio-rate upsampler is oversampled too (the
+                # first one works on 100 Hz features, not audio, and stays plain).
+                pre_aa = aa_filter >= 3 and self.antialias and idx > 0
+                if self.snake:
+                    self.pre_acts.append(AntiAliasAct(ch, snake=True, **STRONG_AA) if pre_aa else SnakeBeta(ch))
+                else:
+                    self.pre_acts.append(AntiAliasAct(ch, **STRONG_AA) if pre_aa else nn.LeakyReLU(0.1))
+            lin_up = self.antialias and self.snake and idx == 0
+            aa_up = self.antialias and (self.snake or aa_filter >= 2) and idx > 0
             aa_res = self.antialias and idx < len(rates) - 1
-            self.ups.append(CUp(ch, ch // 2, r, antialias=aa_up))
+            self.ups.append(CUp(ch, ch // 2, r, antialias=aa_up, linear=lin_up, strong=aa_filter >= 2))
             ch, remaining = ch // 2, remaining // r
             self.stage_rates.append(SR // remaining)
             self.stage_rem.append(remaining)
@@ -335,7 +688,8 @@ class Decoder(nn.Module):
             else:
                 # Each output step sees only the excitation of its own hop.
                 self.src.append(nn.Conv1d(self.source.n_in, ch, remaining, remaining))
-            self.res.append(nn.ModuleList(ResBlock(ch, k, antialias=aa_res) for k in kernels))
+            self.res.append(nn.ModuleList(ResBlock(ch, k, antialias=aa_res, snake=self.snake, strong=aa_filter >= 2) for k in kernels))
+        self.post_act = SnakeBeta(ch) if self.snake else None
         self.post = CConv(ch, 1, 7)
 
     @staticmethod
@@ -424,18 +778,22 @@ class Decoder(nn.Module):
         if self.reg_cond is not None and reg is not None:
             x = x + self.reg_cond(reg.to(self.reg_cond.weight.dtype)).transpose(1, 2)
         if self.exc == "multirate":
-            for up, src, res, rate, rem in zip(self.ups, self.src, self.res, self.stage_rates, self.stage_rem):
+            for idx, (up, src, res, rate, rem) in enumerate(zip(self.ups, self.src, self.res, self.stage_rates, self.stage_rem)):
                 e_i = self.source.stage_excitation(excitation, rate, rem).to(x.dtype)
-                x = up(F.leaky_relu(x, 0.1)) + src(e_i)
+                xa = self.pre_acts[idx](x) if self.pre_acts is not None else F.leaky_relu(x, 0.1)
+                x = up(xa) + src(e_i)
                 x = sum(r(x) for r in res) / len(res)
-            return torch.tanh(self.post(F.leaky_relu(x, 0.1)))
+            xp = self.post_act(x) if self.post_act is not None else F.leaky_relu(x, 0.1)
+            return torch.tanh(self.post(xp))
         f = None
         if self.exc != "full":
             excitation, f = excitation[:, :-1], excitation[:, -1:]
-        for up, src, res, rate in zip(self.ups, self.src, self.res, self.stage_rates):
-            x = up(F.leaky_relu(x, 0.1)) + src(excitation if f is None else self.limit(excitation, f, rate))
+        for idx, (up, src, res, rate) in enumerate(zip(self.ups, self.src, self.res, self.stage_rates)):
+            xa = self.pre_acts[idx](x) if self.pre_acts is not None else F.leaky_relu(x, 0.1)
+            x = up(xa) + src(excitation if f is None else self.limit(excitation, f, rate))
             x = sum(r(x) for r in res) / len(res)
-        return torch.tanh(self.post(F.leaky_relu(x, 0.1)))
+        xp = self.post_act(x) if self.post_act is not None else F.leaky_relu(x, 0.1)
+        return torch.tanh(self.post(xp))
 
     def limit(self, e: torch.Tensor, f: torch.Tensor, rate: int) -> torch.Tensor:
         """Drop, where voiced, the excitation partials a stage running at `rate` cannot
@@ -451,8 +809,11 @@ class Decoder(nn.Module):
             keep = (((k == 1) & (f < 0.45 * rate)) | (f <= 0)).to(e.dtype)
         parts = [e[:, :h] * keep, e[:, h : h + 1]]
         if nb:
-            ok = (self._band_hi <= (rate / 2 if self.exc == "bandlimit" else -1.0)) | (f <= 0)
-            parts.append(e[:, h + 1 :] * ok.to(e.dtype))
+            below = self._band_hi <= (rate / 2 if self.exc == "bandlimit" else -1.0)
+            parts.append(e[:, h + 1 : h + 1 + nb] * (below | (f <= 0)).to(e.dtype))
+            if self.source.aper:  # breath bands a stage cannot hold are left to the later stages
+                fits = self._breath_hi <= (rate / 2 if self.exc == "bandlimit" else -1.0)
+                parts.append(e[:, h + 1 + nb :] * fits.repeat(1, 2, 1).to(e.dtype))
         return torch.cat(parts, dim=1)
 
     def forward(self, content, f0, loud, spk) -> torch.Tensor:

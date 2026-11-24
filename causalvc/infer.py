@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 import torchaudio
 
-from causalvc.decoder.model import FRAME, SR, Decoder, loudness, pitch_sync_loudness, tone
+from causalvc.decoder.model import FRAME, SR, Decoder, aperiodicity, loudness, pitch_sync_loudness, tone
 from causalvc.encoder.model import StreamingEncoder
 from causalvc.pitch import Rmvpe
 
@@ -107,6 +107,8 @@ class CausalVC:
 
         n_fr = min(f0.shape[1], loud.shape[1])
         f0, voicing = f0[:, :n_fr], voicing[:, :n_fr]
+        # the input's own pitch, before any shift
+        breath = aperiodicity(x, f0, causal=self.dec.causal_aper, edges=self.dec.source.breath_edges) if self.dec.source.aper else None
         loud = pitch_sync_loudness(x[:, : n_fr * FRAME], f0)
         tn = normalize_tone(tone(x)[0, :n_fr], loud[0], f0[0])[0][None] if self.dec.tone is not None else None
         f0 = map_f0(
@@ -126,7 +128,7 @@ class CausalVC:
             h = torch.nn.functional.avg_pool1d(torch.nn.functional.pad(h, (k, k), mode="replicate"), 2 * k + 1, 1)
         th = h.shape[-1]
         reg = self.dec.register_vec(f0[:, :th], None if v_in is None else v_in[:, :th]) if self.dec.reg_cond is not None else None
-        exc = self.dec.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th])
+        exc = self.dec.source(f0[:, :th], voicing=None if v_in is None else v_in[:, :th], ap=None if breath is None else breath[:, :th])
         y = self.dec.generate(h, g, exc, reg=reg)[0, 0]
         return torch.nn.functional.pad(y, (0, max(0, n - len(y))))[:n]
 
