@@ -69,6 +69,20 @@ class TrebleSoftenerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             TrebleSoftener().process(np.zeros(FRAME + 1, dtype=np.float32))
 
+    def test_linear_phase_split_has_no_midrange_cancellation_notch_at_minus_6db(self):
+        from scipy.signal import freqz
+        from tools.treble_softener import SPLIT_HALF
+
+        softener = TrebleSoftener()
+        w, H_lo = freqz(softener.split_fir, worN=4096, fs=SAMPLE_RATE)
+        A = np.real(H_lo * np.exp(1j * 2 * np.pi * w / SAMPLE_RATE * SPLIT_HALF))
+        # At -6 dB treble attenuation, the old Butterworth IIR split had a -40.7 dB notch at 2.6 kHz;
+        # the linear-phase FIR split must keep 100-3000 Hz flat within +-0.05 dB.
+        g = 10 ** (-6.0 / 20.0)
+        db = 20 * np.log10(np.abs(A + g * (1.0 - A)) + 1e-12)
+        mid = (w >= 100) & (w <= 3000)
+        self.assertLess(float(np.abs(db[mid]).max()), 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,7 +41,6 @@ MODEL_SETTING_FILE_KEYS = {
     "input_gain_db": "input_gain_db",
     "output_gain_db": "output_gain_db",
     "monitor_gain_db": "monitor_gain_db",
-    "noise_gate_db": "threhold",
     "pitch": "pitch",
     "pitch_offset_hz": "pitch_offset_hz",
     "pitch_floor_hz": "pitch_floor_hz",
@@ -51,9 +50,8 @@ MODEL_SETTING_FILE_KEYS = {
     "index_rate": "index_rate",
 }
 MODEL_SETTING_KEYS = tuple(MODEL_SETTING_FILE_KEYS)
-#: The Model page's reset. The noise gate is saved per voice too, but its slider (and reset) is
-#: under Sound cleanup on the Audio page.
-RESETTABLE_MODEL_SETTING_KEYS = tuple(key for key in MODEL_SETTING_KEYS if key != "noise_gate_db")
+#: The Model page's reset restores every per-voice setting.
+RESETTABLE_MODEL_SETTING_KEYS = MODEL_SETTING_KEYS
 
 # Settings that only matter when the next stream starts; changing one stops
 # a running stream.
@@ -86,6 +84,8 @@ class EngineSettings:
     block_time: float = 0.04
     #: ASIO buffer size to ask the driver for, in samples; 0 keeps the driver's own setting.
     asio_buffer: int = 0
+    #: Universal microphone noise gate threshold in dBFS (-60 = off).
+    noise_gate_db: float = -60.0
     input_denoise: bool = False
     input_denoise_method: str = "hushwire"
     #: Record each block's GPU work once and replay it (a CUDA graph): about half the time per block
@@ -104,7 +104,6 @@ class EngineSettings:
     input_gain_db: float = 0.0
     output_gain_db: float = 0.0
     monitor_gain_db: float = 0.0
-    noise_gate_db: float = -60.0
     pitch: float = 0.0
     #: Hz added to the shifted pitch of voiced frames: output pitch = input * 2^(pitch/12) + this.
     pitch_offset_hz: float = 0.0

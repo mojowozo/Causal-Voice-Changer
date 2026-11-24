@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from tools.limiter import KNEE, soft_clip
+from tools.limiter import KNEE, PeakLimiter, soft_clip
 
 
 class SoftClipTest(unittest.TestCase):
@@ -43,6 +43,28 @@ class SoftClipTest(unittest.TestCase):
         np.testing.assert_allclose(
             soft_clip(torch.from_numpy(audio)).numpy(), soft_clip(audio), atol=1e-6
         )
+
+    def test_peak_limiter_is_transparent_below_threshold_and_cleaner_than_low_knee_soft_clip(self):
+        t = np.arange(4800) / 48000
+        # Normal loud vowel peak (-2 dBFS = 0.794): PeakLimiter passes bit-exact, zero added distortion.
+        clean = (0.79 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        lim = PeakLimiter(48000)
+        np.testing.assert_array_equal(lim.process(clean), clean)
+
+        # Over-scale 1.4x peak: stays within +/-1.0 and introduces far less upper-harmonic distortion than -6 dBFS soft_clip.
+        loud = (1.4 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        lim2 = PeakLimiter(48000)
+        limited = np.concatenate([lim2.process(loud[i : i + 480]) for i in range(0, len(loud), 480)])
+        self.assertLessEqual(float(np.abs(limited).max()), 1.0)
+
+        def upper_thd(sig):
+            seg = sig[960:] * np.hanning(len(sig) - 960)
+            spec = np.abs(np.fft.rfft(seg))
+            bins = np.fft.rfftfreq(seg.shape[0], 1 / 48000)
+            fund = spec[np.argmin(np.abs(bins - 220))]
+            return float(np.sqrt(np.sum(spec[bins > 500] ** 2)) / fund)
+
+        self.assertLess(upper_thd(limited), 0.05 * upper_thd(soft_clip(loud)))
 
 
 if __name__ == "__main__":

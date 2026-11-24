@@ -367,18 +367,18 @@ class CheckpointVoiceTest(ModelFolders):
         engine = self.engine(selected="Kira-2000s")
         engine.voice_settings = {
             "Kira-1000s": {"pitch": 1.0},
-            "Kira-2000s": {"pitch": 2.0, "threhold": -40.0},
+            "Kira-2000s": {"pitch": 2.0, "output_gain_db": 3.0},
             "Kira-10000s": {"pitch": 10.0},
             "Bass": {"pitch": -2.0},
         }
         engine.migrate_voice_settings()
         saved = self.saved_voice_settings()
         # The one in use last wins, and is remembered as the picked checkpoint; nothing is dropped.
-        self.assertEqual(saved["Kira"], {"pitch": 2.0, "threhold": -40.0, "checkpoint": "Kira-2000s"})
+        self.assertEqual(saved["Kira"], {"pitch": 2.0, "output_gain_db": 3.0, "checkpoint": "Kira-2000s"})
         self.assertEqual(saved["Kira-1000s"], {"pitch": 1.0})
         self.assertEqual(saved["Bass"], {"pitch": -2.0})
         self.assertEqual(engine.model_settings_for("Kira-10000s")["pitch"], 2.0)
-        self.assertEqual(engine.model_settings_for("Kira-1000s")["noise_gate_db"], -40.0)
+        self.assertEqual(engine.model_settings_for("Kira-1000s")["output_gain_db"], 3.0)
         # Run again: the voice's own entry now wins.
         engine.voice_settings["Kira-10000s"] = {"pitch": 12.0}
         self.voice_settings_file.clear()
@@ -454,14 +454,42 @@ class CheckpointVoiceTest(ModelFolders):
         self.assertEqual(engine.settings.model_name, "Kira-10000s")
         engine.stop.assert_not_called()
 
-    def test_another_voice_while_converting_still_stops(self):
+    def test_another_voice_while_converting_hot_swaps_with_its_own_settings_and_keeps_universal_noise_gate(self):
         engine = self.engine(selected="Kira-10000s")
-        engine.voice, engine.running = mock.Mock(), True
+        engine.voice_settings = {"Kira": {"pitch": 4.0, "output_gain_db": 2.0}, "Bass": {"pitch": -5.0, "output_gain_db": -3.0}}
+        engine.settings.pitch = 4.0
+        engine.settings.output_gain_db = 2.0
+        engine.settings.noise_gate_db = -38.0
+        engine.config = SimpleNamespace(device="cpu")
+        old = mock.Mock(delay_seconds=0.06)
+        engine.voice, engine.running, engine.block_frame, engine.delay_time = old, True, 1920, 0.2
+        engine.loudness = mock.Mock()
+        built = mock.Mock(delay_seconds=0.05)
         engine.stop = mock.Mock()
-        with mock.patch.object(core.causalvc_backend, "CausalVC") as make:
+        seen_during_load = {}
+
+        def fake_build(pitch, path, *args, **kwargs):
+            # While the new voice loads in the background, the old voice's gains stay live on self.settings.
+            seen_during_load["old_output_gain_db"] = engine.settings.output_gain_db
+            seen_during_load["built_pitch"] = pitch
+            return built
+
+        with mock.patch.object(core.causalvc_backend, "CausalVC", side_effect=fake_build):
             engine.update_settings({"model_name": "Bass"})
-        engine.stop.assert_called_once()
-        make.assert_not_called()
+
+        engine.stop.assert_not_called()
+        self.assertIs(engine.voice, built)
+        self.assertEqual(seen_during_load["old_output_gain_db"], 2.0)
+        self.assertEqual(seen_during_load["built_pitch"], -5.0)
+        self.assertEqual(engine.settings.model_name, "Bass")
+        self.assertEqual(engine.settings.pitch, -5.0)
+        self.assertEqual(engine.settings.output_gain_db, -3.0)
+        # Universal noise gate is untouched across voice switches.
+        self.assertEqual(engine.settings.noise_gate_db, -38.0)
+        self.assertAlmostEqual(engine.delay_time, 0.19)
+        engine.loudness.reset.assert_called_once()
+        self.assertIn(("status", {"code": "switching_model", "model": "Bass", "name": "Bass"}), engine.events)
+        self.assertIn(("status", {"code": "model_switched", "name": "Bass"}), engine.events)
 
     def test_a_loose_checkpoint_renamed_out_of_its_voice_takes_the_settings(self):
         voice_files.write_cvc(self.root / "Solo-500s.cvc", "Solo-500s", "Solo", b"decoder")

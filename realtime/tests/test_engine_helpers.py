@@ -54,7 +54,7 @@ class SettingsDefaultsTest(unittest.TestCase):
         self.assertEqual(restored[1]["noise_gate_db"], EngineSettings().noise_gate_db)
         engine.reset_settings("general")
         self.assertNotIn("noise_gate_db", restored[2])
-        self.assertEqual(flushed, [True, True])  # cleanup and general save the voice's settings at once
+        self.assertEqual(flushed, [True])  # general saves per-voice settings; cleanup is purely global now
         with self.assertRaises(EngineError):
             engine.reset_settings("audio")
 

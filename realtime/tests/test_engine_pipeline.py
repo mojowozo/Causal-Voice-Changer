@@ -83,6 +83,38 @@ class PassthroughPipelineTest(unittest.TestCase):
         self.assertFalse(swapped)
         self.assertIs(engine10.voice, old_voice)
 
+    def test_vc_input_hpf_strips_subsonic_rumble_and_swap_crossfades_without_step_click(self):
+        engine = passthrough_engine(block_time=0.02)
+        engine.function = "vc"
+        engine.delay_time = 0.05
+        seen = []
+        engine.voice = SimpleNamespace(
+            process=lambda block: (seen.append(block.clone()), torch.full_like(block, 0.4))[1],
+            reset_stream_state=lambda: None,
+            warm=lambda frames, record=True: None,
+            record=lambda frames: None,
+            delay_seconds=0.05,
+        )
+        t = np.arange(RATE // 2) / RATE
+        rumble = (0.2 * np.sin(2 * np.pi * 15.0 * t)).astype(np.float32)  # 15 Hz plosive/rumble
+        for i in range(0, len(rumble), engine.block_frame):
+            prev_out = engine.audio_callback(rumble[i : i + engine.block_frame, None].copy(), engine.block_frame, None, None)
+        # 15 Hz rumble was heavily attenuated before reaching the neural voice.
+        self.assertLess(float(seen[-1].abs().max().item()), 0.04)
+
+        # Hot-swap to a voice outputting -0.4: the seam must ramp smoothly instead of jumping 0.8 in 1 sample.
+        engine.build_voice = lambda model: SimpleNamespace(
+            process=lambda block: torch.full_like(block, -0.4),
+            warm=lambda frames, record=True: None,
+            record=lambda frames: None,
+            delay_seconds=0.05,
+        )
+        self.assertTrue(engine.swap_voice(SimpleNamespace(name="V2", model_path=SimpleNamespace(name="V2.cvc"))))
+        next_out = engine.audio_callback(np.zeros((engine.block_frame, 1), dtype=np.float32), engine.block_frame, None, None)
+        seam_jump = abs(float(next_out[0]) - float(prev_out[-1]))
+        self.assertLess(seam_jump, 0.02)
+        self.assertAlmostEqual(float(next_out[-1]), -0.4, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

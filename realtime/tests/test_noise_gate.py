@@ -62,6 +62,31 @@ class NoiseGateTest(unittest.TestCase):
             out = engine.audio_callback(hiss.copy(), engine.block_frame, None, None)
         self.assertLess(float(np.max(np.abs(out))), 1e-6)
 
+    def test_subsonic_rumble_does_not_false_trigger_gate(self):
+        gate = NoiseGate(RATE)
+        t = np.arange(RATE // 2) / RATE
+        rumble = (0.04 * np.sin(2 * np.pi * 25.0 * t)).astype(np.float32)  # -28 dBFS 25 Hz desk bump
+        out = np.concatenate([gate.process(rumble[i : i + 480], -35.0) for i in range(0, len(rumble), 480)])
+        self.assertLess(float(np.max(np.abs(out[4800:]))), 1e-5)
+
+    def test_denoiser_runs_before_noise_gate_so_adaptive_profile_stays_intact(self):
+        engine = passthrough_engine(block_time=0.02)
+        engine.settings.noise_gate_db = -30.0
+        seen = []
+
+        class SpyDenoiser:
+            def process(self, block):
+                seen.append(float(np.max(np.abs(block))))
+                return block * np.float32(0.05)  # suppresses room noise below gate threshold
+
+        engine.active_denoiser = SpyDenoiser()
+        room_noise = (0.02 * np.sin(2 * np.pi * 400.0 * np.arange(engine.block_frame) / RATE)).astype(np.float32)
+        for _ in range(6):
+            out = engine.audio_callback(room_noise[:, None].copy(), engine.block_frame, None, None)
+        # Denoiser received the continuous un-gated room noise, and the gate silenced the residual output.
+        self.assertGreater(min(seen), 0.015)
+        self.assertLess(float(np.max(np.abs(out))), 1e-5)
+
 
 if __name__ == "__main__":
     unittest.main()

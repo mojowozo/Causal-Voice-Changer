@@ -23,8 +23,8 @@ import time
 import traceback
 import zipfile
 
-import librosa
 import numpy as np
+from scipy.signal import butter, sosfilt, sosfilt_zi
 import sounddevice as sd
 import torch
 
@@ -67,7 +67,7 @@ from tools.model_import import ModelImportError, import_models, voice_files
 from causalvc import merge as voice_merge
 from tools import asio as asio_driver
 from tools import hushwire, rnnoise
-from tools.limiter import soft_clip
+from tools.limiter import SAFETY_KNEE, PeakLimiter, soft_clip
 from tools.noise_gate import NoiseGate
 from tools.treble_softener import TrebleSoftener, DELAY_SECONDS as TREBLE_SOFTENER_DELAY
 from tools.loudness import TARGETS_LUFS, LoudnessMeter
@@ -103,6 +103,10 @@ BACKLOG_MARGIN_SECONDS = 0.025
 BACKLOG_SILENCE_PEAK = 1e-3
 #: Linear ramp applied to the first kept block after dropping non-zero silence (2 ms at 48 kHz).
 BACKLOG_RAMP_SAMPLES = 96
+#: Smooth cosine crossfade applied on the first block after hot-swapping checkpoints (5 ms at 48 kHz).
+SWAP_FADE_SAMPLES = 240
+#: Gentle subsonic/plosive high-pass cutoff for VC input (keeps 32 Hz vocal fry harmonics intact).
+INPUT_HPF_HZ = 45.0
 #: How often a growing underrun count is logged.
 UNDERRUN_LOG_SECONDS = 5.0
 #: A device latency above this is a bogus report, not a real buffer: some
@@ -158,6 +162,16 @@ def peak_meter(samples):
     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
     peak_db = 20.0 * np.log10(max(peak, 1e-6))
     return float(np.clip((peak_db + 60.0) / 60.0, 0.0, 1.0))
+
+
+def _to_mono(indata):
+    """Fast zero-overhead mono fold-down (replaces librosa.to_mono on the realtime audio thread)."""
+    arr = np.asarray(indata, dtype=np.float32)
+    if arr.ndim == 1:
+        return arr.copy()
+    if arr.shape[1] == 1:
+        return arr[:, 0].copy()
+    return arr.mean(axis=1, dtype=np.float32)
 
 
 def _voice_block_multiple(voice):
@@ -656,28 +670,55 @@ class RealtimeEngine:
             self.emit_state()
             return
         previous_model = self.settings.model_name
-        # Another checkpoint of the same voice: the voice's settings stay, and a running stream
-        # carries on with the new checkpoint's decoder (swap_voice).
+        previous_model_settings = self.settings.model_dict()
+        # Another checkpoint of the same voice keeps the voice's settings; switching to another voice
+        # loads that voice's saved settings.  Either way, a running stream hot-swaps in the background
+        # while the old voice keeps converting, then hands off cleanly on the next block.
         checkpoint_switch = "model_name" in changed and self.voice_group(previous_model) is not None \
             and self.voice_group(previous_model) is self.voice_group(changed["model_name"])
-        hot_swap = checkpoint_switch and self.running and hasattr(self, "voice") and not any(
+        hot_swap = "model_name" in changed and self.running and hasattr(self, "voice") and not any(
             key in RESTART_SETTING_KEYS for key in changed if key != "model_name")
         if "model_name" in changed:
             self.flush_model_settings_save(force=True)
-        for key, value in changed.items():
-            setattr(self.settings, key, value)
+        next_voice_settings = None
         if "model_name" in changed and not checkpoint_switch:
-            # Per-voice settings follow the newly selected voice.
-            self.settings.__dict__.update(self.model_settings_for(changed["model_name"]))
-        elif any(key in MODEL_SETTING_KEYS for key in changed):
-            self.schedule_model_settings_save()
+            next_voice_settings = self.model_settings_for(changed["model_name"])
+            for key, value in changed.items():
+                if key in MODEL_SETTING_KEYS:
+                    next_voice_settings[key] = value
         if hot_swap:
+            # Apply non-model settings immediately, but keep the old voice's per-voice gains/pitch
+            # active while the new voice loads and warms in the background; swap_voice flips them
+            # atomically under voice_lock on handoff.
+            for key, value in changed.items():
+                if key != "model_name" and (checkpoint_switch or key not in MODEL_SETTING_KEYS):
+                    setattr(self.settings, key, value)
+            if checkpoint_switch and any(key in MODEL_SETTING_KEYS for key in changed):
+                self.schedule_model_settings_save()
             try:
-                hot_swap = self.swap_voice(self.models_by_name[changed["model_name"]])
+                hot_swap = self.swap_voice(
+                    self.models_by_name[changed["model_name"]],
+                    checkpoint=checkpoint_switch,
+                    voice_settings=next_voice_settings,
+                )
             except EngineError:
                 self.settings.model_name = previous_model
+                if not checkpoint_switch:
+                    self.settings.__dict__.update(previous_model_settings)
                 self.emit_state()
                 raise
+            if not hot_swap:
+                # Incompatible block multiple (e.g. 50 Hz voice on 10 ms stream): fall back to restart.
+                self.settings.model_name = changed["model_name"]
+                if next_voice_settings is not None:
+                    self.settings.__dict__.update(next_voice_settings)
+        else:
+            for key, value in changed.items():
+                setattr(self.settings, key, value)
+            if next_voice_settings is not None:
+                self.settings.__dict__.update(next_voice_settings)
+            elif any(key in MODEL_SETTING_KEYS for key in changed):
+                self.schedule_model_settings_save()
         if "model_name" in changed:
             self.remember_checkpoint(changed["model_name"])
         self.apply_hot_settings(changed)
@@ -716,7 +757,7 @@ class RealtimeEngine:
         else:
             raise EngineError("bad_request", "group must be general, performance or cleanup")
         self.update_settings({key: getattr(defaults, key) for key in keys})
-        if group in ("general", "cleanup"):  # both reset settings saved per voice
+        if group == "general":
             self.flush_model_settings_save(force=True)
 
     def schedule_model_settings_save(self):
@@ -1016,13 +1057,14 @@ class RealtimeEngine:
         torch.cuda.empty_cache()
         self.voice = self.build_voice(model)
 
-    def build_voice(self, model):
+    def build_voice(self, model, voice_settings=None):
+        get = voice_settings.__getitem__ if voice_settings is not None else lambda key: getattr(self.settings, key)
         try:
             return causalvc_backend.CausalVC(
-                self.settings.pitch, str(model.model_path), self.config.device,
-                *(getattr(self.settings, key) for key in PITCH_MAP_KEYS),
+                get("pitch"), str(model.model_path), self.config.device,
+                *(get(key) for key in PITCH_MAP_KEYS),
                 cuda_graphs=self.settings.cuda_graphs,
-                index_rate=self.settings.index_rate,
+                index_rate=get("index_rate"),
             )
         except Exception as error:
             raise EngineError(
@@ -1036,13 +1078,14 @@ class RealtimeEngine:
         """Held by the audio thread for each block, and while a new voice takes over."""
         return self.__dict__.setdefault("_voice_lock", threading.Lock())
 
-    def swap_voice(self, model):
-        """Switch a running stream to another checkpoint: only the decoder is loaded; the audio
-        devices, recording and file playback carry on.  The new voice is loaded and warmed here
-        while the old one keeps converting; its CUDA graph is recorded with the audio thread
-        held, so the stream skips about one block."""
-        self.status("loading_model", model=model.name)
-        voice = self.build_voice(model)
+    def swap_voice(self, model, *, checkpoint=True, voice_settings=None):
+        """Switch a running stream to another voice or checkpoint while the old one keeps converting.
+
+        The new voice is loaded and warmed on the command thread; its CUDA graph is recorded and
+        handed off atomically under ``voice_lock`` with a 5 ms crossfade on the next block.
+        """
+        self.status("loading_model" if checkpoint else "switching_model", model=model.name, name=model.name)
+        voice = self.build_voice(model, voice_settings=voice_settings) if voice_settings is not None else self.build_voice(model)
         block_frame = self.block_frame
         if block_frame % _voice_block_multiple(voice) != 0:
             del voice
@@ -1052,15 +1095,25 @@ class RealtimeEngine:
             with self.voice_lock:
                 voice.record(block_frame)
                 old, self.voice = self.voice, voice
+                self.settings.model_name = model.name
+                if voice_settings is not None:
+                    self.settings.__dict__.update(voice_settings)
+                self._swap_fade_pending = True
         except Exception as error:
             raise EngineError(
                 "model_load_failed", f"Could not load {model.model_path.name}: {error}", model=model.name
             ) from error
         if self.function == "vc":
             self.delay_time += voice.delay_seconds - old.delay_seconds
+        if not checkpoint and getattr(self, "loudness", None) is not None:
+            self.loudness.reset()
         del old
-        printt("Switched to checkpoint %s", model.name)
-        self.status("checkpoint_switched", name=model.name)
+        if checkpoint:
+            printt("Switched to checkpoint %s", model.name)
+            self.status("checkpoint_switched", name=model.name)
+        else:
+            printt("Switched to voice %s", model.name)
+            self.status("model_switched", name=model.name)
         return True
 
     def prepare_inference(self, samplerate):
@@ -1074,7 +1127,13 @@ class RealtimeEngine:
         self.block_frame = max(1, round(self.settings.block_time * self.samplerate / multiple)) * multiple
         self.input_wav = torch.zeros(2 * self.block_frame, device=self.config.device, dtype=torch.float32)
         self.input_wav_denoise = self.input_wav.clone()
+        self.input_hpf_sos = butter(2, INPUT_HPF_HZ, "high", fs=self.samplerate, output="sos")
+        self.input_hpf_zi = sosfilt_zi(self.input_hpf_sos) * 0.0
         self.noise_gate = NoiseGate(self.samplerate)
+        self.output_limiter = PeakLimiter(self.samplerate)
+        self.monitor_limiter = PeakLimiter(self.samplerate)
+        self._swap_fade_pending = False
+        self._last_vc_sample = 0.0
         # Input denoisers are built on demand for this stream (refresh_denoiser).
         self.active_denoiser = None
         self.active_denoise_delay = 0.0
@@ -1500,14 +1559,18 @@ class RealtimeEngine:
         """Process one input-audio callback block."""
         start_time = time.perf_counter()
         settings = self.settings
-        indata = librosa.to_mono(indata.T)
+        indata = _to_mono(indata)
         indata *= np.float32(settings.input_gain)
-        np.clip(indata, -1.0, 1.0, out=indata)
+        # Round loud mic peaks smoothly above -1 dBFS instead of hard flat-top clipping.
+        indata = soft_clip(indata, knee=SAFETY_KNEE)
         self.recorder.enqueue("input", indata)
         meter_now = time.perf_counter()
         if meter_now - self.last_input_meter_update >= METER_INTERVAL_SECONDS:
             self.latest_input_meter = peak_meter(indata)
             self.last_input_meter_update = meter_now
+        if self.function == "vc" and self.__dict__.get("input_hpf_sos") is not None:
+            filtered, self.input_hpf_zi = sosfilt(self.input_hpf_sos, indata.astype(np.float64), zi=self.input_hpf_zi)
+            indata = filtered.astype(np.float32)
         denoised = self.ingest_block(indata)
         block = (self.input_wav_denoise if denoised else self.input_wav)[-self.block_frame :]
         # Every block is converted, silence included: the model's own state has to keep running.
@@ -1606,21 +1669,24 @@ class RealtimeEngine:
         threading.Thread(target=fetch, name="hushwire-download", daemon=True).start()
 
     def ingest_block(self, indata):
-        """Write one input block into the buffers: noise gate, then denoise.
+        """Write one input block into the buffers: denoise first (so adaptive noise profiles never
+        reset on gated silence), then smooth noise gate on the cleaned signal.
 
         Returns whether the denoised buffer holds this block.
         """
         settings = self.settings
         gate = self.__dict__.setdefault("noise_gate", NoiseGate(self.samplerate))
-        indata = gate.process(indata, settings.noise_gate_db)
-        self.input_wav[: -self.block_frame] = self.input_wav[self.block_frame :].clone()
-        self.input_wav[-indata.shape[0] :] = torch.from_numpy(indata).to(self.config.device)
         denoiser = self.active_denoiser
         if denoiser is None:
+            gated = gate.process(indata, settings.noise_gate_db)
+            self.input_wav[: -self.block_frame] = self.input_wav[self.block_frame :].clone()
+            self.input_wav[-gated.shape[0] :] = torch.from_numpy(gated).to(self.config.device)
             return False
-        # Both denoisers keep a recurrent state, so they see each block once, in order.
+        self.input_wav[: -self.block_frame] = self.input_wav[self.block_frame :].clone()
+        self.input_wav[-indata.shape[0] :] = torch.from_numpy(indata).to(self.config.device)
+        # Both denoisers keep a recurrent state, so they see continuous raw audio in order.
         self.input_wav_denoise[: -self.block_frame] = self.input_wav_denoise[self.block_frame :].clone()
-        denoised = denoiser.process(indata)
+        denoised = gate.process(denoiser.process(indata), settings.noise_gate_db)
         self.input_wav_denoise[-self.block_frame :] = torch.from_numpy(denoised).to(self.config.device)
         return True
 
@@ -1628,16 +1694,32 @@ class RealtimeEngine:
         """Apply output gain and file volume, update meters, queue the block."""
         settings = self.settings
         before_gain = output[: self.block_frame].cpu().numpy()
+        if self.__dict__.get("_swap_fade_pending") and before_gain.size > 0:
+            n = min(SWAP_FADE_SAMPLES, before_gain.shape[0])
+            w = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, n, endpoint=False, dtype=np.float32)))
+            prev = np.float32(self.__dict__.get("_last_vc_sample", 0.0))
+            before_gain = before_gain.copy()
+            before_gain[:n] = prev * (1.0 - w) + before_gain[:n] * w
+            self._swap_fade_pending = False
+        if before_gain.size > 0:
+            self._last_vc_sample = float(before_gain[-1])
         softener = self.treble_softener
         if softener is not None:
             before_gain = softener.process(before_gain)
         self.loudness.process(before_gain)
-        # Soft clip rather than a hard clamp: loud peaks are rounded, not chopped.
-        output_mono = soft_clip(before_gain * np.float32(settings.output_gain))
+        # Smooth gain-envelope peak limiter (transparent below -1 dBFS, no low-knee tanh buzz).
+        output_limiter = self.__dict__.setdefault("output_limiter", PeakLimiter(self.samplerate))
+        monitor_limiter = self.__dict__.setdefault("monitor_limiter", PeakLimiter(self.samplerate))
+        gained = before_gain * np.float32(settings.output_gain)
+        output_mono = output_limiter.process(gained)
         # The file-player volume is applied after conversion, so each 1% step controls the audible result.
         if self.file_source_active:
-            output_mono *= np.float32(np.clip(settings.file_input_volume, 0.0, 1.0))
-        monitor_mono = soft_clip(output_mono * np.float32(settings.monitor_gain))
+            vol = np.float32(np.clip(settings.file_input_volume, 0.0, 1.0))
+            output_mono = output_mono * vol
+            monitor_src = gained * vol
+        else:
+            monitor_src = gained
+        monitor_mono = monitor_limiter.process(monitor_src * np.float32(settings.monitor_gain))
         meter_now = time.perf_counter()
         if meter_now - self.last_output_meter_update >= METER_INTERVAL_SECONDS:
             self.latest_output_meter = peak_meter(output_mono)

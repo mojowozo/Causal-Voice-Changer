@@ -4,6 +4,7 @@ from collections import deque
 import math
 
 import numpy as np
+from scipy.signal import butter, sosfilt, sosfilt_zi
 
 OFF_DB = -60.0
 HYSTERESIS_DB = 3.0
@@ -12,11 +13,12 @@ RMS_WINDOW_STEPS = 5  # 5 x 2 ms = 10 ms causal RMS detector
 ATTACK_SECONDS = 0.003  # time to reach ~99% open (-40 dB error)
 HOLD_SECONDS = 0.040
 RELEASE_SECONDS = 0.050  # time to decay by 40 dB (gain <= 0.01)
+SIDECHAIN_HPF_HZ = 100.0  # keeps desk bumps, AC hum & breath thumps from false-opening the gate
 LN_100 = math.log(100.0)  # 4.605: 1 - exp(-T / tau) = 0.99 when tau = T / LN_100
 
 
 class NoiseGate:
-    """Causal envelope gate with hysteresis, hold, and click-free linear sub-frame ramps."""
+    """Causal envelope gate with hysteresis, hold, high-pass sidechain, and click-free linear ramps."""
 
     def __init__(self, samplerate: int = 48000):
         self.samplerate = int(samplerate)
@@ -24,6 +26,7 @@ class NoiseGate:
         self.hold_samples = round(HOLD_SECONDS * self.samplerate)
         self.attack_tau = max(1.0, ATTACK_SECONDS * self.samplerate / LN_100)
         self.release_tau = max(1.0, RELEASE_SECONDS * self.samplerate / LN_100)
+        self.sidechain_sos = butter(2, SIDECHAIN_HPF_HZ, "high", fs=self.samplerate, output="sos")
         self.reset()
 
     def reset(self) -> None:
@@ -31,18 +34,23 @@ class NoiseGate:
         self.is_open = False
         self.hold_remaining = 0
         self.sq_window: deque[float] = deque(maxlen=RMS_WINDOW_STEPS)
+        self.sidechain_zi = sosfilt_zi(self.sidechain_sos) * 0.0
 
     def process(self, block: np.ndarray, threshold_db: float) -> np.ndarray:
         audio = np.asarray(block, dtype=np.float32)
+        if audio.size == 0:
+            return audio
         if threshold_db <= OFF_DB:
             self.gain = 1.0
             self.is_open = True
             self.hold_remaining = self.hold_samples
             self.sq_window.clear()
-            return audio
-        if audio.size == 0:
+            # Keep sidechain state warm without modifying audio.
+            _, self.sidechain_zi = sosfilt(self.sidechain_sos, audio.astype(np.float64), zi=self.sidechain_zi)
             return audio
 
+        # Detect speech energy on a 100 Hz high-passed sidechain so subsonic bumps/hum do not false-trigger.
+        det, self.sidechain_zi = sosfilt(self.sidechain_sos, audio.astype(np.float64), zi=self.sidechain_zi)
         out = np.empty_like(audio)
         close_db = float(threshold_db) - HYSTERESIS_DB
         pos = 0
@@ -52,8 +60,9 @@ class NoiseGate:
         while pos < total:
             end = min(pos + step, total)
             chunk = audio[pos:end]
+            dchunk = det[pos:end]
             n = end - pos
-            self.sq_window.append(float(np.mean(chunk * chunk)))
+            self.sq_window.append(float(np.mean(dchunk * dchunk)))
             mean_sq = sum(self.sq_window) / len(self.sq_window)
             level_db = 10.0 * math.log10(mean_sq + 1e-12)
 

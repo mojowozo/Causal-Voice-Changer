@@ -99,17 +99,20 @@ class PersistenceTest(unittest.TestCase):
             config_file.write("{not json")
         self.assertEqual(load_settings(self.path), EngineSettings())
 
-    def test_voice_settings_keep_the_tk_key_names(self):
+    def test_noise_gate_is_universal_and_not_saved_per_voice(self):
         settings = EngineSettings(noise_gate_db=-40.0, pitch=3.0)
+        save_settings(settings, self.path)
+        loaded_global = load_settings(self.path)
+        self.assertEqual(loaded_global.noise_gate_db, -40.0)
+
         path = os.path.join(self.directory.name, "voice_settings.json")
         save_voice_settings({"Alto": model_settings_to_save(settings)}, path)
-
         with open(path, encoding="utf-8") as saved_file:
             saved = json.load(saved_file)
-        self.assertEqual(saved["Alto"]["threhold"], -40.0)
         self.assertNotIn("noise_gate_db", saved["Alto"])
+        self.assertNotIn("threhold", saved["Alto"])
         loaded = model_settings_from(load_voice_settings(path)["Alto"])
-        self.assertEqual(loaded["noise_gate_db"], -40.0)
+        self.assertNotIn("noise_gate_db", loaded)
         self.assertEqual(loaded["pitch"], 3.0)
 
     def test_damaged_voice_settings_give_defaults(self):
