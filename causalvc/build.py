@@ -29,20 +29,27 @@ if sys.platform != "win32":  # PyTorch supports this only on Linux
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASES = (
+    "runs/models/dec-s16-100hz-v5-aa3-hi4k",
     "runs/models/dec-s8-100hz-v4",
     "runs/models/dec-s7-100hz",
     "runs/models/dec-s6-100hz",
     "runs/models/dec-s6",
 )
+LOCAL_BASES: dict[str, tuple[str, ...]] = {
+    "v4": ("runs/models/dec-s8-100hz-v4",),
+}
 CUSTOM = ROOT / "custom-base"
 
 
 def bases() -> dict[str, Path]:
-    """Bases a voice can start from: the default, then every folder in custom-base/ holding last.pt and args.json."""
-    from causalvc.weights import base_folder
+    """Bases a voice can start from: default, optional official bases (e.g. v4), then custom-base/ folders."""
+    from causalvc.weights import PRETRAINED_BASES, base_folder
 
     local = next((ROOT / b for b in DEFAULT_BASES if (ROOT / b / "last.pt").is_file()), None)
     found = {"default": local if local is not None else base_folder()}
+    for name in PRETRAINED_BASES:
+        loc = next((ROOT / b for b in LOCAL_BASES.get(name, ()) if (ROOT / b / "last.pt").is_file()), None)
+        found[name] = loc if loc is not None else base_folder(name)
     if CUSTOM.is_dir():
         for d in sorted(CUSTOM.iterdir()):
             if (d / "last.pt").is_file() and (d / "args.json").is_file():
@@ -51,12 +58,14 @@ def bases() -> dict[str, Path]:
 
 
 def resolve_base(value: str) -> Path:
+    from causalvc.weights import PRETRAINED_BASES, ensure_base
+
     known = bases()
     path = known.get(value) or Path(value)
     if value == "default" and not (path / "last.pt").is_file():
-        from causalvc.weights import ensure_base
-
         path = ensure_base()
+    elif value in PRETRAINED_BASES and not ((path / "last.pt").is_file() and (path / "args.json").is_file()):
+        path = ensure_base(value)
     if not (path / "last.pt").is_file() or not (path / "args.json").is_file():
         raise SystemExit(f"base '{value}' not found: expected last.pt and args.json in {path} (known bases: {', '.join(known)})")
     return path

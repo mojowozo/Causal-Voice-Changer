@@ -361,6 +361,8 @@ class Source(nn.Module):
     # Breath bands that split 1-4 kHz (`breath_edges`): over 0-4 kHz the low harmonics swamp the measure, so
     # it reads clean on voiced consonants (v, z, m) and vowels alike; at 2-4 kHz a "v" reads ten times noisier.
     FINE_BREATH_EDGES = (1000.0, 2000.0, 4000.0, 8000.0, 16000.0, SR / 2)
+    # High-only breath bands (4-24 kHz): keeps 1-4 kHz harmonics intact on vocal fry and large upward pitch shifts.
+    HIGH_BREATH_EDGES = (4000.0, 8000.0, 16000.0, SR / 2)
 
     def __init__(self, harmonics: int = 8, amp: float = 0.1, noise: float = 0.003, bands: int = 0, glide: bool | str = False,
                  with_f0: bool = False, phase_only: bool = False, aper: int = 0, breath_edges: tuple[float, ...] | None = None,

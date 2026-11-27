@@ -445,9 +445,9 @@ def main(on_save=None) -> None:
     ap.add_argument("--breath-from", type=float, default=4000.0, help="with --aper: the lowest band (Hz: 1000, 2000, "
                     "4000 or 8000) where vowels may be no more regular than the target; below 4000 it also works on the "
                     "buzz in 1-4 kHz")
-    ap.add_argument("--breath-bands", choices=("coarse", "fine"), default="coarse", help="with --aper: the breath channels' "
-                    "bands. coarse: 0-4, 4-8, 8-16, 16-24 kHz; fine: 1-2, 2-4, 4-8, 8-16, 16-24 kHz, which tells voiced "
-                    "consonants (v, z, m) from vowels. From a coarse checkpoint, --init carries the breath weights over")
+    ap.add_argument("--breath-bands", choices=("coarse", "fine", "high"), default="coarse", help="with --aper: the breath channels' "
+                    "bands. coarse: 0-4, 4-8, 8-16, 16-24 kHz; fine: 1-2, 2-4, 4-8, 8-16, 16-24 kHz; "
+                    "high: 4-8, 8-16, 16-24 kHz (keeps 1-4 kHz harmonics intact on vocal fry and large pitch shifts)")
     ap.add_argument("--crossfade", action="store_true", help="with --aper: where the input is breathy, also turn the "
                     "harmonics down in that band (by a learned depth that starts at 0)")
     ap.add_argument("--breath-cap", type=float, default=0.0, help="with --aper and --decorr: weight of a loss that keeps the "
@@ -512,6 +512,8 @@ def main(on_save=None) -> None:
         **(({"aper": 4, "causal_aper": True}) if args.aper and args.breath_bands == "coarse" else {}),
         **(({"aper": len(Source.FINE_BREATH_EDGES) - 1, "breath_edges": list(Source.FINE_BREATH_EDGES), "causal_aper": True})
            if args.aper and args.breath_bands == "fine" else {}),
+        **(({"aper": len(Source.HIGH_BREATH_EDGES) - 1, "breath_edges": list(Source.HIGH_BREATH_EDGES), "causal_aper": True})
+           if args.aper and args.breath_bands == "high" else {}),
         **(({"crossfade": True}) if args.aper and args.crossfade else {}),
         **(({"aa_filter": args.aa_filter}) if args.aa_filter != 1 else {}),
     }
@@ -546,6 +548,14 @@ def main(on_save=None) -> None:
                 continue
             if rebreath and a.startswith("src.") and own[a].dim() == 3:
                 own[a].copy_(breath_inputs(b, own[a].shape, gen.source.n_in - 2 * gen.source.aper, old_breath, new_breath))
+                loaded_g += 1
+                continue
+            if rebreath and a == "source.depth":
+                own[a].zero_()
+                old_pairs = list(zip(old_breath[:-1], old_breath[1:]))
+                for j, pair in enumerate(zip(new_breath[:-1], new_breath[1:])):
+                    if pair in old_pairs:
+                        own[a][j] = b[old_pairs.index(pair)]
                 loaded_g += 1
                 continue
             if own[a].shape != b.shape:  # new inputs (speakers, future taps) start at zero; changed upsamplers/src keep fresh init
