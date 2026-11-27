@@ -126,7 +126,7 @@ class AntiAliasedDecoderTest(unittest.TestCase):
         y = torch.randn(2, 1, 9600)
         self.assertTrue(torch.isfinite(sl(x, y)))
 
-        self.assertEqual(build.DEFAULT_BASES[0], "runs/models/dec-s16-100hz-v5-aa3-hi4k")
+        self.assertEqual(build.DEFAULT_BASES[0], "runs/models/dec-s8-100hz-v4")
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
             base_dir = p / "base"
@@ -463,7 +463,7 @@ class AntiAliasedDecoderTest(unittest.TestCase):
             ys.append(torch.nn.functional.conv1d(z, src.breath_fir, groups=5) * src.amp)
         self.assertLess(float((y_whole - torch.cat(ys, dim=-1)).abs().max().item()), 1e-6)
 
-    def test_pretrained_v5_default_and_v4_fallback_side_by_side(self) -> None:
+    def test_pretrained_v4_default_and_v5_opt_in_side_by_side(self) -> None:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -473,15 +473,15 @@ class AntiAliasedDecoderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wdir = root / "weights"
-            v4_files = weights.PRETRAINED_BASES["v4"][2]
-            fake_args = b"fake-v4-args"
+            v5_files = weights.PRETRAINED_BASES["v5"][2]
+            fake_args = b"fake-v5-args"
             fake_sha = weights.hashlib.sha256(fake_args).hexdigest()
             patched_pre = {
-                "v4": ("causalvc-base-v4", "https://example.invalid/v4.zip", {**v4_files, "args.json": fake_sha})
+                "v5": ("causalvc-base-v5", "https://example.invalid/v5.zip", {**v5_files, "args.json": fake_sha})
             }
             old_base = wdir / weights.BASE_NAME
             old_base.mkdir(parents=True)
-            for fname in v4_files:
+            for fname in v5_files:
                 (old_base / fname).write_bytes(fake_args if fname == "args.json" else b"stub")
 
             with (
@@ -490,17 +490,17 @@ class AntiAliasedDecoderTest(unittest.TestCase):
                 patch.object(build, "ROOT", root),
                 patch.object(build, "CUSTOM", root / "custom-base"),
             ):
-                # Upgrading default preserves an existing v4 install in weights/causalvc-base-v4.
+                # Switching default back preserves an already-downloaded v5 install in weights/causalvc-base-v5.
                 weights._preserve_previous_base(old_base)
                 self.assertFalse(old_base.exists())
-                self.assertTrue((wdir / "causalvc-base-v4" / "last.pt").is_file())
+                self.assertTrue((wdir / "causalvc-base-v5" / "last.pt").is_file())
 
-                # Both default (v5) and v4 appear in build.bases() and resolve cleanly.
+                # Both default (v4) and v5 appear in build.bases() and resolve cleanly.
                 found = build.bases()
                 self.assertIn("default", found)
-                self.assertIn("v4", found)
-                self.assertEqual(found["v4"], wdir / "causalvc-base-v4")
-                self.assertEqual(build.resolve_base("v4"), wdir / "causalvc-base-v4")
+                self.assertIn("v5", found)
+                self.assertEqual(found["v5"], wdir / "causalvc-base-v5")
+                self.assertEqual(build.resolve_base("v5"), wdir / "causalvc-base-v5")
 
 
 if __name__ == "__main__":

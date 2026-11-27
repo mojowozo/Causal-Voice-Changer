@@ -27,25 +27,25 @@ FILES = {
 
 
 # The base a voice is built from: one zip holding these four files (checksums are of the files, not the zip).
-BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v5-100hz.zip?download=true")
+BASE_URL = os.environ.get("CAUSALVC_BASE_URL", "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v4-100hz.zip?download=true")
 BASE_NAME = "causalvc-base"
 BASE_FILES = {
-    "last.pt": "beff4858e9020506e95a8a65770f37e527c2e5988be874671ac279d81310ad77",
+    "last.pt": "e8f2fd8cf7fb61b68a454f73d1faea479d8a923aef7dd5242119a216d9ff6f61",
     "encoder.pt": "4b7d7fe78fe01a94648eaf3216e2a14004da8bd09caf7ae0c6661a3251c26693",
     "pitch.pt": "a4c3f1098cd8592233203129059c93857d8575407edc05faee5b47af0b999636",
-    "args.json": "5d4c6c958193497f29abf436d6900f699a4fae1b0845ebe0d6d1f7ce1932937b",
+    "args.json": "e39434d48669e6d63a659214df69be7a3f2378c17163e8e3b85dadc6d5f655b2",
 }
 
 # Additional official pretrained bases selectable alongside Default, each downloaded on demand into weights/.
 PRETRAINED_BASES: dict[str, tuple[str, str, dict[str, str]]] = {
-    "v4": (
-        "causalvc-base-v4",
-        "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v4-100hz.zip?download=true",
+    "v5": (
+        "causalvc-base-v5",
+        "https://huggingface.co/buckets/Mojobigbones/cvc/resolve/causalvc-base-v5-100hz.zip?download=true",
         {
-            "last.pt": "e8f2fd8cf7fb61b68a454f73d1faea479d8a923aef7dd5242119a216d9ff6f61",
+            "last.pt": "beff4858e9020506e95a8a65770f37e527c2e5988be874671ac279d81310ad77",
             "encoder.pt": "4b7d7fe78fe01a94648eaf3216e2a14004da8bd09caf7ae0c6661a3251c26693",
             "pitch.pt": "a4c3f1098cd8592233203129059c93857d8575407edc05faee5b47af0b999636",
-            "args.json": "e39434d48669e6d63a659214df69be7a3f2378c17163e8e3b85dadc6d5f655b2",
+            "args.json": "5d4c6c958193497f29abf436d6900f699a4fae1b0845ebe0d6d1f7ce1932937b",
         },
     ),
 }

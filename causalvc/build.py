@@ -29,14 +29,13 @@ if sys.platform != "win32":  # PyTorch supports this only on Linux
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASES = (
-    "runs/models/dec-s16-100hz-v5-aa3-hi4k",
     "runs/models/dec-s8-100hz-v4",
     "runs/models/dec-s7-100hz",
     "runs/models/dec-s6-100hz",
     "runs/models/dec-s6",
 )
 LOCAL_BASES: dict[str, tuple[str, ...]] = {
-    "v4": ("runs/models/dec-s8-100hz-v4",),
+    "v5": ("runs/models/dec-s16-100hz-v5-aa3-hi4k",),
 }
 CUSTOM = ROOT / "custom-base"
 
